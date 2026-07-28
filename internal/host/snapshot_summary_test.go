@@ -1,6 +1,8 @@
 package host
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -47,8 +49,20 @@ func TestSnapshotIncludesSimulationAndBlueprintSummaries(t *testing.T) {
 	if snap.SimulationSummary == nil || !snap.SimulationSummary.Loaded || snap.SimulationSummary.SourceCount != 2 {
 		t.Fatalf("simulation summary missing: %+v", snap.SimulationSummary)
 	}
-	if got := snap.SimulationSummary.SourceFiles; len(got) != 2 || got[0] != "sample-a.txt" {
-		t.Fatalf("simulation source files = %+v", got)
+	if snap.SimulationProfile != nil {
+		t.Fatal("regular snapshot must not include the compact simulation profile")
+	}
+	data, err := json.Marshal(snap.SimulationSummary)
+	if err != nil {
+		t.Fatalf("marshal simulation summary: %v", err)
+	}
+	if len(data) > 64<<10 {
+		t.Fatalf("simulation summary is unbounded: %d bytes", len(data))
+	}
+	for _, forbidden := range []string{"sample-a.txt", "sample-b.txt", "source_reports", "source_dir"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("simulation summary leaked %q: %s", forbidden, data)
+		}
 	}
 	if snap.CreativeBlueprint == nil || !snap.CreativeBlueprint.Loaded || snap.CreativeBlueprint.OutlineChapters != 1 {
 		t.Fatalf("creative blueprint missing: %+v", snap.CreativeBlueprint)

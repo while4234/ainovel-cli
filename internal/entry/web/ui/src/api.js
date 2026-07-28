@@ -401,9 +401,10 @@ export function downloadSimulationSource(projectId, resultId) {
   });
 }
 
-export function analyzeSimulation(projectId) {
+export function analyzeSimulation(projectId, action = 'scan') {
   return request(`/api/projects/${encodeURIComponent(projectId)}/simulate/analyze`, {
-    method: 'POST'
+    method: 'POST',
+    body: JSON.stringify({ action })
   });
 }
 

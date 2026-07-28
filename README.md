@@ -476,6 +476,12 @@ Writer 在最终正文修改结束后、`commit_chapter` 前必须运行 `check_
 
 `normal` 只因确定性 copy/safety 风险阻塞；主观 should 偏离仅交给 Editor 建议。`reinforced` 还会阻塞缺失的 measurable must，但只接受章节计划/细纲中的结构化证据，不用脆弱关键词给风格“像不像”打硬分。缺少本地 safety index 的 portable-only/legacy 项目会明确返回 `partial/unavailable`，不会虚假声称通过完整来源扫描，也不会仅因能力缺失无条件禁止提交。该检查是工程风险控制，不构成法律结论。
 
+Web 画像面板只读取后端 canonical diagnostics summary，不下载完整画像或本地证据。面板会区分 `fresh`、`stale`、`portable_only`、`legacy`、`invalid`，显示报告覆盖、分析/合成签名、本地安全能力、特征分类、selected/effective mode、contract revision/绑定/排除原因，以及当前章节检查的 `pass` / `partial` / `not_run` / `stale` / `fail` / `error`。Architect、Writer、Editor 的 normal/reinforced 注入预览来自同一 mode policy 和 contract compiler；selected reinforced 但契约缺失、过期或 inactive 时，UI 不会宣称强化已落实。
+
+重新扫描、仅重合成和全量重分析是三个不同操作。重新扫描让后端根据内容与签名选择最小工作量；仅重合成只在所有本地逐篇报告仍有效时可用；全量重分析只在项目仍有本地语料时可用。按钮可用性和禁用原因来自后端 summary，前端不自行推断。
+
+画像库保存、上传和加载默认且仅写入 `simulation_profile.v2` portable JSON。库 metadata 直接读取 portable version/health/source count；v1 上传会先迁移、脱敏并标记 migrated/legacy 能力，不会把 `source_dir`、来源文件名、`source_reports`、raw 文本或 safety index 写入库文件。本版本不提供 local audit bundle 导出。
+
 Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目录，把导入的画像 JSON 保存到当前项目的 `profiles/imported/` 目录；小说改编上传的原文保存在当前项目的 `uploads/adaptation/` 目录。这些文件不会被写入仓库，也不会混到其他 Web 项目里。点击“分析”后，语料内容会按所选模型/provider 的正常调用路径发送给模型生成画像；不要上传没有授权处理的私人文本。
 
 ## 导入

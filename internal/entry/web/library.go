@@ -30,13 +30,17 @@ type LibraryService struct {
 }
 
 type apiLibraryItem struct {
-	Name         string    `json:"name"`
-	FileName     string    `json:"file_name,omitempty"`
-	Size         int64     `json:"size,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
-	SourceCount  int       `json:"source_count,omitempty"`
-	ChapterCount int       `json:"chapter_count,omitempty"`
-	SourceFile   string    `json:"source_file,omitempty"`
+	Name           string    `json:"name"`
+	FileName       string    `json:"file_name,omitempty"`
+	Size           int64     `json:"size,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitempty"`
+	SourceCount    int       `json:"source_count,omitempty"`
+	ProfileVersion string    `json:"profile_version,omitempty"`
+	HealthState    string    `json:"health_state,omitempty"`
+	Migrated       bool      `json:"migrated,omitempty"`
+	LocalEvidence  bool      `json:"local_evidence"`
+	ChapterCount   int       `json:"chapter_count,omitempty"`
+	SourceFile     string    `json:"source_file,omitempty"`
 }
 
 type novelLibraryManifest struct {
@@ -92,10 +96,13 @@ func (s *Server) handleSimulationLibraryUpload(w http.ResponseWriter, r *http.Re
 		}
 		uploads[i].data = portableData
 		items = append(items, apiLibraryItem{
-			Name:        strings.TrimSuffix(upload.Name, filepath.Ext(upload.Name)),
-			FileName:    upload.Name,
-			Size:        int64(len(portableData)),
-			SourceCount: sourceCount,
+			Name:           strings.TrimSuffix(upload.Name, filepath.Ext(upload.Name)),
+			FileName:       upload.Name,
+			Size:           int64(len(portableData)),
+			SourceCount:    sourceCount,
+			ProfileVersion: domain.SimulationPortableProfileVersion,
+			HealthState:    simulationPortableHealth(portableData),
+			Migrated:       simulationPortableMigrated(portableData),
 		})
 	}
 	if err := writePendingUploads(uploads, s.libraries.SimulationDir()); err != nil {
@@ -388,6 +395,9 @@ func (s *LibraryService) ListSimulationProfiles(query string) ([]apiLibraryItem,
 		if data, err := os.ReadFile(filepath.Join(s.SimulationDir(), entry.Name())); err == nil {
 			if _, sourceCount, err := portableSimulationProfileData(data); err == nil {
 				item.SourceCount = sourceCount
+				item.ProfileVersion = domain.SimulationPortableProfileVersion
+				item.HealthState = simulationPortableHealth(data)
+				item.Migrated = simulationPortableMigrated(data)
 			}
 		}
 		items = append(items, item)
@@ -420,11 +430,14 @@ func (s *LibraryService) SaveSimulationProfile(name string, data []byte) (apiLib
 		return apiLibraryItem{}, fmt.Errorf("stat simulation profile %s: %w", displayName, err)
 	}
 	return apiLibraryItem{
-		Name:        displayName,
-		FileName:    fileName,
-		Size:        info.Size(),
-		UpdatedAt:   info.ModTime(),
-		SourceCount: sourceCount,
+		Name:           displayName,
+		FileName:       fileName,
+		Size:           info.Size(),
+		UpdatedAt:      info.ModTime(),
+		SourceCount:    sourceCount,
+		ProfileVersion: domain.SimulationPortableProfileVersion,
+		HealthState:    simulationPortableHealth(portableData),
+		Migrated:       simulationPortableMigrated(portableData),
 	}, nil
 }
 
@@ -869,6 +882,19 @@ func containsSimulationHealthReason(reasons []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func simulationPortableHealth(data []byte) string {
+	profile, err := domain.UnmarshalSimulationPortableProfile(bytes.TrimSpace(data))
+	if err != nil {
+		return "invalid"
+	}
+	return profile.Health.State
+}
+
+func simulationPortableMigrated(data []byte) bool {
+	profile, err := domain.UnmarshalSimulationPortableProfile(bytes.TrimSpace(data))
+	return err == nil && profile.Analysis.Legacy
 }
 
 func readSimulationProfileFile(path string) (domain.SimulationProfile, error) {

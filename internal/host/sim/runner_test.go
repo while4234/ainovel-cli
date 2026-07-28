@@ -121,6 +121,33 @@ func TestRunnerGeneratesProfileThenSkipsUnchanged(t *testing.T) {
 	}
 }
 
+func TestRunnerExplicitRefreshActionsKeepAnalysisAndSynthesisDistinct(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := filepath.Join(dir, "simulate")
+	writeSimulationSource(t, sourceDir, "a.txt", "synthetic source")
+	st := store.NewStore(filepath.Join(dir, "output", "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	drainRun(t, st, &scriptedLLM{responses: []string{
+		validSourceReportJSON("initial"), validSynthesisJSON("initial"),
+	}}, sourceDir)
+
+	resynthesis := &scriptedLLM{responses: []string{validSynthesisJSON("resynthesized")}}
+	drainRunWithAction(t, st, resynthesis, sourceDir, ActionResynthesize)
+	if calls := resynthesis.calls.Load(); calls != 1 {
+		t.Fatalf("resynthesis calls = %d, want merge-only call", calls)
+	}
+
+	reanalysis := &scriptedLLM{responses: []string{
+		validSourceReportJSON("reanalyzed"), validSynthesisJSON("reanalyzed"),
+	}}
+	drainRunWithAction(t, st, reanalysis, sourceDir, ActionReanalyze)
+	if calls := reanalysis.calls.Load(); calls != 2 {
+		t.Fatalf("reanalysis calls = %d, want source plus merge calls", calls)
+	}
+}
+
 func TestRunnerIncrementallyAnalyzesNewAndChangedSources(t *testing.T) {
 	dir := t.TempDir()
 	sourceDir := filepath.Join(dir, "simulate")
@@ -573,6 +600,22 @@ func drainRun(t *testing.T, st *store.Store, llm *scriptedLLM, sourceDir string)
 	for _, ev := range collectRun(t, st, llm, sourceDir) {
 		if ev.Err != nil {
 			t.Fatalf("simulate errored: %v", ev.Err)
+		}
+	}
+}
+
+func drainRunWithAction(t *testing.T, st *store.Store, llm *scriptedLLM, sourceDir, action string) {
+	t.Helper()
+	events, err := Run(context.Background(), Deps{
+		Store: st, LLM: llm,
+		Prompts: Prompts{Source: "source prompt", Merge: "merge prompt"},
+	}, Options{SourceDir: sourceDir, Action: action})
+	if err != nil {
+		t.Fatalf("Run action %s: %v", action, err)
+	}
+	for event := range events {
+		if event.Err != nil {
+			t.Fatalf("simulate action %s errored: %v", action, event.Err)
 		}
 	}
 }

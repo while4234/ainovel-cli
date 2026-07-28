@@ -151,11 +151,48 @@ func (s *Server) handleProjectSimulateAnalyze(w http.ResponseWriter, r *http.Req
 			finishAction()
 		}
 	}()
+	var request struct {
+		Action string `json:"action"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSONBody(r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid simulation refresh request")
+			return
+		}
+	}
+	action := strings.TrimSpace(request.Action)
+	if action == "" {
+		action = sim.ActionScan
+	}
+	if action != sim.ActionScan && action != sim.ActionResynthesize && action != sim.ActionReanalyze {
+		writeError(w, http.StatusBadRequest, "unsupported simulation refresh action")
+		return
+	}
 	if _, err := prepareSimulationSourcesForAnalysis(projectSimulateDir(manifest)); err != nil {
 		writeSimulationActionError(w, err, nil)
 		return
 	}
-	if err := session.startSimulateFromDirOwned(projectSimulateDir(manifest), finishAction); err != nil {
+	files, err := projectSimulationSourceFiles(projectSimulateDir(manifest))
+	if err != nil {
+		writeSimulationActionError(w, err, nil)
+		return
+	}
+	if len(files) == 0 {
+		writeError(w, http.StatusConflict, "当前项目没有可分析的本地语料")
+		return
+	}
+	if action == sim.ActionResynthesize {
+		summary := session.Snapshot().SimulationSummary
+		if summary == nil || !summary.Actions.Resynthesize.Enabled {
+			reason := "现有逐篇报告不可复用，请选择全量重分析"
+			if summary != nil && summary.Actions.Resynthesize.Reason != "" {
+				reason = summary.Actions.Resynthesize.Reason
+			}
+			writeError(w, http.StatusConflict, reason)
+			return
+		}
+	}
+	if err := session.startSimulateFromDirOwnedAction(projectSimulateDir(manifest), action, finishAction); err != nil {
 		writeSimulationActionError(w, err, nil)
 		return
 	}

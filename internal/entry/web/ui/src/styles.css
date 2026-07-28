@@ -2570,6 +2570,125 @@ h2 {
   box-shadow: var(--shadow-sm);
 }
 
+.workflow-status.paused {
+  border-color: rgba(157, 104, 18, 0.3);
+  background: var(--warn-soft);
+}
+
+.simulation-diagnostics,
+.simulation-diagnostic-block {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.simulation-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.simulation-metrics div {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  background: var(--surface-subtle);
+}
+
+.simulation-metrics dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.simulation-metrics dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.simulation-feature-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.simulation-feature-counts span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.diagnostic-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.simulation-diagnostic-block {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.simulation-diagnostic-block h4 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.simulation-mode-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.simulation-mode-preview {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  background: var(--surface-subtle);
+}
+
+.simulation-mode-preview span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.simulation-feature-list {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  overflow-y: auto;
+}
+
+.simulation-feature-list li,
+.simulation-risk-location {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.simulation-feature-list li {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.simulation-boundary-note {
+  border-left: 3px solid var(--warn);
+  padding-left: 7px;
+}
+
 .summary-metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

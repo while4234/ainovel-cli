@@ -28,7 +28,14 @@ type Prompts struct {
 
 type Options struct {
 	SourceDir string
+	Action    string
 }
+
+const (
+	ActionScan         = "scan"
+	ActionResynthesize = "resynthesize"
+	ActionReanalyze    = "reanalyze"
+)
 
 type Stage string
 

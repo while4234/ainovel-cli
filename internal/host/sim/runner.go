@@ -103,10 +103,28 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 		}
 		allowLegacyReports := portable != nil && portable.Analysis.Legacy
 		pending := pendingSourcesForSignature(existing, sources, signatures.metadata.SourceAnalysisSignature, allowLegacyReports)
+		switch opts.Action {
+		case "", ActionScan:
+		case ActionResynthesize:
+			if len(pending) > 0 {
+				emit(StageError, 0, len(pending), "现有逐篇报告已失效，不能仅重合成；请重新分析语料", fmt.Errorf("simulation reports require reanalysis"))
+				return
+			}
+			existing.Synthesis = domain.SimulationSynthesis{}
+		case ActionReanalyze:
+			pending = append([]scannedSource(nil), sources...)
+			existing.Synthesis = domain.SimulationSynthesis{}
+		default:
+			emit(StageError, 0, len(sources), "不支持的画像刷新操作", fmt.Errorf("unsupported simulation action"))
+			return
+		}
 		synthesisSignatureChanged := portable == nil ||
 			portable.Analysis.SynthesisSignature != signatures.metadata.SynthesisSignature ||
 			portable.Analysis.AggregationSignature != signatures.metadata.AggregationSignature
 		needsSynthesis := prunedExisting || synthesisSignatureChanged || len(pending) > 0 || profileNeedsSynthesis(existing)
+		if opts.Action == ActionResynthesize {
+			needsSynthesis = true
+		}
 		if portable != nil && portable.Health.State != "fresh" {
 			needsSynthesis = true
 		}

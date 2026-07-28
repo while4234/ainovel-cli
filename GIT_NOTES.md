@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `this commit` `feat: surface simulation profile diagnostics`:
+  replaces the compact snapshot profile with a bounded, redacted canonical
+  diagnostics summary; exposes health, coverage, feature, contract, check,
+  capability, and role/mode-preview state in the Web UI; distinguishes scan,
+  report resynthesis, and source reanalysis actions; and reports portable
+  library metadata without restoring local evidence. Focused Go and frontend
+  tests, the production UI build, affected-package vet, and diff checks pass.
+  The full Web suite retains an unrelated adaptation co-create checkpoint
+  fixture failure; its clone-project failure passes when rerun alone.
 - 2026-07-29 `this commit` `feat: gate simulation safety before chapter commit`:
   adds digest/revision-bound SimulationCheckReport receipts, an in-process
   normalized rarity-aware scanner with bounded/cancelable caches, truthful

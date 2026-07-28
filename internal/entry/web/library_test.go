@@ -74,6 +74,10 @@ func TestSimulationLibraryUploadSearchAndLoad(t *testing.T) {
 	if len(list.Items) != 1 || list.Items[0].Name != "voice" {
 		t.Fatalf("search items = %+v, want voice", list.Items)
 	}
+	if item := list.Items[0]; item.ProfileVersion != domain.SimulationPortableProfileVersion ||
+		item.HealthState != "legacy" || !item.Migrated || item.LocalEvidence {
+		t.Fatalf("portable simulation metadata = %+v", item)
+	}
 
 	req = newMultipartUploadRequest(t, http.MethodPost, "/api/libraries/simulation/upload", []testMultipartFile{
 		{field: "files", filename: "voice.json", body: string(profileData)},

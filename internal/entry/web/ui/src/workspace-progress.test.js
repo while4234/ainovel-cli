@@ -54,6 +54,9 @@ import {
   restoreSimulationProjectState,
   restoreProjectWorkbenchSnapshot,
   simulationFilesFromResponse,
+  simulationCheckStateLabel,
+  simulationContractStatusLabel,
+  simulationHealthLabel,
   simulationProfileSummaryText
 } from './App.jsx';
 
@@ -1371,17 +1374,66 @@ describe('workspace progress state', () => {
     const profile = getSimulationProfileStatus({
       SimulationSummary: {
         Loaded: true,
+        Version: 'simulation_profile.v2',
+        ProfileDigest: 'abc123def456',
         SourceCount: 2,
-        SourceFiles: ['a.txt', 'b.txt'],
-        StyleSignals: ['近景冷调'],
-        HookSignals: ['章尾反转']
+        ReportCount: 2,
+        CoveragePercent: 100,
+        HealthState: 'fresh',
+        SelectedMode: 'reinforced',
+        EffectiveMode: 'reinforced',
+        FeatureCounts: { Stable: 4, Local: 1, Outlier: 1, Contradictory: 0 },
+        Actions: {
+          Rescan: { Enabled: true },
+          Resynthesize: { Enabled: true },
+          Reanalyze: { Enabled: false, Reason: '需要本地语料' }
+        },
+        Contract: {
+          Revision: 3,
+          Status: 'active',
+          Current: true,
+          FoundationRevision: 7,
+          Views: [{ Role: 'writer', Phase: 'chapter', Should: 2, ByteBudget: 2000 }]
+        },
+        Check: {
+          State: 'partial',
+          Chapter: 4,
+          DraftCurrent: true,
+          RiskCount: 1,
+          Risks: [{ Type: 'rare_ngram', DraftExcerpt: '当前草稿片段', StartRune: 8, LengthRunes: 6 }]
+        },
+        ModePreviews: [{
+          Mode: 'reinforced',
+          Status: 'active',
+          Roles: [{ Role: 'writer', Phase: 'chapter', FeatureCount: 9, ByteBudget: 5600 }]
+        }]
       }
     });
 
     expect(profile.loaded).toBe(true);
     expect(profile.sourceCount).toBe(2);
-    expect(profile.sourceFiles).toEqual(['a.txt', 'b.txt']);
-    expect(profile.signals).toContain('章尾反转');
+    expect(profile.reportCount).toBe(2);
+    expect(profile.healthState).toBe('fresh');
+    expect(profile.effectiveMode).toBe('reinforced');
+    expect(profile.featureCounts.stable).toBe(4);
+    expect(profile.actions.reanalyze.enabled).toBe(false);
+    expect(profile.contract.foundationRevision).toBe(7);
+    expect(profile.contract.views[0].byteBudget).toBe(2000);
+    expect(profile.check.risks[0].draftExcerpt).toBe('当前草稿片段');
+    expect(profile.modePreviews[0].roles[0].featureCount).toBe(9);
+    expect(JSON.stringify(profile)).not.toContain('a.txt');
+  });
+
+  it('labels every canonical health, contract, and check state without color-only meaning', () => {
+    expect(['fresh', 'stale', 'portable_only', 'legacy', 'invalid'].map(simulationHealthLabel)).toEqual([
+      '新鲜可用', '已过期', '仅 portable', 'legacy 兼容', '无效'
+    ]);
+    expect(['active', 'degraded', 'inactive'].map(simulationContractStatusLabel)).toEqual([
+      '已生效', '降级生效', '未生效'
+    ]);
+    expect(['pass', 'partial', 'not_run', 'stale', 'fail', 'error'].map(simulationCheckStateLabel)).toEqual([
+      '检测通过', '部分能力', '未运行', '结果过期', '检测失败', '检查不可用'
+    ]);
   });
 
   it('does not start the simulation library save flow automatically when analysis completes', () => {

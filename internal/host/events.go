@@ -175,14 +175,121 @@ type OutlineSnapshot struct {
 }
 
 type SimulationProfileSummary struct {
-	Loaded        bool
-	Version       string
-	UpdatedAt     string
-	SourceCount   int
-	SourceFiles   []string
-	StyleSignals  []string
-	HookSignals   []string
-	ReaderSignals []string
+	Loaded          bool                       `json:"loaded"`
+	Version         string                     `json:"version,omitempty"`
+	ProfileDigest   string                     `json:"profile_digest,omitempty"`
+	UpdatedAt       string                     `json:"updated_at,omitempty"`
+	SourceCount     int                        `json:"source_count"`
+	ReportCount     int                        `json:"report_count"`
+	CoveragePercent int                        `json:"coverage_percent"`
+	HealthState     string                     `json:"health_state"`
+	HealthReasons   []string                   `json:"health_reasons,omitempty"`
+	AnalysisSigned  bool                       `json:"analysis_signed"`
+	SynthesisSigned bool                       `json:"synthesis_signed"`
+	Portable        bool                       `json:"portable"`
+	LocalEvidence   bool                       `json:"local_evidence"`
+	SafetyIndex     bool                       `json:"safety_index"`
+	FeatureCounts   SimulationFeatureCounts    `json:"feature_counts"`
+	SelectedMode    string                     `json:"selected_mode"`
+	EffectiveMode   string                     `json:"effective_mode"`
+	EffectiveReason string                     `json:"effective_reason,omitempty"`
+	Contract        *SimulationContractSummary `json:"contract,omitempty"`
+	Check           *SimulationCheckSummary    `json:"check,omitempty"`
+	Actions         SimulationActionSummary    `json:"actions"`
+	ModePreviews    []SimulationModePreview    `json:"mode_previews,omitempty"`
+	DiagnosticError string                     `json:"diagnostic_error,omitempty"`
+}
+
+type SimulationFeatureCounts struct {
+	Total         int `json:"total"`
+	Stable        int `json:"stable"`
+	Local         int `json:"local"`
+	Outlier       int `json:"outlier"`
+	Contradictory int `json:"contradictory"`
+}
+
+type SimulationActionCapability struct {
+	Enabled bool   `json:"enabled"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+type SimulationActionSummary struct {
+	Rescan       SimulationActionCapability `json:"rescan"`
+	Resynthesize SimulationActionCapability `json:"resynthesize"`
+	Reanalyze    SimulationActionCapability `json:"reanalyze"`
+}
+
+type SimulationModePreview struct {
+	Mode   string                  `json:"mode"`
+	Status string                  `json:"status"`
+	Reason string                  `json:"reason,omitempty"`
+	Roles  []SimulationRolePreview `json:"roles,omitempty"`
+}
+
+type SimulationRolePreview struct {
+	Role         string   `json:"role"`
+	Phase        string   `json:"phase"`
+	FeatureCount int      `json:"feature_count"`
+	Must         int      `json:"must"`
+	Should       int      `json:"should"`
+	Avoid        int      `json:"avoid"`
+	ByteBudget   int      `json:"byte_budget"`
+	Dimensions   []string `json:"dimensions,omitempty"`
+}
+
+type SimulationContractSummary struct {
+	Revision           int64                    `json:"revision"`
+	Status             string                   `json:"status"`
+	Current            bool                     `json:"current"`
+	StaleReason        string                   `json:"stale_reason,omitempty"`
+	ProfileDigest      string                   `json:"profile_digest,omitempty"`
+	FoundationRevision int64                    `json:"foundation_revision"`
+	CreativeBriefBound bool                     `json:"creative_brief_bound"`
+	ExclusionCount     int                      `json:"exclusion_count"`
+	ExclusionReasons   map[string]int           `json:"exclusion_reasons,omitempty"`
+	Views              []SimulationContractView `json:"views,omitempty"`
+}
+
+type SimulationContractView struct {
+	Role       string                     `json:"role"`
+	Phase      string                     `json:"phase"`
+	Must       int                        `json:"must"`
+	Should     int                        `json:"should"`
+	Avoid      int                        `json:"avoid"`
+	ByteBudget int                        `json:"byte_budget"`
+	Features   []SimulationFeatureSummary `json:"features,omitempty"`
+}
+
+type SimulationFeatureSummary struct {
+	ID        string `json:"id"`
+	Dimension string `json:"dimension"`
+	Statement string `json:"statement"`
+	Level     string `json:"level"`
+}
+
+type SimulationCheckSummary struct {
+	State            string                  `json:"state"`
+	Reason           string                  `json:"reason,omitempty"`
+	Chapter          int                     `json:"chapter,omitempty"`
+	CheckedAt        string                  `json:"checked_at,omitempty"`
+	DraftCurrent     bool                    `json:"draft_current"`
+	Capability       string                  `json:"capability,omitempty"`
+	CapabilityReason string                  `json:"capability_reason,omitempty"`
+	CopyStatus       string                  `json:"copy_status,omitempty"`
+	ContractStatus   string                  `json:"contract_status,omitempty"`
+	RiskCount        int                     `json:"risk_count"`
+	MustTotal        int                     `json:"must_total"`
+	MustMet          int                     `json:"must_met"`
+	MustMissing      int                     `json:"must_missing"`
+	AdvisoryCount    int                     `json:"advisory_count"`
+	Risks            []SimulationRiskSummary `json:"risks,omitempty"`
+}
+
+type SimulationRiskSummary struct {
+	Type         string `json:"type"`
+	DraftExcerpt string `json:"draft_excerpt"`
+	StartRune    int    `json:"start_rune"`
+	LengthRunes  int    `json:"length_runes"`
 }
 
 type CreativeBlueprintSummary struct {

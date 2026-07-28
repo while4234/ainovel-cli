@@ -381,6 +381,9 @@ func TestProjectSimulateAnalyzeUsesProjectSimulateDir(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	fake := installFakeSession(t, server, manifest)
+	if err := os.WriteFile(filepath.Join(manifest.RootDir, "simulate", "source.txt"), []byte("synthetic source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/simulate/analyze", nil)
 	rec := httptest.NewRecorder()
@@ -400,6 +403,36 @@ func TestProjectSimulateAnalyzeUsesProjectSimulateDir(t *testing.T) {
 	}
 	if strings.Contains(filepath.Clean(fake.simulateDir), filepath.Clean("D:\\ainovel\\simulate")) {
 		t.Fatalf("simulate dir should not point at repository simulate: %q", fake.simulateDir)
+	}
+}
+
+func TestProjectSimulateAnalyzeRejectsUnavailableRefreshRequests(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Analyze Refresh Validation")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	installFakeSession(t, server, manifest)
+
+	for _, test := range []struct {
+		name string
+		body string
+		code int
+	}{
+		{name: "invalid action", body: `{"action":"unsafe"}`, code: http.StatusBadRequest},
+		{name: "no local sources", body: `{"action":"reanalyze"}`, code: http.StatusConflict},
+		{name: "no reusable reports", body: `{"action":"resynthesize"}`, code: http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/simulate/analyze", strings.NewReader(test.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != test.code {
+				t.Fatalf("status = %d body=%s, want %d", rec.Code, rec.Body.String(), test.code)
+			}
+		})
 	}
 }
 
@@ -459,14 +492,19 @@ func TestProjectSimulateImportUsesExistingHostImportBehavior(t *testing.T) {
 	profilePath := filepath.Join(manifest.OutputDir, "meta", "simulation_profile.json")
 	waitForTestCondition(t, "saved simulation profile", func() bool {
 		saved, err := os.ReadFile(profilePath)
-		return err == nil && strings.Contains(string(saved), "imported.txt")
+		return err == nil && strings.Contains(string(saved), domain.SimulationPortableProfileVersion)
 	})
 	saved, err := os.ReadFile(profilePath)
 	if err != nil {
 		t.Fatalf("read saved simulation profile: %v", err)
 	}
-	if !strings.Contains(string(saved), "imported.txt") {
-		t.Fatalf("saved simulation profile does not include imported source: %s", string(saved))
+	if strings.Contains(string(saved), "imported.txt") || strings.Contains(string(saved), "source_reports") {
+		t.Fatalf("portable saved simulation profile leaked local evidence: %s", string(saved))
+	}
+	evidencePath := filepath.Join(manifest.OutputDir, "meta", "simulation_evidence.local.json")
+	evidence, err := os.ReadFile(evidencePath)
+	if err != nil || !strings.Contains(string(evidence), "imported.txt") {
+		t.Fatalf("local simulation evidence missing imported source: err=%v data=%s", err, evidence)
 	}
 }
 

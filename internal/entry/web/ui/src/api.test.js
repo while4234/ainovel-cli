@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addGlobalProviderModel,
+  analyzeSimulation,
   buildAdaptationProposal,
   cancelSemanticAdaptationAudit,
   clearProjectTrash,
@@ -627,6 +628,17 @@ describe('web API helpers', () => {
         provider: 'deepseek',
         model: 'deepseek-chat'
       })
+    }));
+  });
+
+  it('sends the backend-owned simulation refresh action', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ accepted: true }));
+
+    await analyzeSimulation('project/1', 'resynthesize');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project%2F1/simulate/analyze', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ action: 'resynthesize' })
     }));
   });
 

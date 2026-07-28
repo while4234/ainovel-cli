@@ -2225,10 +2225,8 @@ func (h *Host) fillDetails(snap *UISnapshot, progress *domain.Progress) {
 			}
 		}
 	}
-	if profile, _ := h.store.Simulation.Load(); profile != nil {
-		snap.SimulationProfile = domain.CompactSimulationProfile(profile)
-		snap.SimulationSummary = simulationProfileSummary(snap.SimulationProfile)
-	}
+	snap.SimulationProfile = nil
+	snap.SimulationSummary = buildSimulationProfileSummary(h.store, snap.SimulationMode, snap.CurrentChapter)
 	if chars, _ := h.store.Characters.Load(); len(chars) > 0 {
 		snap.CharacterDetails = append([]domain.Character(nil), chars...)
 		for _, c := range chars {
@@ -5235,6 +5233,10 @@ func (h *Host) Simulate(ctx context.Context) (<-chan sim.Event, error) {
 var runSimulation = sim.Run
 
 func (h *Host) SimulateFromDir(ctx context.Context, dir string) (<-chan sim.Event, error) {
+	return h.SimulateFromDirWithAction(ctx, dir, sim.ActionScan)
+}
+
+func (h *Host) SimulateFromDirWithAction(ctx context.Context, dir, action string) (<-chan sim.Event, error) {
 	release, err := h.beginNormalFlowMutation()
 	if err != nil {
 		return nil, err
@@ -5263,7 +5265,7 @@ func (h *Host) SimulateFromDir(ctx context.Context, dir string) (<-chan sim.Even
 			Merge:  h.bundle.Prompts.SimulationMerge,
 		},
 	}
-	events, err := runSimulation(ctx, deps, sim.Options{SourceDir: dir})
+	events, err := runSimulation(ctx, deps, sim.Options{SourceDir: dir, Action: action})
 	if err != nil {
 		release()
 		return nil, err

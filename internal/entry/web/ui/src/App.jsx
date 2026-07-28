@@ -2756,7 +2756,7 @@ export default function App() {
     }
   };
 
-  const runSimulationAnalysis = async () => {
+  const runSimulationAnalysis = async (action = 'scan') => {
     const projectId = activeProject?.id;
     if (!projectId) {
       return;
@@ -2768,7 +2768,7 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await analyzeSimulation(projectId);
+      const data = await analyzeSimulation(projectId, action);
       if (!isCurrentProject(projectId)) {
         return;
       }
@@ -5883,8 +5883,13 @@ function ProjectSettingsPanel({
   const canSaveStyle = canSubmitProjectStyle({ activeProject, busy, currentStyle, projectSettings, snapshot });
   const selectedSimulationMode = normalizeSimulationMode(projectSettings.selectedSimulationMode);
   const currentSimulationModeLabel = simulationModeLabel(currentSimulationMode);
-  const simulationProfileLoaded = getSimulationProfileStatus(snapshot).loaded;
-  const showReinforcedProfileWarning = selectedSimulationMode === 'reinforced' && !simulationProfileLoaded;
+  const simulationProfile = getSimulationProfileStatus(snapshot);
+  const reinforcedEffective = simulationProfile.loaded &&
+    simulationProfile.selectedMode === 'reinforced' &&
+    simulationProfile.effectiveMode === 'reinforced' &&
+    simulationProfile.contract?.current &&
+    simulationProfile.contract?.status !== 'inactive';
+  const showReinforcedProfileWarning = selectedSimulationMode === 'reinforced' && !reinforcedEffective;
   const canSaveSimulationMode = canSubmitProjectSimulationMode({
     activeProject,
     busy: globalBusy,
@@ -6004,7 +6009,8 @@ function ProjectSettingsPanel({
           </div>
           <form className="project-settings-form" onSubmit={onSaveSimulationMode}>
             <div className="settings-summary">
-              <Metric label="仿写模式" value={currentSimulationModeLabel} />
+              <Metric label="已选模式" value={currentSimulationModeLabel} />
+              <Metric label="实际模式" value={simulationModeLabel(simulationProfile.effectiveMode)} />
             </div>
             <fieldset className="settings-radio-group" disabled={!activeProject || globalBusy || projectSettings.simulationModeSaveStatus === 'running'}>
               <legend>仿写模式</legend>
@@ -6027,14 +6033,16 @@ function ProjectSettingsPanel({
                   />
                   <span>
                     <strong>{simulationModeLabel(mode)}</strong>
-                    <small>{mode === 'reinforced' ? '优先强化仿写画像约束，适合画像已加载后的高一致性创作。' : '保持普通仿写强度，适合未加载画像或常规创作。'}</small>
+                    <small>{mode === 'reinforced' ? '使用更高预算的 Architect、Writer、Editor 共享契约；不复制来源内容，也不承诺法律结论。' : '低干预建议模式；用户要求、Foundation 与章节契约始终优先。'}</small>
                   </span>
                 </label>
               ))}
             </fieldset>
 
             {showReinforcedProfileWarning ? (
-              <div className="settings-note warning">强化仿写已选择，但当前项目尚未加载仿写画像；上传、导入或分析画像后才会生效。</div>
+              <div className="settings-note warning">
+                强化仿写尚未生效：{simulationProfile.effectiveReason || simulationProfile.contract?.staleReason || '需要可用画像与当前共享契约'}。
+              </div>
             ) : null}
             {projectSettings.simulationModeSaveStatus === 'error' && projectSettings.simulationModeError ? (
               <div className="error-banner compact">{projectSettings.simulationModeError}</div>
@@ -7991,11 +7999,11 @@ function SimulationPanel({
           <FileJson size={17} />
           <span>当前画像</span>
         </div>
-        <div className={`workflow-status profile-status ${profile.loaded ? 'done' : 'idle'}`}>
-          <strong>{profile.loaded ? '已加载' : '未加载'}</strong>
+        <div className={`workflow-status profile-status ${simulationHealthTone(profile.healthState)}`}>
+          <strong>{profile.loaded ? simulationHealthLabel(profile.healthState) : '未加载'}</strong>
           <span title={profileStatusText}>{profileStatusText}</span>
         </div>
-        {profile.signals.length ? <p>{profile.signals.join(' / ')}</p> : null}
+        {profile.loaded ? <SimulationDiagnostics profile={profile} disabled={!canAnalyze} onAnalyze={onAnalyze} /> : null}
       </section>
 
       <section className="simulation-section">
@@ -8125,9 +8133,9 @@ function SimulationPanel({
               type="file"
             />
           </label>
-          <button className="tool-button accent" disabled={!canAnalyze} onClick={onAnalyze} type="button">
+          <button className="tool-button accent" disabled={!canAnalyze} onClick={() => onAnalyze('scan')} type="button">
             <WandSparkles size={16} />
-            分析
+            重新扫描
           </button>
         </div>
         {simulation.uploadMessage ? <div className="success-note">{simulation.uploadMessage}</div> : null}
@@ -8158,6 +8166,136 @@ function SimulationPanel({
       </section>
       </div>
     </>
+  );
+}
+
+function SimulationDiagnostics({ profile, disabled, onAnalyze }) {
+  const actions = profile.actions || {};
+  return (
+    <div className="simulation-diagnostics">
+      <dl className="simulation-metrics" aria-label="仿写画像健康摘要">
+        <div><dt>版本</dt><dd>{profile.version || '未知'}{profile.profileDigest ? ` · ${profile.profileDigest}` : ''}</dd></div>
+        <div><dt>覆盖</dt><dd>{profile.reportCount}/{profile.sourceCount}（{profile.coveragePercent}%）</dd></div>
+        <div><dt>更新时间</dt><dd>{formatSimulationTimestamp(profile.updatedAt)}</dd></div>
+        <div><dt>能力</dt><dd>{profile.localEvidence ? '本地证据' : '仅 portable'} · {profile.safetyIndex ? '本地安全索引' : '安全检查部分能力'}</dd></div>
+      </dl>
+      {profile.healthReasons.length ? (
+        <p className="simulation-reason" title={profile.healthReasons.join('；')}>
+          原因：{profile.healthReasons.join('；')}
+        </p>
+      ) : null}
+      <div className="simulation-feature-counts" aria-label="画像特征分类">
+        <span>稳定 {profile.featureCounts.stable}</span>
+        <span>局部 {profile.featureCounts.local}</span>
+        <span>离群 {profile.featureCounts.outlier}</span>
+        <span>冲突 {profile.featureCounts.contradictory}</span>
+      </div>
+      <div className="simulation-actions diagnostic-actions" aria-label="画像刷新操作">
+        <SimulationActionButton action="scan" capability={actions.rescan} disabled={disabled} label="重新扫描" onAnalyze={onAnalyze} />
+        <SimulationActionButton action="resynthesize" capability={actions.resynthesize} disabled={disabled} label="仅重合成" onAnalyze={onAnalyze} />
+        <SimulationActionButton action="reanalyze" capability={actions.reanalyze} disabled={disabled} label="全量重分析" onAnalyze={onAnalyze} />
+      </div>
+      <SimulationModePreview profile={profile} />
+      <SimulationContractDiagnostics contract={profile.contract} />
+      <SimulationCheckDiagnostics check={profile.check} />
+      {profile.diagnosticError ? <div className="error-banner compact">{profile.diagnosticError}</div> : null}
+      <p className="simulation-boundary-note">检查用于降低复制风险，不构成法律结论，也不会展示来源原文。</p>
+    </div>
+  );
+}
+
+function SimulationActionButton({ action, capability, disabled, label, onAnalyze }) {
+  const enabled = Boolean(capability?.enabled);
+  const reason = capability?.reason || '';
+  return (
+    <button
+      aria-label={label}
+      className="tool-button small"
+      disabled={disabled || !enabled}
+      onClick={() => onAnalyze(action)}
+      title={!enabled ? reason : label}
+      type="button"
+    >
+      {label}
+    </button>
+  );
+}
+
+function SimulationModePreview({ profile }) {
+  return (
+    <section className="simulation-diagnostic-block" aria-label="模式实际注入预览">
+      <h4>模式状态</h4>
+      <p>
+        已选：{simulationModeLabel(profile.selectedMode)} · 实际：
+        {simulationModeLabel(profile.effectiveMode)}
+        {profile.effectiveReason ? `（${profile.effectiveReason}）` : ''}
+      </p>
+      <div className="simulation-mode-preview-grid">
+        {profile.modePreviews.map((preview) => (
+          <div className="simulation-mode-preview" key={preview.mode}>
+            <strong>{simulationModeLabel(preview.mode)}</strong>
+            <span>{simulationContractStatusLabel(preview.status)}</span>
+            {(preview.roles || []).map((role) => (
+              <span key={`${preview.mode}-${role.role}-${role.phase}`}>
+                {simulationRoleLabel(role.role)}：{role.featureCount} 项（must {role.must} / should {role.should} / avoid {role.avoid}，预算 {role.byteBudget}B）
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SimulationContractDiagnostics({ contract }) {
+  if (!contract) {
+    return <section className="simulation-diagnostic-block"><h4>共享契约</h4><p>尚未生成可用契约。</p></section>;
+  }
+  return (
+    <section className="simulation-diagnostic-block" aria-label="仿写契约状态">
+      <h4>共享契约 r{contract.revision || 0}</h4>
+      <p>
+        {simulationContractStatusLabel(contract.status)}
+        {!contract.current ? ` · 已过期：${contract.staleReason || '绑定已变化'}` : ''}
+        {` · Foundation r${contract.foundationRevision || 0}`}
+      </p>
+      <p>排除/降级 {contract.exclusionCount || 0} 项{formatReasonCounts(contract.exclusionReasons)}</p>
+      {(contract.views || []).map((view) => (
+        <details key={`${view.role}-${view.phase}`}>
+          <summary>{simulationRoleLabel(view.role)} · must {view.must} / should {view.should} / avoid {view.avoid}</summary>
+          <ul className="simulation-feature-list">
+            {(view.features || []).map((feature) => (
+              <li key={`${view.role}-${feature.level}-${feature.id}`} title={feature.statement}>
+                <strong>{feature.level}</strong> [{feature.dimension}] {feature.statement}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ))}
+    </section>
+  );
+}
+
+function SimulationCheckDiagnostics({ check }) {
+  if (!check) {
+    return null;
+  }
+  return (
+    <section className="simulation-diagnostic-block" aria-label="最近仿写检查">
+      <h4>最近章节检查 · {simulationCheckStateLabel(check.state)}</h4>
+      <p>
+        {check.chapter ? `第 ${check.chapter} 章 · ` : ''}
+        草稿绑定{check.draftCurrent ? '匹配' : '不匹配'} · 风险 {check.riskCount || 0} ·
+        must {check.mustMet || 0}/{check.mustTotal || 0} · 建议 {check.advisoryCount || 0}
+      </p>
+      {check.capability ? <p>能力：{check.capability}{check.capabilityReason ? `（${check.capabilityReason}）` : ''}</p> : null}
+      {check.reason ? <p>原因：{check.reason}</p> : null}
+      {(check.risks || []).map((risk, index) => (
+        <p className="simulation-risk-location" key={`${risk.type}-${risk.startRune}-${index}`}>
+          {risk.type} · 当前草稿字符 {risk.startRune + 1}–{risk.startRune + risk.lengthRunes}：{risk.draftExcerpt}
+        </p>
+      ))}
+    </section>
   );
 }
 
@@ -10855,25 +10993,42 @@ function chineseNumberToArabic(text) {
 
 export function getSimulationProfileStatus(snapshot) {
   const summary = objectValue(snapshot, 'SimulationSummary', 'simulationSummary', 'simulation_summary');
-  const profile = objectValue(snapshot, 'SimulationProfile', 'simulationProfile', 'simulation_profile');
-  const loaded = Boolean(
-    valueByKey(summary, 'Loaded', 'loaded') ||
-    summary ||
-    profile
-  );
-  const sourceFiles = arrayValue(summary, 'SourceFiles', 'sourceFiles', 'source_files');
-  const fallbackFiles = arrayValue(profile, 'SourceFiles', 'sourceFiles', 'source_files');
-  const styleSignals = arrayValue(summary, 'StyleSignals', 'styleSignals', 'style_signals');
-  const hookSignals = arrayValue(summary, 'HookSignals', 'hookSignals', 'hook_signals');
-  const readerSignals = arrayValue(summary, 'ReaderSignals', 'readerSignals', 'reader_signals');
+  const featureCounts = objectValue(summary, 'FeatureCounts', 'featureCounts', 'feature_counts') || {};
+  const actions = objectValue(summary, 'Actions', 'actions') || {};
   return {
-    loaded,
-    version: textValue(summary, 'Version', 'version') || textValue(profile, 'Version', 'version'),
-    updatedAt: textValue(summary, 'UpdatedAt', 'updatedAt', 'updated_at') || textValue(profile, 'UpdatedAt', 'updatedAt', 'updated_at'),
-    sourceCount: numberValue(summary, 'SourceCount', 'sourceCount', 'source_count') ||
-      numberValue(profile, 'SourceCount', 'sourceCount', 'source_count'),
-    sourceFiles: sourceFiles.length ? sourceFiles : fallbackFiles,
-    signals: [...styleSignals, ...hookSignals, ...readerSignals].filter(Boolean).slice(0, 6)
+    loaded: Boolean(valueByKey(summary, 'Loaded', 'loaded') || summary),
+    version: textValue(summary, 'Version', 'version'),
+    profileDigest: textValue(summary, 'ProfileDigest', 'profileDigest', 'profile_digest'),
+    updatedAt: textValue(summary, 'UpdatedAt', 'updatedAt', 'updated_at'),
+    sourceCount: numberValue(summary, 'SourceCount', 'sourceCount', 'source_count'),
+    reportCount: numberValue(summary, 'ReportCount', 'reportCount', 'report_count'),
+    coveragePercent: numberValue(summary, 'CoveragePercent', 'coveragePercent', 'coverage_percent'),
+    healthState: textValue(summary, 'HealthState', 'healthState', 'health_state') || 'unknown',
+    healthReasons: arrayValue(summary, 'HealthReasons', 'healthReasons', 'health_reasons'),
+    portable: Boolean(valueByKey(summary, 'Portable', 'portable')),
+    localEvidence: Boolean(valueByKey(summary, 'LocalEvidence', 'localEvidence', 'local_evidence')),
+    safetyIndex: Boolean(valueByKey(summary, 'SafetyIndex', 'safetyIndex', 'safety_index')),
+    analysisSigned: Boolean(valueByKey(summary, 'AnalysisSigned', 'analysisSigned', 'analysis_signed')),
+    synthesisSigned: Boolean(valueByKey(summary, 'SynthesisSigned', 'synthesisSigned', 'synthesis_signed')),
+    selectedMode: normalizeSimulationMode(textValue(summary, 'SelectedMode', 'selectedMode', 'selected_mode')),
+    effectiveMode: normalizeSimulationMode(textValue(summary, 'EffectiveMode', 'effectiveMode', 'effective_mode')),
+    effectiveReason: textValue(summary, 'EffectiveReason', 'effectiveReason', 'effective_reason'),
+    featureCounts: {
+      total: numberValue(featureCounts, 'Total', 'total'),
+      stable: numberValue(featureCounts, 'Stable', 'stable'),
+      local: numberValue(featureCounts, 'Local', 'local'),
+      outlier: numberValue(featureCounts, 'Outlier', 'outlier'),
+      contradictory: numberValue(featureCounts, 'Contradictory', 'contradictory')
+    },
+    contract: normalizeSimulationContractSummary(objectValue(summary, 'Contract', 'contract')),
+    check: normalizeSimulationCheckSummary(objectValue(summary, 'Check', 'check')),
+    actions: {
+      rescan: normalizeSimulationCapability(objectValue(actions, 'Rescan', 'rescan')),
+      resynthesize: normalizeSimulationCapability(objectValue(actions, 'Resynthesize', 'resynthesize')),
+      reanalyze: normalizeSimulationCapability(objectValue(actions, 'Reanalyze', 'reanalyze'))
+    },
+    modePreviews: normalizeSimulationModePreviews(arrayValue(summary, 'ModePreviews', 'modePreviews', 'mode_previews')),
+    diagnosticError: textValue(summary, 'DiagnosticError', 'diagnosticError', 'diagnostic_error')
   };
 }
 
@@ -10881,7 +11036,142 @@ export function simulationProfileSummaryText(profile) {
   if (!profile?.loaded) {
     return '上传或导入画像后会出现在这里';
   }
-  return profile.sourceCount ? `${profile.sourceCount} 篇语料` : '画像已加载';
+  if (!profile.healthState && !Number.isFinite(profile.reportCount)) {
+    return profile.sourceCount ? `${profile.sourceCount} 篇语料` : '画像已加载';
+  }
+  const reportCount = Number.isFinite(profile.reportCount) ? profile.reportCount : 0;
+  const coverage = profile.sourceCount ? `${reportCount}/${profile.sourceCount} 篇报告` : '无本地语料统计';
+  return `${simulationHealthLabel(profile.healthState)} · ${coverage}`;
+}
+
+function normalizeSimulationCapability(capability) {
+  if (!capability) return null;
+  return {
+    enabled: Boolean(valueByKey(capability, 'Enabled', 'enabled')),
+    reason: textValue(capability, 'Reason', 'reason')
+  };
+}
+
+function normalizeSimulationContractSummary(contract) {
+  if (!contract) return null;
+  return {
+    revision: numberValue(contract, 'Revision', 'revision'),
+    status: textValue(contract, 'Status', 'status'),
+    current: Boolean(valueByKey(contract, 'Current', 'current')),
+    staleReason: textValue(contract, 'StaleReason', 'staleReason', 'stale_reason'),
+    profileDigest: textValue(contract, 'ProfileDigest', 'profileDigest', 'profile_digest'),
+    foundationRevision: numberValue(contract, 'FoundationRevision', 'foundationRevision', 'foundation_revision'),
+    creativeBriefBound: Boolean(valueByKey(contract, 'CreativeBriefBound', 'creativeBriefBound', 'creative_brief_bound')),
+    exclusionCount: numberValue(contract, 'ExclusionCount', 'exclusionCount', 'exclusion_count'),
+    exclusionReasons: objectValue(contract, 'ExclusionReasons', 'exclusionReasons', 'exclusion_reasons'),
+    views: arrayValue(contract, 'Views', 'views').map((view) => ({
+      role: textValue(view, 'Role', 'role'),
+      phase: textValue(view, 'Phase', 'phase'),
+      must: numberValue(view, 'Must', 'must'),
+      should: numberValue(view, 'Should', 'should'),
+      avoid: numberValue(view, 'Avoid', 'avoid'),
+      byteBudget: numberValue(view, 'ByteBudget', 'byteBudget', 'byte_budget'),
+      features: arrayValue(view, 'Features', 'features').map((feature) => ({
+        id: textValue(feature, 'ID', 'Id', 'id'),
+        dimension: textValue(feature, 'Dimension', 'dimension'),
+        statement: textValue(feature, 'Statement', 'statement'),
+        level: textValue(feature, 'Level', 'level')
+      }))
+    }))
+  };
+}
+
+function normalizeSimulationCheckSummary(check) {
+  if (!check) return null;
+  return {
+    state: textValue(check, 'State', 'state'),
+    reason: textValue(check, 'Reason', 'reason'),
+    chapter: numberValue(check, 'Chapter', 'chapter'),
+    checkedAt: textValue(check, 'CheckedAt', 'checkedAt', 'checked_at'),
+    draftCurrent: Boolean(valueByKey(check, 'DraftCurrent', 'draftCurrent', 'draft_current')),
+    capability: textValue(check, 'Capability', 'capability'),
+    capabilityReason: textValue(check, 'CapabilityReason', 'capabilityReason', 'capability_reason'),
+    copyStatus: textValue(check, 'CopyStatus', 'copyStatus', 'copy_status'),
+    contractStatus: textValue(check, 'ContractStatus', 'contractStatus', 'contract_status'),
+    riskCount: numberValue(check, 'RiskCount', 'riskCount', 'risk_count'),
+    mustTotal: numberValue(check, 'MustTotal', 'mustTotal', 'must_total'),
+    mustMet: numberValue(check, 'MustMet', 'mustMet', 'must_met'),
+    mustMissing: numberValue(check, 'MustMissing', 'mustMissing', 'must_missing'),
+    advisoryCount: numberValue(check, 'AdvisoryCount', 'advisoryCount', 'advisory_count'),
+    risks: arrayValue(check, 'Risks', 'risks').map((risk) => ({
+      type: textValue(risk, 'Type', 'type'),
+      draftExcerpt: textValue(risk, 'DraftExcerpt', 'draftExcerpt', 'draft_excerpt'),
+      startRune: numberValue(risk, 'StartRune', 'startRune', 'start_rune'),
+      lengthRunes: numberValue(risk, 'LengthRunes', 'lengthRunes', 'length_runes')
+    }))
+  };
+}
+
+function normalizeSimulationModePreviews(previews) {
+  return previews.map((preview) => ({
+    mode: normalizeSimulationMode(textValue(preview, 'Mode', 'mode')),
+    status: textValue(preview, 'Status', 'status'),
+    reason: textValue(preview, 'Reason', 'reason'),
+    roles: arrayValue(preview, 'Roles', 'roles').map((role) => ({
+      role: textValue(role, 'Role', 'role'),
+      phase: textValue(role, 'Phase', 'phase'),
+      featureCount: numberValue(role, 'FeatureCount', 'featureCount', 'feature_count'),
+      must: numberValue(role, 'Must', 'must'),
+      should: numberValue(role, 'Should', 'should'),
+      avoid: numberValue(role, 'Avoid', 'avoid'),
+      byteBudget: numberValue(role, 'ByteBudget', 'byteBudget', 'byte_budget'),
+      dimensions: arrayValue(role, 'Dimensions', 'dimensions')
+    }))
+  }));
+}
+
+export function simulationHealthLabel(state) {
+  return ({
+    fresh: '新鲜可用',
+    stale: '已过期',
+    portable_only: '仅 portable',
+    legacy: 'legacy 兼容',
+    invalid: '无效',
+    unknown: '状态未知'
+  })[String(state || '').toLowerCase()] || '状态未知';
+}
+
+export function simulationHealthTone(state) {
+  if (state === 'fresh') return 'done';
+  if (state === 'stale' || state === 'invalid') return 'error';
+  if (state === 'portable_only' || state === 'legacy') return 'paused';
+  return 'idle';
+}
+
+export function simulationContractStatusLabel(status) {
+  return ({ active: '已生效', degraded: '降级生效', inactive: '未生效' })[String(status || '').toLowerCase()] || '状态未知';
+}
+
+export function simulationCheckStateLabel(state) {
+  return ({
+    pass: '检测通过',
+    partial: '部分能力',
+    not_run: '未运行',
+    stale: '结果过期',
+    fail: '检测失败',
+    error: '检查不可用'
+  })[String(state || '').toLowerCase()] || '状态未知';
+}
+
+function simulationRoleLabel(role) {
+  return ({ architect: 'Architect', writer: 'Writer', editor: 'Editor' })[String(role || '').toLowerCase()] || role || '未知角色';
+}
+
+function formatSimulationTimestamp(value) {
+  if (!value) return '未知';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatReasonCounts(reasons) {
+  if (!reasons || typeof reasons !== 'object') return '';
+  const entries = Object.entries(reasons);
+  return entries.length ? `（${entries.map(([reason, count]) => `${reason} ${count}`).join('；')}）` : '';
 }
 
 export function isSimulationProfileActionBusy(simulation = {}) {
@@ -12281,7 +12571,14 @@ function libraryEntryMeta(entry) {
     return '';
   }
   const sourceFile = entry.source_file || entry.sourceFile || entry.file;
+  const profileVersion = textValue(entry, 'profile_version', 'profileVersion', 'ProfileVersion');
+  const profileHealth = textValue(entry, 'health_state', 'healthState', 'HealthState');
+  const migrated = Boolean(valueByKey(entry, 'migrated', 'Migrated'));
+  const profileMeta = profileVersion
+    ? `${profileVersion} · ${simulationHealthLabel(profileHealth)}${migrated ? ' · v1 已迁移' : ''}`
+    : '';
   const parts = [
+    profileMeta,
     textValue(entry, 'description', 'Description', 'summary', 'Summary'),
     textValue(sourceFile, 'name', 'Name'),
     formatOptionalBytes(entry.size || entry.Size || sourceFile?.size || sourceFile?.Size),

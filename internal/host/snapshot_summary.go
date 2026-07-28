@@ -2,22 +2,6 @@ package host
 
 import "github.com/voocel/ainovel-cli/internal/domain"
 
-func simulationProfileSummary(profile *domain.SimulationCompactProfile) *SimulationProfileSummary {
-	if profile == nil {
-		return nil
-	}
-	return &SimulationProfileSummary{
-		Loaded:        true,
-		Version:       profile.Version,
-		UpdatedAt:     profile.UpdatedAt,
-		SourceCount:   profile.SourceCount,
-		SourceFiles:   append([]string(nil), profile.SourceFiles...),
-		StyleSignals:  firstSignals(profile.Style.NarrativeVoice, profile.Style.SentenceRhythm, profile.Style.ProseTexture),
-		HookSignals:   firstSignals(profile.HookDesign.HookTypes, profile.HookDesign.CliffhangerPatterns, profile.HookDesign.PayoffRules),
-		ReaderSignals: firstSignals(profile.ReaderEngagement.Methods, profile.ReaderEngagement.EmotionalDrivers, profile.ReaderEngagement.ProgressionRewards),
-	}
-}
-
 func creativeBlueprintSummary(snap *UISnapshot) *CreativeBlueprintSummary {
 	if snap == nil {
 		return nil

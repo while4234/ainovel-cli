@@ -189,6 +189,10 @@ type projectHost interface {
 	Close()
 }
 
+type simulationActionHost interface {
+	SimulateFromDirWithAction(context.Context, string, string) (<-chan sim.Event, error)
+}
+
 type normalFlowActionHost interface {
 	BeginNormalFlowAction(string) (func(), error)
 }
@@ -1562,21 +1566,35 @@ func (s *ProjectSession) SimulateFromDir(ctx context.Context, dir string) ([]api
 }
 
 func (s *ProjectSession) StartSimulateFromDir(dir string) error {
+	return s.StartSimulateFromDirAction(dir, sim.ActionScan)
+}
+
+func (s *ProjectSession) StartSimulateFromDirAction(dir, action string) error {
 	unlock, err := s.beginActionKind(projectActionKindSimulationAnalysis)
 	if err != nil {
 		return err
 	}
-	return s.startSimulateFromDirOwned(dir, unlock)
+	return s.startSimulateFromDirOwnedAction(dir, action, unlock)
 }
 
 func (s *ProjectSession) startSimulateFromDirOwned(dir string, unlock func()) error {
+	return s.startSimulateFromDirOwnedAction(dir, sim.ActionScan, unlock)
+}
+
+func (s *ProjectSession) startSimulateFromDirOwnedAction(dir, action string, unlock func()) error {
 	s.AppendSnapshot()
 	go func() {
 		defer func() {
 			unlock()
 			s.AppendSnapshot()
 		}()
-		events, err := s.host.SimulateFromDir(context.Background(), dir)
+		var events <-chan sim.Event
+		var err error
+		if actionHost, ok := s.host.(simulationActionHost); ok {
+			events, err = actionHost.SimulateFromDirWithAction(context.Background(), dir, action)
+		} else {
+			events, err = s.host.SimulateFromDir(context.Background(), dir)
+		}
 		if err != nil {
 			s.appendSimulationActionError(sim.StageError, "仿写画像分析启动失败", err)
 			return

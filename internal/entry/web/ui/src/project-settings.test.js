@@ -70,7 +70,9 @@ describe('project settings panel', () => {
     expect(simulationModeLabel('reinforced')).toBe('强化仿写');
     expect(appSource).toContain('仿写画像');
     expect(appSource).toContain('仿写模式');
-    expect(appSource).toContain('强化仿写已选择，但当前项目尚未加载仿写画像；上传、导入或分析画像后才会生效。');
+    expect(appSource).toContain('强化仿写尚未生效');
+    expect(appSource).toContain('使用更高预算的 Architect、Writer、Editor 共享契约');
+    expect(appSource).toContain('不复制来源内容，也不承诺法律结论');
   });
 
   it('resolves current style from snapshot before runtime defaults', () => {
