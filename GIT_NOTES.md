@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `pending` `fix: preserve chapter-scoped writer validation`:
+  gives Writer a 96 KiB diagnostic boundary for one active chapter, its
+  canonical work package, and validation schemas while retaining the 60 KiB
+  boundary for Coordinator and planning agents. This prevents a valid
+  6,573-character draft review from being mistaken for whole-book context
+  overflow without allowing long novels to inject full-book prose.
 - 2026-07-28 `current HEAD` `fix: target chapter length before generation`:
   makes Writer allocate the first draft inside the current recommendation and
   leave headroom below the user chapter range instead of generating an

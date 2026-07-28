@@ -11,7 +11,10 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-const productionAgentInputLimitBytes = 60 * 1024
+const (
+	productionAgentInputLimitBytes = 60 * 1024
+	writerAgentInputLimitBytes     = 96 * 1024
+)
 
 // diagnosticModel owns the production boundary for one agent role. It checks
 // the exact messages and tool schema handed to agentcore immediately before
@@ -176,19 +179,32 @@ func (m *diagnosticModel) begin(messages []agentcore.Message, tools []agentcore.
 	if err != nil {
 		return nil, fmt.Errorf("compile %s model input: %w", m.task, err)
 	}
+	inputLimitBytes := m.inputLimitBytes()
 	recorder, err := modeldiag.Begin(modeldiag.Request{
 		Store:           m.store,
 		Task:            m.task,
 		User:            compiled,
-		InputLimitBytes: productionAgentInputLimitBytes,
+		InputLimitBytes: inputLimitBytes,
 	})
-	if err != nil && len(compiled) > productionAgentInputLimitBytes {
+	if err != nil && len(compiled) > inputLimitBytes {
 		// This is the same recoverable condition as a provider context overflow.
 		// Mapping the exact byte boundary onto agentcore's sentinel activates its
 		// forced ContextManager rewrite and one retry before the subagent fails.
 		return nil, &agentcore.ContextOverflowError{Cause: err}
 	}
 	return recorder, err
+}
+
+func (m *diagnosticModel) inputLimitBytes() int {
+	if m.task == "agent_writer" {
+		// Writer receives exactly one active chapter work package plus the
+		// current draft and validation tool schemas. That valid chapter-scoped
+		// request can exceed the shared 60 KiB planning boundary even though it
+		// remains far below Writer's 128K-token runtime window. Keep planning
+		// agents at 60 KiB so long books still cannot inject whole-book context.
+		return writerAgentInputLimitBytes
+	}
+	return productionAgentInputLimitBytes
 }
 
 func compileAgentInput(messages []agentcore.Message, tools []agentcore.ToolSpec) ([]byte, error) {
