@@ -2128,7 +2128,7 @@ func TestContextToolPolishingUsesChapterOwnedSourceProfile(t *testing.T) {
 		t.Fatalf("context_profile = %v, want polishing", payload["context_profile"])
 	}
 	working, _ := payload["working_memory"].(map[string]any)
-	for _, key := range []string{"current_chapter_outline", "chapter_contract", "rewrite_brief", "chapter_draft", "user_rules", "simulation_profile"} {
+	for _, key := range []string{"current_chapter_outline", "chapter_contract", "rewrite_brief", "chapter_draft", "user_rules", "simulation_contract"} {
 		if _, ok := working[key]; !ok {
 			t.Fatalf("polishing context missing working_memory.%s", key)
 		}

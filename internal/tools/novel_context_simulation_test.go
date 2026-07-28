@@ -4,333 +4,249 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"strings"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-func TestContextToolInjectsCompactSimulationProfile(t *testing.T) {
-	dir := testStoreDir(t)
-	st := store.NewStore(dir)
-	if err := st.Init(); err != nil {
-		t.Fatal(err)
+func TestRoleBoundSimulationContractDiffersByModeAndRole(t *testing.T) {
+	st := simulationContextStore(t)
+	saveSimulationContextProfile(t, st, simulationContextFeatures())
+
+	normalArchitect := executeSimulationContext(t, st, ContextToolOptions{
+		SimulationMode: domain.SimulationModeNormal, Role: domain.SimulationRoleArchitect,
+	}, `{"scope":"planning"}`)
+	normalView := simulationView(t, normalArchitect, "planning_memory")
+	if len(normalView["must"].([]any)) != 0 {
+		t.Fatal("normal simulation features must remain advisory")
 	}
-	profile := domain.SimulationProfile{
-		Version: domain.SimulationProfileVersion,
-		Corpus: domain.SimulationCorpusManifest{
-			Sources: []domain.SimulationSource{{
-				RelativePath: "a.txt",
-				SHA256:       "sha-a",
-				Fingerprint:  domain.SimulationSourceFingerprint("a.txt", "sha-a"),
-			}},
-		},
-		SourceReports: []domain.SimulationSourceReport{{
-			RelativePath: "a.txt",
-			SHA256:       "sha-a",
-			Fingerprint:  domain.SimulationSourceFingerprint("a.txt", "sha-a"),
-			Summary:      "full report should not be injected",
-		}},
-		Synthesis: domain.SimulationSynthesis{
-			Style: domain.SimulationStyle{
-				NarrativeVoice: []string{"close third"},
-			},
-			RoleGuidance: domain.SimulationRoleGuidance{
-				Coordinator: []string{"keep tasks aligned"},
-				Architect:   []string{"escalate costs"},
-				Writer:      []string{"borrow technique only"},
-				Editor:      []string{"check non-copying"},
-			},
-		},
+	normalCount := int(normalView["selected_count"].(float64))
+
+	reinforcedArchitect := executeSimulationContext(t, st, ContextToolOptions{
+		SimulationMode: domain.SimulationModeReinforced, Role: domain.SimulationRoleArchitect,
+	}, `{"scope":"planning"}`)
+	reinforcedView := simulationView(t, reinforcedArchitect, "planning_memory")
+	reinforcedCount := int(reinforcedView["selected_count"].(float64))
+	if reinforcedCount <= normalCount {
+		t.Fatalf("reinforced selected_count=%d, want more than normal=%d", reinforcedCount, normalCount)
 	}
-	if err := st.Simulation.Save(profile); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Outline.SaveOutline([]domain.OutlineEntry{
-		{Chapter: 1, Title: "Start", CoreEvent: "Begin"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Progress.Init("test", 1); err != nil {
-		t.Fatal(err)
+	if len(reinforcedView["must"].([]any)) == 0 {
+		t.Fatal("reinforced Architect view should contain objectively eligible must features")
 	}
 
-	tool := NewContextTool(st, References{}, "default")
-	architectRaw, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("architect Execute: %v", err)
-	}
-	var architect map[string]any
-	if err := json.Unmarshal(architectRaw, &architect); err != nil {
-		t.Fatal(err)
-	}
-	assertCompactSimulationProfile(t, architect, "planning_memory")
-	if _, exists := architect["simulation_mode"]; exists {
-		t.Fatal("normal planning context must not include top-level simulation_mode")
+	writer := executeSimulationContext(t, st, ContextToolOptions{
+		SimulationMode: domain.SimulationModeReinforced, Role: domain.SimulationRoleWriter,
+	}, `{"chapter":1}`)
+	writerView := simulationView(t, writer, "working_memory")
+	assertSimulationDimensions(t, writerView, "style.", "pacing_density.", "lexicon.transition_words")
+	if bytes.Contains(mustSimulationJSON(t, writer), []byte("style.perspective")) {
+		t.Fatal("Writer view must not receive corpus viewpoint ownership")
 	}
 
-	chapterRaw, err := tool.Execute(context.Background(), json.RawMessage(`{"chapter":1}`))
-	if err != nil {
-		t.Fatalf("chapter Execute: %v", err)
-	}
-	if bytes.Contains(chapterRaw, []byte("source_reports")) {
-		t.Fatal("normal chapter context JSON must not include source_reports")
-	}
-	if bytes.Contains(chapterRaw, []byte("full report should not be injected")) {
-		t.Fatal("normal chapter context JSON leaked source report text")
-	}
-	var chapter map[string]any
-	if err := json.Unmarshal(chapterRaw, &chapter); err != nil {
-		t.Fatal(err)
-	}
-	assertCompactSimulationProfile(t, chapter, "working_memory")
-	if _, exists := chapter["simulation_mode"]; exists {
-		t.Fatal("normal chapter context must not include top-level simulation_mode")
+	editor := executeSimulationContext(t, st, ContextToolOptions{
+		SimulationMode: domain.SimulationModeReinforced, Role: domain.SimulationRoleEditor,
+	}, `{"chapter":1}`)
+	editorView := simulationView(t, editor, "working_memory")
+	assertSimulationDimensions(t, editorView, "reader_engagement.", "style.")
+	if fmt.Sprint(editorView) == fmt.Sprint(writerView) {
+		t.Fatal("Editor must not reuse the Writer contract view")
 	}
 }
 
-func TestContextToolChapterSimulationDoesNotOverrideOutlineViewpoint(t *testing.T) {
+func TestSimulationContractStatusAndNoLeakage(t *testing.T) {
+	st := simulationContextStore(t)
+	features := simulationContextFeatures()
+	features = append(features, domain.SimulationFeature{
+		ID: "surface", Dimension: "lexicon.signature_phrases", Statement: "source-only catchphrase",
+		Classification: "stable", SupportCount: 4, Confidence: floatPointer(0.99),
+		Coverage: floatPointer(0.8), Safety: "guidance",
+	})
+	saveSimulationContextProfile(t, st, features)
+
+	coordinator := executeSimulationContext(t, st, ContextToolOptions{
+		SimulationMode: domain.SimulationModeReinforced, Role: domain.SimulationRoleCoordinator,
+	}, `{"scope":"status"}`)
+	effective := coordinator["simulation_effective"].(map[string]any)
+	if int(effective["selected_count"].(float64)) != 0 {
+		t.Fatal("Coordinator status must not contain simulation guidance")
+	}
+
+	editorRaw := mustSimulationJSON(t, executeSimulationContext(t, st, ContextToolOptions{
+		SimulationMode: domain.SimulationModeReinforced, Role: domain.SimulationRoleEditor,
+	}, `{"scope":"planning_review"}`))
+	for _, forbidden := range [][]byte{
+		[]byte("source_reports"), []byte("source_dir"), []byte("safety_index"),
+		[]byte("source-only catchphrase"), []byte("lexicon.signature_phrases"),
+	} {
+		if bytes.Contains(editorRaw, forbidden) {
+			t.Fatalf("role context leaked forbidden data %q", forbidden)
+		}
+	}
+}
+
+func TestReinforcedUnavailableProfileReportsInactive(t *testing.T) {
+	st := simulationContextStore(t)
+	payload := executeSimulationContext(t, st, ContextToolOptions{
+		SimulationMode: domain.SimulationModeReinforced, Role: domain.SimulationRoleArchitect,
+	}, `{"scope":"planning"}`)
+	effective := payload["simulation_effective"].(map[string]any)
+	if effective["status"] != domain.SimulationContractInactive {
+		t.Fatalf("status=%v, want inactive", effective["status"])
+	}
+	reasons := effective["reasons"].([]any)
+	if len(reasons) == 0 || reasons[0] != "profile_missing" {
+		t.Fatalf("reasons=%v, want profile_missing", reasons)
+	}
+	if _, exists := payload["simulation_mode"]; exists {
+		t.Fatal("inactive reinforced mode must not publish a compatibility activation marker")
+	}
+}
+
+func TestAdaptationContextKeepsSimulationContractInactive(t *testing.T) {
+	plan := domain.AdaptationPlan{
+		Granularity:   domain.AdaptationGranularityArc,
+		RewritePolicy: domain.AdaptationRewriteFullRewrite,
+		Status:        domain.AdaptationPlanStatusConfirmed,
+		Chapters: []domain.AdaptationChapterPlan{{
+			Chapter: 1, Title: "target", SourceChapters: []int{1},
+			SourceRunes: 100, TargetRunes: 100,
+		}},
+	}
+	st := newAdaptationToolStoreWithPlan(t, plan, []string{"source event"})
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{Chapter: 1, Title: "target", CoreEvent: "rewrite event"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("adapt", 1); err != nil {
+		t.Fatal(err)
+	}
+	saveSimulationContextProfile(t, st, simulationContextFeatures())
+	payload := executeSimulationContext(t, st, ContextToolOptions{
+		SimulationMode: domain.SimulationModeReinforced, Role: domain.SimulationRoleWriter,
+	}, `{"chapter":1}`)
+	effective := payload["simulation_effective"].(map[string]any)
+	if effective["status"] != domain.SimulationContractInactive {
+		t.Fatalf("adaptation simulation status=%v, want inactive", effective["status"])
+	}
+	working := payload["working_memory"].(map[string]any)
+	if _, exists := working["simulation_contract"]; exists {
+		t.Fatal("adaptation context must not inject simulation obligations")
+	}
+}
+
+func simulationContextStore(t *testing.T) *store.Store {
+	t.Helper()
 	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
-	profile := domain.SimulationProfile{
-		Version: domain.SimulationProfileVersion,
-		Synthesis: domain.SimulationSynthesis{
-			Style: domain.SimulationStyle{
-				NarrativeVoice: []string{"strictly follow the male lead"},
-				Perspective:    []string{"never reveal the female lead's interior"},
-				SentenceRhythm: []string{"alternate compressed action and reflective pauses"},
-				ProseTexture:   []string{"use concrete sensory detail"},
-			},
-			RoleGuidance: domain.SimulationRoleGuidance{
-				Writer: []string{"borrow information-control technique only"},
-			},
-		},
-	}
-	if err := st.Simulation.Save(profile); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
-		Chapter: 1,
-		Title:   "Start",
-		Scenes:  []string{"scene one follows the female lead"},
-	}}); err != nil {
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{Chapter: 1, Title: "Start", CoreEvent: "Begin"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Progress.Init("test", 1); err != nil {
 		t.Fatal(err)
 	}
-
-	raw, err := NewContextTool(st, References{}, "default").Execute(t.Context(), json.RawMessage(`{"chapter":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(raw, []byte("strictly follow the male lead")) ||
-		bytes.Contains(raw, []byte("never reveal the female lead")) {
-		t.Fatalf("chapter context leaked corpus viewpoint ownership: %s", raw)
-	}
-	if !bytes.Contains(raw, []byte("alternate compressed action")) ||
-		!bytes.Contains(raw, []byte("concrete sensory detail")) {
-		t.Fatalf("chapter context lost reusable prose technique: %s", raw)
-	}
+	return st
 }
 
-func TestContextToolReinforcedSimulationProfileUsesExpandedCompactProfile(t *testing.T) {
-	dir := testStoreDir(t)
-	st := store.NewStore(dir)
-	if err := st.Init(); err != nil {
-		t.Fatal(err)
-	}
-	profile := domain.SimulationProfile{
-		Version: domain.SimulationProfileVersion,
-		Corpus: domain.SimulationCorpusManifest{
-			Sources: []domain.SimulationSource{
-				{RelativePath: "source-1.txt", SHA256: "sha-1", Fingerprint: domain.SimulationSourceFingerprint("source-1.txt", "sha-1")},
-				{RelativePath: "source-2.txt", SHA256: "sha-2", Fingerprint: domain.SimulationSourceFingerprint("source-2.txt", "sha-2")},
-				{RelativePath: "source-3.txt", SHA256: "sha-3", Fingerprint: domain.SimulationSourceFingerprint("source-3.txt", "sha-3")},
-				{RelativePath: "source-4.txt", SHA256: "sha-4", Fingerprint: domain.SimulationSourceFingerprint("source-4.txt", "sha-4")},
-				{RelativePath: "source-5.txt", SHA256: "sha-5", Fingerprint: domain.SimulationSourceFingerprint("source-5.txt", "sha-5")},
-				{RelativePath: "source-6.txt", SHA256: "sha-6", Fingerprint: domain.SimulationSourceFingerprint("source-6.txt", "sha-6")},
-			},
+func saveSimulationContextProfile(t *testing.T, st *store.Store, features []domain.SimulationFeature) {
+	t.Helper()
+	profile := domain.SimulationProfileV2{
+		Version:   domain.SimulationPortableProfileVersion,
+		CreatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		UpdatedAt: time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		Corpus:    domain.SimulationPortableCorpus{Digest: string(make([]byte, 64)), SourceCount: 8},
+		Analysis: domain.SimulationAnalysisMetadata{
+			SourceAnalysisSignature: "source-v2", SchemaSignature: "schema-v2",
+			AggregationSignature: "aggregate-v2",
 		},
-		SourceReports: []domain.SimulationSourceReport{{
-			RelativePath: "source-1.txt",
-			SHA256:       "sha-1",
-			Fingerprint:  domain.SimulationSourceFingerprint("source-1.txt", "sha-1"),
-			Summary:      "source_reports must not be injected into novel_context",
-		}},
-		Synthesis: domain.SimulationSynthesis{
-			Style: domain.SimulationStyle{
-				NarrativeVoice: simulationItems("voice", 6),
-			},
-			PlotDesign: domain.SimulationPlotDesign{
-				OpeningPatterns: simulationItems("opening", 6),
-			},
-			HookDesign: domain.SimulationHookDesign{
-				HookTypes: simulationItems("hook", 6),
-			},
-			RoleGuidance: domain.SimulationRoleGuidance{
-				Architect: simulationItems("architect", 6),
-				Writer:    simulationItems("writer", 6),
-				Editor:    simulationItems("editor", 6),
-			},
+		Features: features,
+		Capabilities: domain.SimulationCapabilities{
+			Portable: true, LocalEvidence: true, AnalysisSigned: true, SafetyIndex: true,
 		},
+		Health: domain.SimulationProfileHealth{State: "fresh"},
 	}
-	if err := st.Simulation.Save(profile); err != nil {
+	// A digest must be lowercase hex, not NUL bytes.
+	profile.Corpus.Digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := domain.SetSimulationProfileDigest(&profile); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Outline.SaveOutline([]domain.OutlineEntry{
-		{Chapter: 1, Title: "Start", CoreEvent: "Begin"},
-	}); err != nil {
+	if err := st.Simulation.SavePortable(profile); err != nil {
 		t.Fatal(err)
-	}
-	if err := st.Progress.Init("test", 1); err != nil {
-		t.Fatal(err)
-	}
-
-	normalTool := NewContextTool(st, References{}, "default")
-	normalRaw, err := normalTool.Execute(context.Background(), json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("normal Execute: %v", err)
-	}
-	var normal map[string]any
-	if err := json.Unmarshal(normalRaw, &normal); err != nil {
-		t.Fatal(err)
-	}
-	normalCompact := compactSimulationProfileFromSection(t, normal, "planning_memory")
-
-	reinforcedTool := NewContextToolWithOptions(st, References{}, "default", ContextToolOptions{SimulationMode: "reinforced"})
-	reinforcedRaw, err := reinforcedTool.Execute(context.Background(), json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("reinforced Execute: %v", err)
-	}
-	if bytes.Contains(reinforcedRaw, []byte("source_reports")) {
-		t.Fatal("reinforced novel_context JSON must not include source_reports")
-	}
-	if bytes.Contains(reinforcedRaw, []byte("source_reports must not be injected")) {
-		t.Fatal("reinforced novel_context JSON leaked source report text")
-	}
-	var reinforced map[string]any
-	if err := json.Unmarshal(reinforcedRaw, &reinforced); err != nil {
-		t.Fatal(err)
-	}
-	reinforcedCompact := compactSimulationProfileFromSection(t, reinforced, "planning_memory")
-
-	if got := reinforced["simulation_mode"]; got != "reinforced" {
-		t.Fatalf("top-level simulation_mode = %#v, want reinforced", got)
-	}
-	if got := reinforcedCompact["mode"]; got != "reinforced" {
-		t.Fatalf("compact profile mode = %#v, want reinforced", got)
-	}
-	if !strings.Contains(stringValue(reinforced["_loading_summary"]), "仿写模式:reinforced") {
-		t.Fatalf("loading summary = %q, want reinforced simulation mode", reinforced["_loading_summary"])
-	}
-	if got := normalCompact["mode"]; got != nil {
-		t.Fatalf("normal compact mode = %#v, want absent", got)
-	}
-	if _, exists := normal["simulation_mode"]; exists {
-		t.Fatal("normal context must not include top-level simulation_mode")
-	}
-	if !strings.Contains(stringValue(normal["_loading_summary"]), "仿写模式:ok") {
-		t.Fatalf("normal loading summary = %q, want ok simulation mode", normal["_loading_summary"])
-	}
-	if style, exists := reinforcedCompact["style"].(map[string]any); exists && len(style) > 0 {
-		t.Fatal("planning simulation profile must omit prose style owned by chapter work")
-	}
-	if lexicon, exists := reinforcedCompact["lexicon"].(map[string]any); exists && len(lexicon) > 0 {
-		t.Fatal("planning simulation profile must omit prose lexicon owned by chapter work")
-	}
-	plot := nestedMap(t, reinforcedCompact, "plot_design")
-	if sliceLenAny(plot["opening_patterns"]) == 0 {
-		t.Fatal("planning simulation profile must retain structural plot guidance")
-	}
-
-	reinforcedChapterRaw, err := reinforcedTool.Execute(context.Background(), json.RawMessage(`{"chapter":1}`))
-	if err != nil {
-		t.Fatalf("reinforced chapter Execute: %v", err)
-	}
-	if bytes.Contains(reinforcedChapterRaw, []byte("source_reports")) {
-		t.Fatal("reinforced chapter context JSON must not include source_reports")
-	}
-	if bytes.Contains(reinforcedChapterRaw, []byte("source_reports must not be injected")) {
-		t.Fatal("reinforced chapter context JSON leaked source report text")
-	}
-	var reinforcedChapter map[string]any
-	if err := json.Unmarshal(reinforcedChapterRaw, &reinforcedChapter); err != nil {
-		t.Fatal(err)
-	}
-	if got := reinforcedChapter["simulation_mode"]; got != "reinforced" {
-		t.Fatalf("chapter simulation_mode = %#v, want reinforced", got)
-	}
-	reinforcedChapterCompact := compactSimulationProfileFromSection(t, reinforcedChapter, "working_memory")
-	if got := reinforcedChapterCompact["mode"]; got != "reinforced" {
-		t.Fatalf("chapter compact profile mode = %#v, want reinforced", got)
 	}
 }
 
-func assertCompactSimulationProfile(t *testing.T, payload map[string]any, section string) map[string]any {
+func simulationContextFeatures() []domain.SimulationFeature {
+	dimensions := []string{
+		"plot_design.opening_patterns", "plot_design.escalation_patterns",
+		"hook_design.placement", "hook_design.payoff_rules",
+		"reader_engagement.methods", "reader_engagement.progression_rewards",
+		"pacing_density.information_release", "pacing_density.scene_density",
+		"style.sentence_rhythm", "style.prose_texture",
+		"style.perspective", "lexicon.transition_words",
+	}
+	features := make([]domain.SimulationFeature, 0, len(dimensions))
+	for i, dimension := range dimensions {
+		features = append(features, domain.SimulationFeature{
+			ID: fmt.Sprintf("feature-%02d", i), Dimension: dimension,
+			Statement:      fmt.Sprintf("abstract reusable technique %02d", i),
+			Classification: "stable", SupportCount: 6, Coverage: floatPointer(0.75),
+			Confidence: floatPointer(0.95), Safety: "guidance",
+		})
+	}
+	return features
+}
+
+func executeSimulationContext(t *testing.T, st *store.Store, opts ContextToolOptions, args string) map[string]any {
 	t.Helper()
-	if got := payload["simulation_profile"]; got != true {
-		t.Fatalf("expected top-level simulation_profile marker, got %#v", got)
+	raw, err := NewContextToolWithOptions(st, References{}, "default", opts).Execute(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatal(err)
 	}
-	sectionMap, ok := payload[section].(map[string]any)
-	if !ok {
-		t.Fatalf("expected %s", section)
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
 	}
-	compact, ok := sectionMap["simulation_profile"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected simulation_profile under %s", section)
-	}
-	if _, exists := compact["source_reports"]; exists {
-		t.Fatal("compact simulation_profile must not include source_reports")
-	}
-	if got := compact["source_count"]; got != float64(1) {
-		t.Fatalf("source_count = %v, want 1", got)
-	}
-	return compact
+	return payload
 }
 
-func compactSimulationProfileFromSection(t *testing.T, payload map[string]any, section string) map[string]any {
+func simulationView(t *testing.T, payload map[string]any, section string) map[string]any {
 	t.Helper()
-	sectionMap, ok := payload[section].(map[string]any)
+	sectionValue, ok := payload[section].(map[string]any)
 	if !ok {
-		t.Fatalf("expected %s", section)
+		t.Fatalf("missing section %s", section)
 	}
-	compact, ok := sectionMap["simulation_profile"].(map[string]any)
+	view, ok := sectionValue["simulation_contract"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected simulation_profile under %s", section)
+		t.Fatalf("missing role-bound simulation_contract under %s", section)
 	}
-	return compact
+	for _, key := range []string{"must", "should", "avoid"} {
+		if _, exists := view[key]; !exists {
+			view[key] = []any{}
+		}
+	}
+	return view
 }
 
-func nestedMap(t *testing.T, payload map[string]any, key string) map[string]any {
+func assertSimulationDimensions(t *testing.T, view map[string]any, prefixes ...string) {
 	t.Helper()
-	nested, ok := payload[key].(map[string]any)
-	if !ok {
-		t.Fatalf("expected nested map %s", key)
+	encoded := string(mustSimulationJSON(t, view))
+	for _, prefix := range prefixes {
+		if !bytes.Contains([]byte(encoded), []byte(prefix)) {
+			t.Fatalf("view lacks dimension prefix %q: %s", prefix, encoded)
+		}
 	}
-	return nested
 }
 
-func sliceLenAny(v any) int {
-	items, ok := v.([]any)
-	if !ok {
-		return 0
+func mustSimulationJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return len(items)
+	return data
 }
 
-func stringValue(v any) string {
-	text, _ := v.(string)
-	return text
-}
-
-func simulationItems(prefix string, n int) []string {
-	out := make([]string, n)
-	for i := range out {
-		out[i] = prefix + "-" + string(rune('a'+i))
-	}
-	return out
-}
+func floatPointer(value float64) *float64 { return &value }

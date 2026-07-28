@@ -160,18 +160,17 @@ func withSimulationGuidance(prompt, role string) string {
 	return prompt + "\n\n" + strings.ReplaceAll(simulationGuidance, "{{role}}", role)
 }
 
-const simulationGuidance = `## 仿写画像
+const simulationGuidance = `## 仿写契约
 
-当 novel_context 返回 simulation_profile 时，必须把它视为当前作品的仿写方向约束。{{role}} 应读取其中的 style、lexicon、plot_design、hook_design、pacing_density、reader_engagement 和 role_guidance。
+仿写的唯一运行时事实源是 novel_context 返回的 role-bound simulation_contract / simulation_effective。{{role}} 只读取当前角色视图里的 must、should、avoid；不得从整份画像自行挑选规则，也不得用兼容字段推导 mode。
 
-当 simulation_profile.mode == "reinforced" 或 novel_context.simulation_mode == "reinforced" 时，说明用户选择了强化仿写。强化仿写是 opt-in 的风格/结构信号；在不违背用户显式要求时，{{role}} 要更主动地把画像转化为规划、写作或审阅标准。
+- 只以 simulation_effective.effective_mode 和 status 判断是否生效。status=inactive 时不使用仿写 guidance；status=degraded 时遵守 reasons 并保持保守。
+- normal：should 仅为建议，偏离主观风格建议不阻塞创作；avoid 始终有效。
+- reinforced：只执行当前角色视图中明确列出的 obligations；must 也不能覆盖用户要求、creative brief、已确认 foundation、改编合同、章节合同或当前 POV。
+- Coordinator 只读取 health/status；Architect 读取 planning view；Writer 读取 chapter view；Editor 读取 review view。不要索取其他角色视图。
+- 上下文只含 portable 抽象 feature。禁止索取或依赖 raw source、source_reports、本地路径、安全索引、来源专名或 signature phrase 库；禁止复制来源句子、人物、地名、专有设定或固定桥段。
 
-强化仿写 guidance：
-- Architect：更主动应用 plot_design、hook_design、pacing_density、reader_engagement，落实到结构、悬念、章节钩子、信息释放、反转和回收。
-- Writer：更主动应用 style、lexicon、pacing_density，落实到叙事声音、句式节奏、意象/词汇倾向、场景密度和段落推进。
-- Editor：检查画像漂移，并额外审查复制、人物/地名/专有设定和固定桥段风险。
-
-使用原则：只使用 compact/synthesis simulation profile 作为风格和结构信号；不要索取或依赖 source_reports、raw simulate source text；不要复制原文句子、人物、地名、专有设定或固定桥段。若 simulation_profile 与用户显式要求冲突，优先服从用户要求。`
+旧 simulation_profile / simulation_mode 仅是由 simulation_effective 同源生成的迁移字段，不得独立解释。`
 
 func loadStyles() map[string]string {
 	styles := make(map[string]string)

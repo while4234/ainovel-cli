@@ -47,7 +47,7 @@ func TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt(t *testing.T) {
 	}
 }
 
-func TestLoadPromptsIncludeReinforcedSimulationGuidance(t *testing.T) {
+func TestLoadPromptsIncludeCanonicalSimulationContractGuidance(t *testing.T) {
 	bundle := Load("")
 	cases := map[string]string{
 		"ArchitectShort": bundle.Prompts.ArchitectShort,
@@ -58,12 +58,13 @@ func TestLoadPromptsIncludeReinforcedSimulationGuidance(t *testing.T) {
 	}
 	for name, prompt := range cases {
 		for _, want := range []string{
-			`simulation_profile.mode == "reinforced"`,
-			`novel_context.simulation_mode == "reinforced"`,
-			"用户选择了强化仿写",
-			"用户显式要求",
+			"simulation_effective.effective_mode",
+			"status=inactive",
+			"normal",
+			"reinforced",
+			"role-bound",
 			"source_reports",
-			"raw simulate source text",
+			"raw source",
 		} {
 			if !strings.Contains(prompt, want) {
 				t.Fatalf("%s prompt missing reinforced guidance %q", name, want)
@@ -72,10 +73,10 @@ func TestLoadPromptsIncludeReinforcedSimulationGuidance(t *testing.T) {
 	}
 
 	roleGuidance := map[string][]string{
-		"ArchitectShort": {"结构、悬念、章节钩子、信息释放、反转和回收"},
-		"ArchitectLong":  {"结构、悬念、章节钩子、信息释放、反转和回收"},
-		"Writer":         {"叙事声音、句式节奏、意象/词汇倾向、场景密度和段落推进"},
-		"Editor":         {"画像漂移", "复制、人物/地名/专有设定和固定桥段风险"},
+		"ArchitectShort": {"planning view", "pacing"},
+		"ArchitectLong":  {"planning view", "pacing"},
+		"Writer":         {"Writer chapter view", "当前章节 POV"},
+		"Editor":         {"Editor review view", "不得复用 Writer guidance"},
 	}
 	for name, wants := range roleGuidance {
 		for _, want := range wants {

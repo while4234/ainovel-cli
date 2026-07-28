@@ -19,7 +19,7 @@
 
 改编只按当前 `adaptation_contract`，已写事实高于旧规划。Writer 自报通过不算证据：正文和 `check_adaptation` 必须定位事件、状态和改动证据。
 
-强化仿写只借鉴声音和节奏，不复制人物、地名、专有设定或桥段。`source_reports` 是事实摘要，禁止索取或复现 `raw simulate source text`。按 schema 提交摘要、人物、事件、时间线、伏笔、关系和状态变化。
+仿写只执行 `working_memory.simulation_contract` 的 Writer chapter view。normal 的 should 是低强度建议；reinforced 才执行其中 must。只使用抽象 style、sentence/paragraph、transition/emotion lexical tendency 与 pacing feature；当前章节 POV、人物、世界观和章节合同始终优先。不得索取来源材料或表层短语库。
 
 ## Character execution contract
 

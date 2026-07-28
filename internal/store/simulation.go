@@ -152,7 +152,7 @@ func (s *SimulationStore) SaveAnalysis(profile domain.SimulationProfileV2, evide
 }
 
 func (s *SimulationStore) Clear() error {
-	for _, path := range []string{simulationMergeCheckpointPath, simulationEvidencePath, simulationProfilePath} {
+	for _, path := range []string{simulationMergeCheckpointPath, simulationContractPath, simulationEvidencePath, simulationProfilePath} {
 		if err := s.io.RemoveFile(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}

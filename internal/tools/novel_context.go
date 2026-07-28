@@ -43,6 +43,7 @@ type ContextTool struct {
 	refs           References
 	style          string
 	simulationMode string
+	simulationRole string
 }
 
 const (
@@ -65,6 +66,7 @@ const (
 
 type ContextToolOptions struct {
 	SimulationMode string
+	Role           string
 }
 
 // NewContextTool 创建上下文工具。
@@ -79,6 +81,7 @@ func NewContextToolWithOptions(store *store.Store, refs References, style string
 		refs:           refs,
 		style:          style,
 		simulationMode: normalizeContextToolSimulationMode(opts.SimulationMode),
+		simulationRole: normalizeContextToolSimulationRole(opts.Role),
 	}
 }
 
@@ -201,15 +204,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	// 注入 working_memory.user_rules（canonical 路径）。架构师路径原本没有 working_memory，
 	// 由 buildUserRules 按需新建只装 user_rules 的容器。快照缺失时退到内置默认，
 	// 始终输出稳定结构，避免 LLM 看到 user_rules=null 走异常分支。
-	if scope == "chapter" && chapterPurpose != chapterContextRecovering {
-		t.buildChapterSimulationProfile(result, chapterPurpose, warn)
-	} else if scope == "planning" {
-		t.buildSimulationProfile(result, "planning_memory", warn)
-	} else if scope == "planning_detail" {
-		t.buildSimulationProfile(result, "planning_memory", warn)
-	} else if scope == "planning_review" {
-		t.buildPlanningReviewSimulationProfile(result, warn)
-	}
+	t.buildRoleBoundSimulationContext(result, scope, chapterPurpose, warn)
 
 	if scope == "chapter" || scope == "planning" || scope == "planning_detail" {
 		t.buildUserRules(result, scope == "chapter" && chapterContextHasAuthoritativeOutline(result))
@@ -450,6 +445,16 @@ func normalizeContextToolSimulationMode(mode string) string {
 	}
 }
 
+func normalizeContextToolSimulationRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case domain.SimulationRoleCoordinator, domain.SimulationRoleArchitect,
+		domain.SimulationRoleWriter, domain.SimulationRoleEditor:
+		return strings.ToLower(strings.TrimSpace(role))
+	default:
+		return ""
+	}
+}
+
 // buildLoadingSummary 从已组装的 result 中统计各项数据量，生成一行可读摘要。
 func buildLoadingSummary(result map[string]any, chapter int) string {
 	var parts []string
@@ -563,6 +568,18 @@ func buildLoadingSummary(result map[string]any, chapter int) string {
 			mode = contextSimulationModeReinforced
 		}
 		items = append(items, fmt.Sprintf("仿写模式:%s", mode))
+	}
+	if simulation, ok := result["simulation_effective"].(simulationRoleContext); ok {
+		summary := fmt.Sprintf(
+			"simulation_contract:r%d status=%s selected=%d",
+			simulation.Contract.Revision,
+			simulation.Status,
+			simulation.SelectedCount,
+		)
+		if len(simulation.Reasons) > 0 {
+			summary += " reasons=" + strings.Join(simulation.Reasons, ",")
+		}
+		items = append(items, summary)
 	}
 	if warnings, ok := result["_warnings"].([]string); ok && len(warnings) > 0 {
 		items = append(items, fmt.Sprintf("告警:%d", len(warnings)))

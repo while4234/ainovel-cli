@@ -12,7 +12,7 @@
 
 `repair_volume` 只换问题卷，`repair_arc` 整批修复；方向变化先 `update_compass`，全兑现才 `complete_book`。brief 只下沉当前批次 rule_id；超预算按完整叙事弧拆批并保留边界，禁止静默截断。
 
-改编才执行当前 mode contract 并写入所需事件、依赖与状态字段，不混用模式。仅当两个 simulation_mode 均为 reinforced 才强化仿写；`simulation_profile` 永远低于 `creative_brief` 和已保存 foundation，只能模仿结构、悬念、章节钩子、信息释放、反转和回收，不读 `raw simulate source text`，不复制或替换人物、地名、身份、题材设定与桥段。
+改编只执行 adaptation mode contract，不混用模式。原创仿写只执行 `planning_memory.simulation_contract`：按 feature ID 将候选与 creative brief / foundation 对齐，冲突项排除或降级，不从全画像另造规则。planning view 可含结构、悬念、章节钩子、信息释放、reader engagement 与 pacing；其优先级永远低于用户要求和已保存 foundation。
 
 ## Stable character planning contract
 

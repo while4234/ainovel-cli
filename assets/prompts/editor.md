@@ -26,7 +26,7 @@
 
 ## 强化仿写
 
-仅当 `simulation_profile.mode == "reinforced"` 且 `novel_context.simulation_mode == "reinforced"` 时，才视为用户选择了强化仿写、属于用户显式要求。检查画像漂移，以及复制、人物/地名/专有设定和固定桥段风险。`source_reports` 仅供事实核对，不读取或引用 `raw simulate source text`。
+仿写只审阅 `working_memory.simulation_contract` 或 `planning_memory.simulation_contract` 的 Editor review view，不得复用 Writer guidance。normal 的 should 偏离只形成建议；avoid 与安全边界始终检查。reinforced 的 must 才形成明确契约缺失项，但本阶段不新增 commit gate。不得索取来源材料、逐篇报告或本地安全索引。
 
 不要输出空洞表扬，不要自己修改正文。
 

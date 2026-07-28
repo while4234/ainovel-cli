@@ -121,54 +121,91 @@ func appendSimulationCoCreatePrompt(base string, st *store.Store, mode string) s
 	if mode != bootstrap.SimulationModeReinforced || st == nil || st.Simulation == nil {
 		return base
 	}
-	profile, err := st.Simulation.Load()
-	if err != nil || profile == nil {
-		return base
+	contract, profile, err := st.EnsureSimulationContract(mode)
+	if err != nil {
+		return base + "\n\n## 仿写方向状态\n- effective_mode=normal\n- status=inactive\n- reason=profile_or_contract_invalid\n"
 	}
-	compact := domain.CompactSimulationProfileForMode(profile, mode)
-	if compact == nil {
-		return base
-	}
-	payload, err := json.MarshalIndent(simulationCoCreatePromptPayloadFromCompact(compact), "", "  ")
+	payload, err := json.MarshalIndent(simulationCoCreatePayloadFromContract(contract, profile), "", "  ")
 	if err != nil {
 		return base
 	}
-	return base + "\n\n---\n## 仿写画像（强化仿写模式，内部约束）\n" +
-		"下面是系统根据已导入仿写画像提炼的紧凑画像 JSON；用户不需要显式说“请参考仿写画像”，你也必须在共创中主动吸收这些约束。\n\n" +
+	return base + "\n\n---\n## 仿写方向（结构化契约候选）\n" +
+		"以下 JSON 只含 portable v2 抽象 feature，且由与正式创作相同的 policy/contract 派生。status 不是 active 时不得声称强化仿写已生效。\n\n" +
 		"```json\n" + string(payload) + "\n```\n\n" +
 		"规则：\n" +
-		"- <draft> 必须维护一个 `## 仿写方向` 章节，用紧凑条目记录本轮确认的仿写侧重点。\n" +
-		"- 捕捉并转化风格、叙事声音、句式节奏、意象与词汇倾向。\n" +
-		"- 捕捉并转化情节拆解方式、信息释放、钩子、反转与回收节奏。\n" +
-		"- 禁止复制或搬运源文本句子、人物、地名、专有设定、固定桥段；只学习可复用技法。\n" +
-		"- 当用户的明确要求与仿写画像冲突时，以用户的明确要求为准。"
+		"- <draft> 保留 `## 仿写方向` 作为用户可读摘要，但只能概括上述 feature ID，不得成为独立事实源。\n" +
+		"- 用户要求、creative brief、已确认 foundation、章节合同和当前 POV 始终优先；冲突 feature 必须排除或降级。\n" +
+		"- 禁止复制来源句子、人物、地名、专有设定或固定桥段；不得索取 raw、source_reports、本地路径、安全索引或标志短语。\n"
 }
 
 type simulationCoCreatePromptPayload struct {
-	Mode             string                            `json:"mode,omitempty"`
-	Style            domain.SimulationStyle            `json:"style,omitempty"`
-	Lexicon          domain.SimulationLexicon          `json:"lexicon,omitempty"`
-	PlotDesign       domain.SimulationPlotDesign       `json:"plot_design,omitempty"`
-	HookDesign       domain.SimulationHookDesign       `json:"hook_design,omitempty"`
-	PacingDensity    domain.SimulationPacingDensity    `json:"pacing_density,omitempty"`
-	ReaderEngagement domain.SimulationReaderEngagement `json:"reader_engagement,omitempty"`
-	RoleGuidance     domain.SimulationRoleGuidance     `json:"role_guidance,omitempty"`
+	EffectiveMode string                      `json:"effective_mode"`
+	Status        string                      `json:"status"`
+	Reasons       []string                    `json:"reasons,omitempty"`
+	Revision      int64                       `json:"contract_revision,omitempty"`
+	ProfileDigest string                      `json:"profile_digest,omitempty"`
+	Must          []simulationCoCreateFeature `json:"must,omitempty"`
+	Should        []simulationCoCreateFeature `json:"should,omitempty"`
+	Avoid         []simulationCoCreateFeature `json:"avoid,omitempty"`
+	Safety        string                      `json:"safety_boundary"`
 }
 
-func simulationCoCreatePromptPayloadFromCompact(compact *domain.SimulationCompactProfile) simulationCoCreatePromptPayload {
-	if compact == nil {
-		return simulationCoCreatePromptPayload{}
+type simulationCoCreateFeature struct {
+	ID             string   `json:"id"`
+	Dimension      string   `json:"dimension"`
+	Statement      string   `json:"statement"`
+	Scopes         []string `json:"scopes,omitempty"`
+	Classification string   `json:"classification"`
+}
+
+func simulationCoCreatePayloadFromContract(contract *domain.SimulationContract, profile *domain.SimulationProfileV2) simulationCoCreatePromptPayload {
+	payload := simulationCoCreatePromptPayload{
+		EffectiveMode: domain.SimulationModeNormal,
+		Status:        domain.SimulationContractInactive,
+		Reasons:       []string{"contract_missing"},
+		Safety:        "portable_features_only",
 	}
-	return simulationCoCreatePromptPayload{
-		Mode:             compact.Mode,
-		Style:            compact.Style,
-		Lexicon:          compact.Lexicon,
-		PlotDesign:       compact.PlotDesign,
-		HookDesign:       compact.HookDesign,
-		PacingDensity:    compact.PacingDensity,
-		ReaderEngagement: compact.ReaderEngagement,
-		RoleGuidance:     compact.RoleGuidance,
+	if contract == nil {
+		return payload
 	}
+	payload.EffectiveMode = contract.EffectiveMode
+	payload.Status = contract.Status
+	payload.Reasons = append([]string(nil), contract.Reasons...)
+	payload.Revision = contract.Revision
+	payload.ProfileDigest = contract.ProfileDigest
+	if profile == nil || contract.Status == domain.SimulationContractInactive {
+		return payload
+	}
+	view := contract.View(domain.SimulationRoleArchitect, "planning")
+	if view == nil {
+		payload.Reasons = append(payload.Reasons, "planning_view_unavailable")
+		return payload
+	}
+	features := make(map[string]domain.SimulationFeature, len(profile.Features))
+	for _, feature := range profile.Features {
+		features[feature.ID] = feature
+	}
+	payload.Must = resolveSimulationCoCreateFeatures(view.Must, features)
+	payload.Should = resolveSimulationCoCreateFeatures(view.Should, features)
+	payload.Avoid = resolveSimulationCoCreateFeatures(view.Avoid, features)
+	return payload
+}
+
+func resolveSimulationCoCreateFeatures(ids []string, features map[string]domain.SimulationFeature) []simulationCoCreateFeature {
+	resolved := make([]simulationCoCreateFeature, 0, len(ids))
+	for _, id := range ids {
+		feature, ok := features[id]
+		if !ok || strings.HasPrefix(feature.Dimension, "lexicon.signature_phrases") ||
+			strings.HasPrefix(feature.Dimension, "lexicon.common_words") ||
+			strings.HasPrefix(feature.Dimension, "lexicon.scene_words") {
+			continue
+		}
+		resolved = append(resolved, simulationCoCreateFeature{
+			ID: feature.ID, Dimension: feature.Dimension, Statement: feature.Statement,
+			Scopes: append([]string(nil), feature.Scopes...), Classification: feature.Classification,
+		})
+	}
+	return resolved
 }
 
 // CoCreateProgressKind 标识流式回调的内容类型。

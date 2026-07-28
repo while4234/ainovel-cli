@@ -157,8 +157,21 @@ func BuildCoordinator(
 	onFailover bootstrap.FailoverReporter,
 ) (*agentcore.Agent, *subagent.Tool, *tools.AskUserTool, *ctxpack.WriterRestorePack, *corecontext.ContextEngine, ApplyThinking, error) {
 	// 共享工具
-	contextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
+	coordinatorContextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
 		SimulationMode: cfg.EffectiveSimulationMode(),
+		Role:           domain.SimulationRoleCoordinator,
+	})
+	architectContextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
+		SimulationMode: cfg.EffectiveSimulationMode(),
+		Role:           domain.SimulationRoleArchitect,
+	})
+	writerRoleContextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
+		SimulationMode: cfg.EffectiveSimulationMode(),
+		Role:           domain.SimulationRoleWriter,
+	})
+	editorContextTool := tools.NewContextToolWithOptions(store, bundle.References, cfg.Style, tools.ContextToolOptions{
+		SimulationMode: cfg.EffectiveSimulationMode(),
+		Role:           domain.SimulationRoleEditor,
 	})
 	// 用户规则服务：归一化各来源 → 确定性合并 → 落盘本书快照。Coordinator 的
 	// save_user_rules 工具复用它做运行中更新；归一化用 Default 模型（与 Host 开书侧一致）。
@@ -168,7 +181,7 @@ func BuildCoordinator(
 	completionGate := adapt.NewCompletionGate(store)
 
 	architectTools := []agentcore.Tool{
-		contextTool,
+		architectContextTool,
 		revisionFenceWrites(store.Revisions, tools.NewArchitectSaveFoundationTool(store, completionGate)),
 	}
 	characterRuns := tools.NewCharacterRunRegistry()
@@ -181,7 +194,7 @@ func BuildCoordinator(
 	}
 	var writerTools []agentcore.Tool
 	editorTools := []agentcore.Tool{
-		contextTool,
+		editorContextTool,
 		readChapter,
 		revisionFenceWrites(store.Revisions, tools.NewSaveOriginalPlanningAuditTool(store)),
 		revisionFenceWrites(store.Revisions, tools.NewSaveReviewTool(store)),
@@ -246,7 +259,7 @@ func BuildCoordinator(
 	coordinatorModel = withProductionAgentBoundary(coordinatorModel, store, "agent_coordinator")
 	coordinatorModel = WithExecutionBarrierModel(coordinatorModel)
 	writerTools = []agentcore.Tool{
-		newWriterContextTool(contextTool, store),
+		newWriterContextTool(writerRoleContextTool, store),
 		newWriterReadChapterTool(readChapter, store),
 		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewPlanChapterTool(store), store)),
 		revisionFenceWrites(store.Revisions, newWriterDraftChapterTool(store)),
@@ -525,7 +538,7 @@ func BuildCoordinator(
 		agentcore.WithSystemPrompt(globalprompt.Apply(coordinatorPrompt)),
 		agentcore.WithTools(
 			newWorkflowSubagentTool(subagentTool),
-			newCoordinatorContextTool(contextTool),
+			newCoordinatorContextTool(coordinatorContextTool),
 			revisionFenceWrites(store.Revisions, tools.NewSaveUserRulesTool(userRulesSvc)),
 			revisionFenceWrites(store.Revisions, tools.NewReopenBookTool(store)),
 		),

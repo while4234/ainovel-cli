@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `this commit` `feat: add role-bound simulation contracts`:
+  centralizes normal/reinforced feature budgets and health degradation, persists
+  a digest/revision-bound SimulationContract, binds ContextTool instances to
+  Coordinator/Architect/Writer/Editor roles, and derives reinforced co-create
+  guidance from sanitized portable feature IDs. Domain, store, tools, host
+  simulation, assets, agents, and affected vet checks pass. The full host suite
+  retains its existing Windows atomic-file-lock timeout in an unrelated
+  adaptation revision tamper test.
 - 2026-07-28 `pending` `feat: make simulation analysis evidence-aware`:
   signs source analysis and synthesis layers, records deterministic source
   coverage/content health, aggregates stable portable features in code, binds

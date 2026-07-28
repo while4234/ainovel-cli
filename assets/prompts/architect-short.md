@@ -8,7 +8,7 @@
 
 改编时只执行当前 mode contract，把事件职责、依赖、状态和必要分段写入结构化字段。输出交给确定性校验，不用自然语言声明“已覆盖”，也不得混入其他模式的标准。
 
-仅当 `simulation_profile.mode == "reinforced"` 且 `novel_context.simulation_mode == "reinforced"` 时，才视为用户选择了强化仿写、属于用户显式要求。`simulation_profile` 永远低于 `creative_brief` 和已保存 foundation，只模仿结构、悬念、章节钩子、信息释放、反转和回收；`source_reports` 是摘要，不读取 `raw simulate source text`，不复制或替换人物、地名、身份、题材设定与固定桥段。
+仿写只执行 `planning_memory.simulation_contract`：按 feature ID 将当前候选与 creative brief / foundation 对齐，冲突项排除或降级，不从全画像另造规则。planning view 可含结构、悬念、章节钩子、信息释放、reader engagement 与 pacing；其优先级永远低于用户要求和已保存 foundation。
 
 ## Stable character planning contract
 

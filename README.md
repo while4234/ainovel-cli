@@ -457,17 +457,19 @@ Runner 对超过 15,000 rune 的单文件使用确定性的头/中/尾三窗口�
 
 私有发行版内置加密的搜索/下载凭据和固定版本的 BaiduPCS-Go 安装信息。首次使用会在运行时目录自动下载并校验 BaiduPCS-Go，另一台 Windows 电脑拉取并构建本仓库后不需要复制浏览器 profile、Cookie 或手工配置下载工具。内置密文与解密材料同仓库分发，只用于私有仓库的免配置部署，并不构成对仓库读取者的安全隔离；仓库访问权限必须保持私有。
 
-也可以在同一面板导入之前生成的画像，避免重复分析同一批文章。导入接受本功能生成的 `simulation_profile.v2` portable JSON，并在兼容窗口内继续接受 v1；v1 导入画像在进入画像库前会自动脱敏投影为 v2。两个 portable-only 画像仅在分析签名兼容时按稳定 feature identity 和带命名空间的 provenance 合并；签名不兼容，或当前项目仍绑定 local evidence 时会明确拒绝，不再做字符串拼接。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
+也可以在同一面板导入之前生成的画像，避免重复分析同一批文章。导入接受本功能生成的 `simulation_profile.v2` portable JSON，并在兼容窗口内继续接受 v1；v1 导入画像在进入画像库前会自动脱敏投影为 v2。两个 portable-only 画像仅在分析签名兼容时按稳定 feature identity 和带命名空间的 provenance 合并；签名不兼容，或当前项目仍绑定 local evidence 时会明确拒绝，不再做字符串拼接。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。
+
+正式创作不再让各 Agent 自行解释整份画像。系统在 `meta/simulation_contract.json` 持久化一份带 digest/revision 的 `SimulationContract`，只引用稳定 feature ID，并绑定 profile digest、仿写 mode、creative brief 和 Foundation revision。任一绑定变化都会生成新 revision；stale/invalid/missing 画像会明确返回 inactive/degraded reason，不会冒充强化已生效。Coordinator 只读取 health/status；Architect、Writer、Editor 分别读取 planning、chapter、review 角色视图，且共享同一 contract revision。
 
 ### 普通仿写与强化仿写
 
 仿写模式有两档：`normal`（普通仿写）和 `reinforced`（强化仿写）。默认始终是 `normal`；即使项目已经加载仿写画像，也不会自动切到强化仿写。
 
-`normal` 会在正式写作的 `novel_context` 中提供紧凑画像，供 Agent 参考风格、结构和读者吸引手法；普通共创和阶段共创不会主动把画像注入对话提示。
+`normal` 的正式角色视图只选择少量跨来源稳定、高置信度且阶段适用的 feature；除安全/avoid 外均为 advisory `should`，主观风格偏离不会阻塞创作。普通共创和阶段共创不会主动把画像注入对话提示。
 
-`reinforced` 需要在 Web 右侧栏开启：`设定 -> 仿写画像 -> 仿写模式`。开启后，只要项目已有画像，冷启动共创、阶段共创和正式写作都会主动吸收画像约束；用户不需要显式说“参考画像”。
+`reinforced` 需要在 Web 右侧栏开启：`设定 -> 仿写画像 -> 仿写模式`。开启后，冷启动共创、阶段共创和正式写作使用同一结构化 contract：预算和维度覆盖显著高于 normal，只有稳定、高覆盖、高置信度且可客观验收的结构/钩子/节奏 feature 可成为 `must`；模糊审美仍是 `should`。用户要求、creative brief、Foundation、改编/章节合同和当前 POV 始终优先。
 
-无论 `normal` 还是 `reinforced`，系统只使用 profile summaries / compact profile 一类摘要化画像信息，不注入 `source_reports` 或 raw source text；也不会复制源文句子、人物、地名、专有设定或固定桥段。仿写画像用于学习可复用技法，而不是搬运内容。
+无论 `normal` 还是 `reinforced`，Agent 上下文只解析 contract 引用的 portable 抽象 feature，不注入 `source_reports`、raw source、本地路径、safety index、来源专名或 signature phrase 库；也不会复制源文句子、人物、地名、专有设定或固定桥段。确定性相似性扫描和 commit gate 属于后续安全阶段，本 contract 本身不新增提交门禁。
 
 Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目录，把导入的画像 JSON 保存到当前项目的 `profiles/imported/` 目录；小说改编上传的原文保存在当前项目的 `uploads/adaptation/` 目录。这些文件不会被写入仓库，也不会混到其他 Web 项目里。点击“分析”后，语料内容会按所选模型/provider 的正常调用路径发送给模型生成画像；不要上传没有授权处理的私人文本。
 
