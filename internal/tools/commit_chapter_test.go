@@ -109,6 +109,36 @@ func TestCommitChapterAllowsWordBudgetInRange(t *testing.T) {
 	}
 }
 
+func TestCommitChapterGateAllowsSoftRecommendationOverage(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 55); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	budget := domain.NewWordBudget(200000, "test").WithPlannedChapters(55)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	saveChapterWordRange(t, s, 3000, 6000)
+
+	rejection, err := NewCommitChapterTool(s).checkWordBudgetGate(1, 4843)
+	if err != nil {
+		t.Fatalf("checkWordBudgetGate: %v", err)
+	}
+	if rejection != nil {
+		t.Fatalf("4843 words are above the recommendation but within the user hard range: %+v", rejection)
+	}
+	rejection, err = NewCommitChapterTool(s).checkWordBudgetGate(1, 6001)
+	if err != nil {
+		t.Fatalf("checkWordBudgetGate hard overflow: %v", err)
+	}
+	if rejection == nil || rejection.minWords != 3000 || rejection.maxWords != 6000 {
+		t.Fatalf("hard overflow must still be rejected: %+v", rejection)
+	}
+}
+
 func commitChapterArgs(t *testing.T, chapter int) json.RawMessage {
 	t.Helper()
 	args, err := json.Marshal(map[string]any{

@@ -346,22 +346,24 @@ func (t *EditChapterTool) addDraftStatus(payload map[string]any, chapter int) {
 		return
 	}
 	payload["word_count"] = wordCount
-	meta, err := t.store.RunMeta.Load()
-	if err != nil || meta == nil || meta.WordBudget == nil {
-		return
-	}
 	progress, err := t.store.Progress.Load()
 	if err != nil || progress == nil || progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 {
 		return
 	}
-	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
-	if !ok || runtime.CurrentChapter.Chapter == 0 {
+	_, policy, ok, err := t.store.ChapterWordBudgetPolicy(progress, chapter)
+	if err != nil || !ok {
 		return
 	}
-	minWords := runtime.CurrentChapter.RecommendedMinWords
-	maxWords := runtime.CurrentChapter.RecommendedMaxWords
-	payload["word_budget"] = map[string]any{"min_words": minWords, "max_words": maxWords}
-	withinBudget := wordCount >= minWords && wordCount <= maxWords
+	minWords := policy.HardMinWords
+	maxWords := policy.HardMaxWords
+	payload["word_budget"] = map[string]any{
+		"min_words":             minWords,
+		"max_words":             maxWords,
+		"recommended_min_words": policy.RecommendedMinWords,
+		"recommended_max_words": policy.RecommendedMaxWords,
+	}
+	payload["word_budget_recommended"] = policy.WithinRecommendation(wordCount)
+	withinBudget := policy.WithinHardRange(wordCount)
 	payload["word_budget_passed"] = withinBudget
 	if segment, segmented := payload["budget_segment"]; segmented {
 		if withinBudget {

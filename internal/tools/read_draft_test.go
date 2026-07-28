@@ -316,6 +316,47 @@ func TestReadChapterDraftAllowsFullReadDuringPendingPolish(t *testing.T) {
 	}
 }
 
+func TestReadChapterDraftAllowsSoftRecommendationOverage(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		NovelName:         "test",
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		CurrentChapter:    1,
+		InProgressChapter: 1,
+		TotalChapters:     55,
+	}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(200000, "test").WithPlannedChapters(55)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	saveChapterWordRange(t, s, 3000, 6000)
+	content := strings.Repeat("正", 4165)
+	if err := s.Drafts.SaveDraft(1, content); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := NewReadChapterTool(s).Execute(context.Background(), json.RawMessage(`{"chapter":1,"source":"draft"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Content        string `json:"content"`
+		DeferredToHost bool   `json:"deferred_to_host"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload.DeferredToHost || payload.Content != content {
+		t.Fatalf("soft recommendation overage must allow full quality read: %+v", payload)
+	}
+}
+
 func TestReadChapterDraftLineSegmentRejectsInBudgetDraft(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

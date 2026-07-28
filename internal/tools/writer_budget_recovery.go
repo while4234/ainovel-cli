@@ -27,10 +27,6 @@ func currentWriterBudgetWindow(st *store.Store, chapter int, content string) (wr
 	if st == nil {
 		return writerBudgetWindow{}, false
 	}
-	meta, err := st.RunMeta.Load()
-	if err != nil || meta == nil || meta.WordBudget == nil {
-		return writerBudgetWindow{}, false
-	}
 	progress, err := st.Progress.Load()
 	if err != nil || progress == nil || progress.InProgressChapter != chapter {
 		return writerBudgetWindow{}, false
@@ -38,13 +34,13 @@ func currentWriterBudgetWindow(st *store.Store, chapter int, content string) (wr
 	if progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 {
 		return writerBudgetWindow{}, false
 	}
-	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
-	if !ok || runtime.CurrentChapter.Chapter == 0 {
+	_, policy, ok, err := st.ChapterWordBudgetPolicy(progress, chapter)
+	if err != nil || !ok {
 		return writerBudgetWindow{}, false
 	}
 	wordCount := len([]rune(content))
-	minWords := runtime.CurrentChapter.RecommendedMinWords
-	maxWords := runtime.CurrentChapter.RecommendedMaxWords
+	minWords := policy.HardMinWords
+	maxWords := policy.HardMaxWords
 	if wordCount >= minWords && wordCount <= maxWords {
 		return writerBudgetWindow{}, false
 	}

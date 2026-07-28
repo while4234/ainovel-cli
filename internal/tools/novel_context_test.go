@@ -424,6 +424,41 @@ func TestContextToolChapterModeIncludesWorkingAndReferenceFields(t *testing.T) {
 	}
 }
 
+func TestContextToolSeparatesSoftAndHardChapterWordRanges(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 55); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	budget := domain.NewWordBudget(200000, "test").WithPlannedChapters(55)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	saveChapterWordRange(t, st, 3000, 6000)
+
+	raw, err := NewContextTool(st, References{}, "default").Execute(context.Background(), json.RawMessage(`{"chapter":1}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Working struct {
+			WordBudget struct {
+				Current domain.CurrentChapterWordBudget `json:"current_chapter"`
+			} `json:"word_budget"`
+		} `json:"working_memory"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	current := payload.Working.WordBudget.Current
+	if current.RecommendedMinWords != 3273 || current.RecommendedMaxWords != 4000 ||
+		current.HardMinWords != 3000 || current.HardMaxWords != 6000 {
+		t.Fatalf("unexpected context ranges: %+v", current)
+	}
+}
+
 func TestContextToolInjectsWordBudgetForArchitectAndWriter(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

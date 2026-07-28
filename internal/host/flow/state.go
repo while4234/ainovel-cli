@@ -189,14 +189,13 @@ func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progre
 }
 
 func loadWriterWordBudgetState(s *State, st *storepkg.Store, progress *domain.Progress, chapter int) {
-	if meta, metaErr := st.RunMeta.Load(); metaErr == nil && meta != nil && meta.WordBudget != nil {
-		if runtime, ok := meta.WordBudget.Runtime(progress, chapter); ok {
-			s.InProgressWordMin = runtime.CurrentChapter.RecommendedMinWords
-			s.InProgressWordMax = runtime.CurrentChapter.RecommendedMaxWords
-			s.InProgressWordBudgetValid = s.InProgressWordCount >= s.InProgressWordMin &&
-				s.InProgressWordCount <= s.InProgressWordMax
-		}
+	_, policy, ok, err := st.ChapterWordBudgetPolicy(progress, chapter)
+	if err != nil || !ok {
+		return
 	}
+	s.InProgressWordMin = policy.HardMinWords
+	s.InProgressWordMax = policy.HardMaxWords
+	s.InProgressWordBudgetValid = policy.WithinHardRange(s.InProgressWordCount)
 }
 
 func loadOriginalSkeletonState(s *State, st *storepkg.Store, review *domain.PlanningReview) {

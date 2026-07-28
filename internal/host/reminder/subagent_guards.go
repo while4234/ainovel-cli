@@ -113,17 +113,11 @@ func writerDraftNeedsBudgetRepair(st *store.Store) bool {
 	if err != nil || wordCount <= 0 {
 		return false
 	}
-	meta, err := st.RunMeta.Load()
-	if err != nil || meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
+	_, policy, ok, err := st.ChapterWordBudgetPolicy(progress, chapter)
+	if err != nil || !ok {
 		return false
 	}
-	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
-	if !ok || runtime.CurrentChapter.Chapter <= 0 {
-		return false
-	}
-	minWords := runtime.CurrentChapter.RecommendedMinWords
-	maxWords := runtime.CurrentChapter.RecommendedMaxWords
-	return (minWords > 0 && wordCount < minWords) || (maxWords > 0 && wordCount > maxWords)
+	return !policy.WithinHardRange(wordCount)
 }
 
 // NewWriterStopGuard 要求 writer 本轮至少产生一次成功的 commit_chapter。

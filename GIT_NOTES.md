@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `current HEAD` `fix: separate chapter word guidance from hard limits`:
+  treats the dynamic per-chapter allocation and approximate book total as soft
+  pacing guidance, while the saved user chapter range remains the only creation
+  hard gate. Full reads, edits, commits, Writer stop guards, and Host recovery
+  now agree on that policy, preventing quality-reducing trim loops when a
+  complete chapter reasonably exceeds its rolling recommendation.
 - 2026-07-28 `3d25cb0` `fix: isolate chapter execution context`:
   keeps raw startup preferences durable for planning but omits their duplicate
   replay once a signed chapter outline exists, retains validator-owned

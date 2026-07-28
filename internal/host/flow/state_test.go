@@ -7,6 +7,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/deai"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/rules"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -121,6 +122,46 @@ func TestLoadStateExcludesPendingPolishFromWriterBudgetRecovery(t *testing.T) {
 	got := Route(state)
 	if got == nil || got.Agent != "writer" || got.Chapter != 5 || !strings.Contains(got.Task, "edit_chapter") {
 		t.Fatalf("pending polish did not route directly to writer: %+v", got)
+	}
+}
+
+func TestLoadStateUsesUserHardRangeInsteadOfSoftRecommendation(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	draft := strings.Repeat("正", 4165)
+	if err := st.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatal(err)
+	}
+	budget := domain.NewWordBudget(200000, "test").WithPlannedChapters(55)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UserRules.Save(&rules.Snapshot{
+		Version: rules.SnapshotVersion,
+		Status:  rules.StatusReady,
+		Structured: rules.Structured{
+			ChapterWords: &rules.WordRange{Min: 3000, Max: 6000},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		InProgressChapter: 1,
+		TotalChapters:     55,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := LoadState(st)
+	if state.InProgressWordMin != 3000 || state.InProgressWordMax != 6000 || !state.InProgressWordBudgetValid {
+		t.Fatalf("soft recommendation incorrectly triggered recovery: %+v", state)
+	}
+	if got := Route(state); got == nil || got.Agent != "writer" || got.ResumeRecovery {
+		t.Fatalf("in-range draft should continue normal validation, got %+v", got)
 	}
 }
 

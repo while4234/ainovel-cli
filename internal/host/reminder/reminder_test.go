@@ -8,6 +8,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/deai"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/rules"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -401,6 +402,35 @@ func TestWriterStopGuardAllowsOutOfBudgetDraftToReturnForHostRepair(t *testing.T
 	})
 	if !decision.Allow || decision.Escalate || decision.InjectMessage != "" {
 		t.Fatalf("out-of-budget draft must return to Host-owned segment repair: %#v", decision)
+	}
+}
+
+func TestWriterStopGuardDoesNotTrimSoftRecommendationOverage(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Progress.Init("test", 55); err != nil {
+		t.Fatalf("init progress: %v", err)
+	}
+	if err := s.Progress.StartChapter(1); err != nil {
+		t.Fatalf("start chapter: %v", err)
+	}
+	budget := domain.NewWordBudget(200000, "test").WithPlannedChapters(55)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("set word budget: %v", err)
+	}
+	if err := s.UserRules.Save(&rules.Snapshot{
+		Version: rules.SnapshotVersion,
+		Status:  rules.StatusReady,
+		Structured: rules.Structured{
+			ChapterWords: &rules.WordRange{Min: 3000, Max: 6000},
+		},
+	}); err != nil {
+		t.Fatalf("save user rules: %v", err)
+	}
+	if err := s.Drafts.SaveDraft(1, strings.Repeat("正", 4165)); err != nil {
+		t.Fatalf("save draft: %v", err)
+	}
+	if writerDraftNeedsBudgetRepair(s) {
+		t.Fatal("4165-word draft must proceed to quality validation instead of Host trimming")
 	}
 }
 

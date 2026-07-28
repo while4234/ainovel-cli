@@ -207,44 +207,41 @@ func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chap
 	if t.store == nil {
 		return
 	}
-	meta, err := t.store.RunMeta.Load()
-	if err != nil || meta == nil || meta.WordBudget == nil || meta.WordBudget.TargetTotalWords <= 0 {
-		return
-	}
 	progress, err := t.store.Progress.Load()
 	if err != nil {
 		return
 	}
-	runtime, ok := meta.WordBudget.Runtime(progress, chapter)
-	if !ok || runtime.CurrentChapter.Chapter <= 0 {
+	runtime, policy, ok, err := t.store.ChapterWordBudgetPolicy(progress, chapter)
+	if err != nil || !ok {
 		return
 	}
-	minWords := runtime.CurrentChapter.RecommendedMinWords
-	maxWords := runtime.CurrentChapter.RecommendedMaxWords
 	result["word_budget"] = map[string]any{
-		"min_words":              minWords,
-		"max_words":              maxWords,
+		"min_words":              policy.HardMinWords,
+		"max_words":              policy.HardMaxWords,
+		"recommended_min_words":  policy.RecommendedMinWords,
+		"recommended_max_words":  policy.RecommendedMaxWords,
 		"target_total_words":     runtime.Target.TargetTotalWords,
 		"completed_words":        runtime.Progress.CompletedWords,
 		"remaining_target_words": runtime.Remaining.TargetWords,
 		"remaining_chapters":     runtime.Remaining.Chapters,
 	}
-	if wordCount >= minWords && wordCount <= maxWords {
+	result["word_budget_recommended"] = policy.WithinRecommendation(wordCount)
+	if policy.WithinHardRange(wordCount) {
 		result["word_budget_passed"] = true
 		return
 	}
 	result["word_budget_passed"] = false
 	result["deferred_to_host"] = true
 	direction := "低于"
-	if wordCount > maxWords {
+	if wordCount > policy.HardMaxWords {
 		direction = "高于"
 	}
 	result["word_budget_issues"] = []string{
-		fmt.Sprintf("第 %d 章草稿%s预算区间：当前 %d 字，要求 %d-%d 字。", chapter, direction, wordCount, minWords, maxWords),
+		fmt.Sprintf("第 %d 章草稿%s硬性字数范围：当前 %d 字，要求 %d-%d 字。", chapter, direction, wordCount, policy.HardMinWords, policy.HardMaxWords),
 	}
 	result["next_step"] = fmt.Sprintf(
 		"当前草稿已经保存，但不在 %d-%d 字预算内。立即结束本轮，不要调用 read_chapter、edit_chapter、commit_chapter，不要再次调用 draft_chapter 或整章重写。Host 会按行段逐段派发局部修复，每段保留章节契约、关键情节、人物选择、情感落点和章末钩子；进入预算后再在同一草稿上执行完整质量校验。",
-		minWords, maxWords,
+		policy.HardMinWords, policy.HardMaxWords,
 	)
 }
 

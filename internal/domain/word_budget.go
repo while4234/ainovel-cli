@@ -54,6 +54,65 @@ type CurrentChapterWordBudget struct {
 	Chapter             int `json:"chapter"`
 	RecommendedMinWords int `json:"recommended_min_words"`
 	RecommendedMaxWords int `json:"recommended_max_words"`
+	HardMinWords        int `json:"hard_min_words,omitempty"`
+	HardMaxWords        int `json:"hard_max_words,omitempty"`
+}
+
+// ChapterWordBudgetPolicy separates the rolling recommendation from the
+// enforceable chapter range. Recommendations help pace a book toward its
+// total target; they must not become a destructive per-chapter rewrite loop.
+type ChapterWordBudgetPolicy struct {
+	Chapter             int `json:"chapter"`
+	RecommendedMinWords int `json:"recommended_min_words"`
+	RecommendedMaxWords int `json:"recommended_max_words"`
+	HardMinWords        int `json:"hard_min_words"`
+	HardMaxWords        int `json:"hard_max_words"`
+}
+
+func (p ChapterWordBudgetPolicy) WithinRecommendation(wordCount int) bool {
+	return wordCount >= p.RecommendedMinWords && wordCount <= p.RecommendedMaxWords
+}
+
+func (p ChapterWordBudgetPolicy) WithinHardRange(wordCount int) bool {
+	return wordCount >= p.HardMinWords && wordCount <= p.HardMaxWords
+}
+
+// ResolveChapterWordBudgetPolicy applies a declared per-chapter range as the
+// hard boundary and keeps the dynamic book allocation as a soft
+// recommendation. The approximate book total never shrinks this chapter's
+// hard range: later chapters must not be compressed because earlier chapters
+// legitimately needed more room.
+func ResolveChapterWordBudgetPolicy(runtime WordBudgetRuntime, declaredMin, declaredMax int, hasDeclaredRange bool) (ChapterWordBudgetPolicy, bool) {
+	current := runtime.CurrentChapter
+	if current.Chapter <= 0 || current.RecommendedMinWords <= 0 || current.RecommendedMaxWords < current.RecommendedMinWords {
+		return ChapterWordBudgetPolicy{}, false
+	}
+	hardMin := current.RecommendedMinWords
+	hardMax := current.RecommendedMaxWords
+	if hasDeclaredRange {
+		if declaredMin > 0 {
+			hardMin = declaredMin
+		}
+		if declaredMax > 0 {
+			hardMax = declaredMax
+		}
+		if hardMin <= 0 {
+			hardMin = current.RecommendedMinWords
+		}
+		if hardMax <= 0 {
+			hardMax = current.RecommendedMaxWords
+		}
+	}
+	if hardMin <= 0 || hardMax < hardMin {
+		return ChapterWordBudgetPolicy{}, false
+	}
+	return ChapterWordBudgetPolicy{
+		Chapter:             current.Chapter,
+		RecommendedMinWords: current.RecommendedMinWords,
+		RecommendedMaxWords: current.RecommendedMaxWords,
+		HardMinWords:        hardMin,
+		HardMaxWords:        hardMax,
+	}, true
 }
 
 type WordBudgetCurrentChapter struct {

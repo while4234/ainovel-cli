@@ -571,19 +571,16 @@ func (t *CommitChapterTool) checkWordBudgetGate(chapter int, wordCount int) (*wo
 	if progress == nil || progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 {
 		return nil, nil
 	}
-	runtime, runtimeOK := meta.WordBudget.Runtime(progress, chapter)
-	minWords, maxWords := 0, 0
-	if runtimeOK && runtime.CurrentChapter.Chapter > 0 {
-		minWords = runtime.CurrentChapter.RecommendedMinWords
-		maxWords = runtime.CurrentChapter.RecommendedMaxWords
-	} else {
-		var ok bool
-		minWords, maxWords, ok = meta.WordBudget.ChapterRange()
-		if !ok {
-			return nil, nil
-		}
+	runtime, policy, policyOK, policyErr := t.store.ChapterWordBudgetPolicy(progress, chapter)
+	if policyErr != nil {
+		return nil, fmt.Errorf("resolve chapter word budget: %w: %w", errs.ErrStoreRead, policyErr)
 	}
-	if wordCount >= minWords && wordCount <= maxWords {
+	if !policyOK {
+		return nil, nil
+	}
+	minWords := policy.HardMinWords
+	maxWords := policy.HardMaxWords
+	if policy.WithinHardRange(wordCount) {
 		return nil, nil
 	}
 	direction := "低于"

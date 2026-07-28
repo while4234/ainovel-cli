@@ -209,6 +209,36 @@ func TestDraftChapterReportsNormalWordBudget(t *testing.T) {
 	}
 }
 
+func TestDraftChapterKeepsQualityDraftAboveSoftRecommendation(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Init("test", 55); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	budget := domain.NewWordBudget(200000, "test").WithPlannedChapters(55)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	saveChapterWordRange(t, s, 3000, 6000)
+
+	result := map[string]any{}
+	NewDraftChapterTool(s).addNormalWordBudgetStatus(result, 1, 4165)
+
+	if result["word_budget_passed"] != true || result["word_budget_recommended"] != false {
+		t.Fatalf("soft recommendation became a hard rejection: %+v", result)
+	}
+	if result["deferred_to_host"] == true {
+		t.Fatalf("quality draft within 3000-6000 must not enter trimming recovery: %+v", result)
+	}
+	budgetPayload := result["word_budget"].(map[string]any)
+	if budgetPayload["min_words"] != 3000 || budgetPayload["max_words"] != 6000 ||
+		budgetPayload["recommended_min_words"] != 3273 || budgetPayload["recommended_max_words"] != 4000 {
+		t.Fatalf("unexpected hard/soft ranges: %+v", budgetPayload)
+	}
+}
+
 func TestDraftChapterDefersOverwriteOfCurrentOutOfBudgetDraft(t *testing.T) {
 	s := store.NewStore(testStoreDir(t))
 	if err := s.Init(); err != nil {
