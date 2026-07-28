@@ -378,7 +378,7 @@ func formatWordBudgetStartBlock(budget *domain.WordBudget) string {
 	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("[篇幅契约]\n- target_total_words=%d，这是用于规划章节规模的全书总字数锚点，不是必须精确命中的硬上限，更不是每章字数。\n- total_min_words=%d，total_max_words=%d 是规划与进度预警参考；章节因完整剧情需要而合理膨胀时，不得为了追回总字数而压缩后续章节。\n- 常规小说单章正文约 3000-5000 字；planned_chapters 必须按 target_total_words / 3000-5000 估算。\n- 若 target_total_words <= 8000，默认按一篇连续短篇规划，不分章节；除非用户明确要求分章节，outline 只保存 1 个正文条目。\n- 先决定 planned_chapters，再通过 save_foundation 落盘大纲；系统会据此计算每章推荐区间并在写作阶段注入 working_memory.word_budget。\n- recommended_min_words / recommended_max_words 是滚动配速的软建议，不是机械删改门槛。优先保持章节契约、完整场景因果和人物情感质量；只有超出用户声明的单章硬范围时，才需要在提交前修复字数。\n\n",
+	return fmt.Sprintf("[篇幅契约]\n- target_total_words=%d，这是用于规划章节规模的全书总字数锚点，不是必须精确命中的硬上限，更不是每章字数。\n- total_min_words=%d，total_max_words=%d 是规划与进度预警参考；章节因完整剧情需要而合理膨胀时，不得为了追回总字数而压缩后续章节。\n- 常规小说单章正文约 3000-5000 字；planned_chapters 必须按 target_total_words / 3000-5000 估算。\n- 若 target_total_words <= 8000，默认按一篇连续短篇规划，不分章节；除非用户明确要求分章节，outline 只保存 1 个正文条目。\n- 先决定 planned_chapters，再通过 save_foundation 落盘大纲；系统会据此计算每章推荐区间并在写作阶段注入 working_memory.word_budget。\n- recommended_min_words / recommended_max_words 和用户声明的单章范围都是配速软建议，不是机械删改门槛。优先保持章节契约、完整场景因果和人物情感质量；只有越过更宽的异常膨胀安全边界时，才需要在提交前进行局部修复。\n\n",
 		normalized.TargetTotalWords, normalized.TotalMinWords, normalized.TotalMaxWords)
 }
 

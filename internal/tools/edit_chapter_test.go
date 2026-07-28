@@ -69,7 +69,7 @@ func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) 
 	}
 	first := " REMOVE-ONE-1234567890 "
 	second := " REMOVE-TWO-1234567890 "
-	content := strings.Repeat("a", 50) + first + strings.Repeat("b", 50) + second
+	content := strings.Repeat("a", 70) + first + strings.Repeat("b", 70) + second
 	if err := s.Drafts.SaveDraft(1, content); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
@@ -94,11 +94,11 @@ func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) 
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if !payload.Changed || payload.EditCount != 2 || payload.WordCount != 102 || !payload.WordBudgetPassed {
+	if !payload.Changed || payload.EditCount != 2 || payload.WordCount != 142 || !payload.WordBudgetPassed {
 		t.Fatalf("unexpected batch result: %+v raw=%s", payload, raw)
 	}
 	got, err := s.Drafts.LoadDraft(1)
-	if err != nil || got != strings.Repeat("a", 50)+"x"+strings.Repeat("b", 50)+"y" {
+	if err != nil || got != strings.Repeat("a", 70)+"x"+strings.Repeat("b", 70)+"y" {
 		t.Fatalf("batch edit mismatch: got=%q err=%v", got, err)
 	}
 }
@@ -119,7 +119,7 @@ func TestEditChapterBudgetSegmentPersistsRecoveryCheckpoint(t *testing.T) {
 	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
 	}
-	if err := s.Drafts.SaveDraft(1, strings.Repeat("x", 120)+" keep verbose detail"); err != nil {
+	if err := s.Drafts.SaveDraft(1, strings.Repeat("x", 170)+" keep verbose detail"); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
 	args := json.RawMessage(`{"chapter":1,"budget_segment":0,"edits":[{"old_string":" verbose","new_string":""}]}`)
@@ -200,7 +200,7 @@ func TestEditChapterBudgetSegmentAllowsParagraphMergeInsideHostSegment(t *testin
 	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
 	}
-	content := strings.Repeat("x", 120) + "\n\n重复解释。\n\n继续动作。"
+	content := strings.Repeat("x", 170) + "\n\n重复解释。\n\n继续动作。"
 	if err := s.Drafts.SaveDraft(1, content); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestEditChapterBudgetSegmentSkipsInvalidOldStringAndAppliesValidSubset(t *t
 	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
 	}
-	content := strings.Repeat("x", 120) + " 林舒然哼出一声笑。倒计时还在。"
+	content := strings.Repeat("x", 170) + " 林舒然哼出一声笑。倒计时还在。"
 	if err := s.Drafts.SaveDraft(1, content); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestEditChapterOutOfBudgetDefersUnsegmentedEditToHost(t *testing.T) {
 	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
 	}
-	content := strings.Repeat("a", 140) + "tail"
+	content := strings.Repeat("a", 180) + "tail"
 	if err := s.Drafts.SaveDraft(1, content); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}

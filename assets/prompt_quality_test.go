@@ -28,7 +28,7 @@ func TestCompactRolePromptsRetainQualityCapabilities(t *testing.T) {
 				{ID: "adaptation_evidence", Description: "independent adaptation evidence", AnyOf: []string{"Writer 自报通过不算证据"}},
 				{ID: "simulation", Description: "reinforced simulation safety boundary", AnyOf: []string{"raw simulate source text"}},
 				{ID: "chapter_contract", Description: "scene-level chapter contract review", AnyOf: []string{"chronology, named locations, POV"}},
-				{ID: "draft_budget", Description: "soft rolling pace separated from hard enforcement", AnyOf: []string{"soft rolling pace target", "hard chapter range"}},
+				{ID: "draft_budget", Description: "first draft targets the planned range before generation", AnyOf: []string{"allocate a concrete first-draft word target", "Do not knowingly generate an oversized chapter"}},
 			}},
 		},
 		{

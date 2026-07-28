@@ -233,7 +233,7 @@ func TestDraftChapterKeepsQualityDraftAboveSoftRecommendation(t *testing.T) {
 		t.Fatalf("quality draft within 3000-6000 must not enter trimming recovery: %+v", result)
 	}
 	budgetPayload := result["word_budget"].(map[string]any)
-	if budgetPayload["min_words"] != 3000 || budgetPayload["max_words"] != 6000 ||
+	if budgetPayload["min_words"] != 2000 || budgetPayload["max_words"] != 9000 ||
 		budgetPayload["recommended_min_words"] != 3273 || budgetPayload["recommended_max_words"] != 4000 {
 		t.Fatalf("unexpected hard/soft ranges: %+v", budgetPayload)
 	}
@@ -251,7 +251,7 @@ func TestDraftChapterDefersOverwriteOfCurrentOutOfBudgetDraft(t *testing.T) {
 	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
 	}
-	existing := strings.Repeat("原", 140)
+	existing := strings.Repeat("原", 180)
 	if err := s.Drafts.SaveDraft(1, existing); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}

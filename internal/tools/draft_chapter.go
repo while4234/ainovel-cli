@@ -26,7 +26,7 @@ func NewDraftChapterTool(store *store.Store) *DraftChapterTool {
 
 func (t *DraftChapterTool) Name() string { return "draft_chapter" }
 func (t *DraftChapterTool) Description() string {
-	return "写入章节正文。mode=write 覆盖写入整章，mode=append 追加到现有草稿（续写/修改）"
+	return "写入章节正文。首次写作前必须按 working_memory.word_budget.current_chapter 的 recommended_min_words/recommended_max_words 分配各场景篇幅并预留余量，不要先生成超长正文再依赖删减。mode=write 覆盖写入整章，mode=append 追加到现有草稿（续写/修改）"
 }
 func (t *DraftChapterTool) Label() string { return "写入章节" }
 
@@ -218,6 +218,7 @@ func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chap
 	result["word_budget"] = map[string]any{
 		"min_words":              policy.HardMinWords,
 		"max_words":              policy.HardMaxWords,
+		"range_policy":           "runaway_safety_fence",
 		"recommended_min_words":  policy.RecommendedMinWords,
 		"recommended_max_words":  policy.RecommendedMaxWords,
 		"target_total_words":     runtime.Target.TargetTotalWords,
@@ -237,10 +238,10 @@ func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chap
 		direction = "高于"
 	}
 	result["word_budget_issues"] = []string{
-		fmt.Sprintf("第 %d 章草稿%s硬性字数范围：当前 %d 字，要求 %d-%d 字。", chapter, direction, wordCount, policy.HardMinWords, policy.HardMaxWords),
+		fmt.Sprintf("第 %d 章草稿%s异常膨胀安全范围：当前 %d 字，安全范围 %d-%d 字；用户篇幅设置本身是软目标。", chapter, direction, wordCount, policy.HardMinWords, policy.HardMaxWords),
 	}
 	result["next_step"] = fmt.Sprintf(
-		"当前草稿已经保存，但不在 %d-%d 字预算内。立即结束本轮，不要调用 read_chapter、edit_chapter、commit_chapter，不要再次调用 draft_chapter 或整章重写。Host 会按行段逐段派发局部修复，每段保留章节契约、关键情节、人物选择、情感落点和章末钩子；进入预算后再在同一草稿上执行完整质量校验。",
+		"当前草稿已经保存，但超出 %d-%d 字的异常膨胀安全范围。立即结束本轮，不要调用 read_chapter、edit_chapter、commit_chapter，不要再次调用 draft_chapter 或整章重写。Host 会按行段逐段派发局部修复，每段保留章节契约、关键情节、人物选择、情感落点和章末钩子；进入安全范围后再在同一草稿上执行完整质量校验。",
 		policy.HardMinWords, policy.HardMaxWords,
 	)
 }

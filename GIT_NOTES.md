@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `current HEAD` `fix: target chapter length before generation`:
+  makes Writer allocate the first draft inside the current recommendation and
+  leave headroom below the user chapter range instead of generating an
+  oversized chapter for Host to trim afterward. The user range and approximate
+  book total remain planning guidance; only a wider 2/3-to-3/2 runaway safety
+  fence triggers segmented recovery, so the preserved 6,573-character chapter
+  4 draft proceeds to quality validation instead of another deletion loop.
 - 2026-07-28 `pending` `fix: stabilize resumed chapter validation`:
   restores the required consistency-before-de-AI validation order for resumed
   drafts, requires planned-scene evidence to follow narrative order, and bounds

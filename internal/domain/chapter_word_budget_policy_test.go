@@ -20,14 +20,14 @@ func TestResolveChapterWordBudgetPolicyKeepsRecommendationSoft(t *testing.T) {
 	if !ok {
 		t.Fatal("expected policy")
 	}
-	if policy.HardMinWords != 3000 || policy.HardMaxWords != 6000 {
-		t.Fatalf("hard range = %d-%d, want 3000-6000", policy.HardMinWords, policy.HardMaxWords)
+	if policy.HardMinWords != 2000 || policy.HardMaxWords != 9000 {
+		t.Fatalf("safety range = %d-%d, want 2000-9000", policy.HardMinWords, policy.HardMaxWords)
 	}
 	if policy.WithinRecommendation(4165) {
 		t.Fatal("4165 should remain above the soft recommendation")
 	}
-	if !policy.WithinHardRange(4165) || !policy.WithinHardRange(4843) {
-		t.Fatalf("quality-preserving chapters should pass the hard range: %+v", policy)
+	if !policy.WithinHardRange(4165) || !policy.WithinHardRange(6573) {
+		t.Fatalf("quality-preserving chapters should pass the safety range: %+v", policy)
 	}
 }
 
@@ -48,7 +48,24 @@ func TestResolveChapterWordBudgetPolicyDoesNotCompressLaterChapters(t *testing.T
 	if !ok {
 		t.Fatal("expected policy")
 	}
-	if policy.HardMinWords != 3000 || policy.HardMaxWords != 6000 {
-		t.Fatalf("approximate total compressed chapter range to %d-%d", policy.HardMinWords, policy.HardMaxWords)
+	if policy.HardMinWords != 2000 || policy.HardMaxWords != 9000 {
+		t.Fatalf("approximate total compressed chapter safety range to %d-%d", policy.HardMinWords, policy.HardMaxWords)
+	}
+}
+
+func TestResolveChapterWordBudgetPolicyKeepsRunawaySafetyFence(t *testing.T) {
+	runtime := WordBudgetRuntime{
+		CurrentChapter: CurrentChapterWordBudget{
+			Chapter:             4,
+			RecommendedMinWords: 3273,
+			RecommendedMaxWords: 4000,
+		},
+	}
+	policy, ok := ResolveChapterWordBudgetPolicy(runtime, 3000, 6000, true)
+	if !ok {
+		t.Fatal("expected policy")
+	}
+	if policy.WithinHardRange(1999) || policy.WithinHardRange(9001) {
+		t.Fatalf("runaway safety fence did not reject extreme draft: %+v", policy)
 	}
 }

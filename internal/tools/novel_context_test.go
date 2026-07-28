@@ -454,7 +454,7 @@ func TestContextToolSeparatesSoftAndHardChapterWordRanges(t *testing.T) {
 	}
 	current := payload.Working.WordBudget.Current
 	if current.RecommendedMinWords != 3273 || current.RecommendedMaxWords != 4000 ||
-		current.HardMinWords != 3000 || current.HardMaxWords != 6000 {
+		current.HardMinWords != 2000 || current.HardMaxWords != 9000 {
 		t.Fatalf("unexpected context ranges: %+v", current)
 	}
 }

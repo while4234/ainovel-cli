@@ -82,7 +82,7 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	}
 	if state.InProgressWordCount != len([]rune(draft)) ||
 		state.InProgressLineCount != len(strings.Split(draft, "\n")) ||
-		state.InProgressWordMin != 45 || state.InProgressWordMax != 55 ||
+		state.InProgressWordMin != 30 || state.InProgressWordMax != 82 ||
 		state.InProgressWordBudgetValid {
 		t.Fatalf("in-progress word budget facts were not loaded: %+v", state)
 	}
@@ -125,12 +125,12 @@ func TestLoadStateExcludesPendingPolishFromWriterBudgetRecovery(t *testing.T) {
 	}
 }
 
-func TestLoadStateUsesUserHardRangeInsteadOfSoftRecommendation(t *testing.T) {
+func TestLoadStateKeepsModestDeclaredRangeOverrunOutOfTrimRecovery(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
-	draft := strings.Repeat("正", 4165)
+	draft := strings.Repeat("正", 6573)
 	if err := st.Drafts.SaveDraft(1, draft); err != nil {
 		t.Fatal(err)
 	}
@@ -157,11 +157,11 @@ func TestLoadStateUsesUserHardRangeInsteadOfSoftRecommendation(t *testing.T) {
 	}
 
 	state := LoadState(st)
-	if state.InProgressWordMin != 3000 || state.InProgressWordMax != 6000 || !state.InProgressWordBudgetValid {
+	if state.InProgressWordMin != 2000 || state.InProgressWordMax != 9000 || !state.InProgressWordBudgetValid {
 		t.Fatalf("soft recommendation incorrectly triggered recovery: %+v", state)
 	}
 	if got := Route(state); got == nil || got.Agent != "writer" || got.ResumeRecovery {
-		t.Fatalf("in-range draft should continue normal validation, got %+v", got)
+		t.Fatalf("modest overrun should continue normal validation, got %+v", got)
 	}
 }
 

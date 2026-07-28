@@ -128,14 +128,14 @@ func TestCommitChapterGateAllowsSoftRecommendationOverage(t *testing.T) {
 		t.Fatalf("checkWordBudgetGate: %v", err)
 	}
 	if rejection != nil {
-		t.Fatalf("4843 words are above the recommendation but within the user hard range: %+v", rejection)
+		t.Fatalf("4843 words are above the recommendation but within the runaway safety range: %+v", rejection)
 	}
-	rejection, err = NewCommitChapterTool(s).checkWordBudgetGate(1, 6001)
+	rejection, err = NewCommitChapterTool(s).checkWordBudgetGate(1, 9001)
 	if err != nil {
 		t.Fatalf("checkWordBudgetGate hard overflow: %v", err)
 	}
-	if rejection == nil || rejection.minWords != 3000 || rejection.maxWords != 6000 {
-		t.Fatalf("hard overflow must still be rejected: %+v", rejection)
+	if rejection == nil || rejection.minWords != 2000 || rejection.maxWords != 9000 {
+		t.Fatalf("runaway overflow must still be rejected: %+v", rejection)
 	}
 }
 

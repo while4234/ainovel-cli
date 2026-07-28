@@ -77,32 +77,37 @@ func (p ChapterWordBudgetPolicy) WithinHardRange(wordCount int) bool {
 	return wordCount >= p.HardMinWords && wordCount <= p.HardMaxWords
 }
 
-// ResolveChapterWordBudgetPolicy applies a declared per-chapter range as the
-// hard boundary and keeps the dynamic book allocation as a soft
-// recommendation. The approximate book total never shrinks this chapter's
-// hard range: later chapters must not be compressed because earlier chapters
-// legitimately needed more room.
+// ResolveChapterWordBudgetPolicy treats both the rolling allocation and a
+// declared per-chapter range as planning guidance. The wider hard range is
+// only a runaway-output safety fence. This keeps a content-complete chapter
+// from entering a destructive trim loop merely because it modestly exceeds
+// the estimate, while still catching obviously truncated or inflated drafts.
+//
+// The approximate book total never shrinks the safety range: later chapters
+// must not be compressed because earlier chapters legitimately needed room.
 func ResolveChapterWordBudgetPolicy(runtime WordBudgetRuntime, declaredMin, declaredMax int, hasDeclaredRange bool) (ChapterWordBudgetPolicy, bool) {
 	current := runtime.CurrentChapter
 	if current.Chapter <= 0 || current.RecommendedMinWords <= 0 || current.RecommendedMaxWords < current.RecommendedMinWords {
 		return ChapterWordBudgetPolicy{}, false
 	}
-	hardMin := current.RecommendedMinWords
-	hardMax := current.RecommendedMaxWords
+	softMin := current.RecommendedMinWords
+	softMax := current.RecommendedMaxWords
 	if hasDeclaredRange {
 		if declaredMin > 0 {
-			hardMin = declaredMin
+			softMin = declaredMin
 		}
 		if declaredMax > 0 {
-			hardMax = declaredMax
+			softMax = declaredMax
 		}
-		if hardMin <= 0 {
-			hardMin = current.RecommendedMinWords
+		if softMin <= 0 {
+			softMin = current.RecommendedMinWords
 		}
-		if hardMax <= 0 {
-			hardMax = current.RecommendedMaxWords
+		if softMax <= 0 {
+			softMax = current.RecommendedMaxWords
 		}
 	}
+	hardMin := softMin * 2 / 3
+	hardMax := softMax * 3 / 2
 	if hardMin <= 0 || hardMax < hardMin {
 		return ChapterWordBudgetPolicy{}, false
 	}
