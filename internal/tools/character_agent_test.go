@@ -557,6 +557,7 @@ func stagedAdaptationCharacterToolStore(t *testing.T) *store.Store {
 func completeCharacterCandidate() []domain.Character {
 	return []domain.Character{{
 		ID:          "char-lin-che",
+		Gender:      "female",
 		Name:        "林澈",
 		Aliases:     []string{},
 		Role:        "调查者",

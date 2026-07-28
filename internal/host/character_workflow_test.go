@@ -365,6 +365,7 @@ func stagedOriginalCharacterWorkflow(
 func completeHostCharacter() domain.Character {
 	return domain.Character{
 		ID:          "char-investigator",
+		Gender:      "female",
 		Name:        "Lin Che",
 		Aliases:     []string{},
 		Role:        "protagonist investigator",
