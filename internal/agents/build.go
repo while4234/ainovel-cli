@@ -179,6 +179,7 @@ func BuildCoordinator(
 	readChapter := tools.NewReadChapterTool(store)
 	askUser := tools.NewAskUserTool()
 	completionGate := adapt.NewCompletionGate(store)
+	simulationCheck := tools.NewSimulationCheckService(store, cfg.EffectiveSimulationMode())
 
 	architectTools := []agentcore.Tool{
 		architectContextTool,
@@ -196,6 +197,7 @@ func BuildCoordinator(
 	editorTools := []agentcore.Tool{
 		editorContextTool,
 		readChapter,
+		revisionFenceWrites(store.Revisions, tools.NewCheckSimulationTool(simulationCheck)),
 		revisionFenceWrites(store.Revisions, tools.NewSaveOriginalPlanningAuditTool(store)),
 		revisionFenceWrites(store.Revisions, tools.NewSaveReviewTool(store)),
 		revisionFenceWrites(store.Revisions, tools.NewSaveArcSummaryTool(store)),
@@ -206,7 +208,7 @@ func BuildCoordinator(
 		return nil, nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("editor", editorTools,
-		"novel_context", "read_chapter", "save_original_planning_audit", "save_review", "save_arc_summary", "save_volume_summary"); err != nil {
+		"novel_context", "read_chapter", "check_simulation", "save_original_planning_audit", "save_review", "save_arc_summary", "save_volume_summary"); err != nil {
 		return nil, nil, nil, nil, nil, nil, err
 	}
 	if err := validateAgentToolRegistry("character", characterTools,
@@ -268,11 +270,14 @@ func BuildCoordinator(
 		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckConsistencyTool(store, continuityAuditorModel), store)),
 		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckAdaptationTool(store), store)),
 		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckDeAITool(store), store)),
-		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCommitChapterTool(store, completionGate), store)),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(tools.NewCheckSimulationTool(simulationCheck), store)),
+		revisionFenceWrites(store.Revisions, newWriterChapterInferenceTool(
+			tools.NewCommitChapterToolWithSimulation(store, completionGate, simulationCheck), store,
+		)),
 	}
 	if err := validateAgentToolRegistry("writer", writerTools,
 		"novel_context", "read_chapter", "plan_chapter", "draft_chapter", "edit_chapter", "repair_de_ai_batch",
-		"check_consistency", "check_adaptation", "check_de_ai", "commit_chapter"); err != nil {
+		"check_consistency", "check_adaptation", "check_de_ai", "check_simulation", "commit_chapter"); err != nil {
 		return nil, nil, nil, nil, nil, nil, err
 	}
 
@@ -419,7 +424,7 @@ func BuildCoordinator(
 	}
 
 	writerPrompt := bundle.Prompts.Writer
-	writerPrompt += "\n\nRuntime tool contract: this Writer run has registered tools `novel_context`, `read_chapter`, `plan_chapter`, `draft_chapter`, `edit_chapter`, `repair_de_ai_batch`, `check_consistency`, `check_adaptation`, `check_de_ai`, and `commit_chapter`. Use these exact names. If a tool call is rejected as unavailable, do not invent a replacement name; report a tool-registry error so the Host can repair the runtime."
+	writerPrompt += "\n\nRuntime tool contract: this Writer run has registered tools `novel_context`, `read_chapter`, `plan_chapter`, `draft_chapter`, `edit_chapter`, `repair_de_ai_batch`, `check_consistency`, `check_adaptation`, `check_de_ai`, `check_simulation`, and `commit_chapter`. Use these exact names. If a tool call is rejected as unavailable, do not invent a replacement name; report a tool-registry error so the Host can repair the runtime."
 	if style, ok := bundle.Styles[cfg.Style]; ok {
 		writerPrompt += "\n\n" + style
 	}
@@ -532,7 +537,7 @@ func BuildCoordinator(
 		OnSummaryRetry: onSummaryRetry,
 	})
 
-	coordinatorPrompt := bundle.Prompts.Coordinator + "\n\nCoordinator tool ownership contract: Coordinator itself only has `subagent`, `novel_context`, `save_user_rules`, and `reopen_book`. It does not directly own Writer tools such as `read_chapter`, `check_consistency`, `check_adaptation`, or `commit_chapter`; those are available inside the Writer subagent. Never tell the user that those Writer tools are missing merely because they are absent from Coordinator's own interface. After a Writer or Editor subagent returns, follow the Host route and dispatch the next required subagent; do not perform Writer checks yourself."
+	coordinatorPrompt := bundle.Prompts.Coordinator + "\n\nCoordinator tool ownership contract: Coordinator itself only has `subagent`, `novel_context`, `save_user_rules`, and `reopen_book`. It does not directly own Writer tools such as `read_chapter`, `check_consistency`, `check_adaptation`, `check_simulation`, or `commit_chapter`; those are available inside the Writer subagent. Never tell the user that those Writer tools are missing merely because they are absent from Coordinator's own interface. After a Writer or Editor subagent returns, follow the Host route and dispatch the next required subagent; do not perform Writer checks yourself."
 	agent := agentcore.NewAgent(
 		agentcore.WithModel(coordinatorModel),
 		agentcore.WithSystemPrompt(globalprompt.Apply(coordinatorPrompt)),

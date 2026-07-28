@@ -83,20 +83,31 @@ type DimensionScore struct {
 
 // ReviewEntry Editor 的审阅条目。
 type ReviewEntry struct {
-	Chapter          int                `json:"chapter"`
-	Scope            string             `json:"scope"` // chapter / global / arc / arc_batch
-	Volume           int                `json:"volume,omitempty"`
-	Arc              int                `json:"arc,omitempty"`
-	BatchFrom        int                `json:"batch_from,omitempty"`
-	BatchTo          int                `json:"batch_to,omitempty"`
-	Issues           []ConsistencyIssue `json:"issues"`
-	Dimensions       []DimensionScore   `json:"dimensions,omitempty"`      // 分维度评分
-	ContractStatus   string             `json:"contract_status,omitempty"` // met / partial / missed
-	ContractMisses   []string           `json:"contract_misses,omitempty"` // 未达成的 contract 条目
-	ContractNotes    string             `json:"contract_notes,omitempty"`  // 对 contract 履行情况的简述
-	Verdict          string             `json:"verdict"`                   // accept / polish / rewrite
-	Summary          string             `json:"summary"`
-	AffectedChapters []int              `json:"affected_chapters,omitempty"` // 需要重写/打磨的章节号
+	Chapter                  int                       `json:"chapter"`
+	DraftSHA256              string                    `json:"draft_sha256,omitempty"`
+	SimulationCheckDigest    string                    `json:"simulation_check_digest,omitempty"`
+	SimulationShouldFindings []SimulationShouldFinding `json:"simulation_should_findings,omitempty"`
+	Scope                    string                    `json:"scope"` // chapter / global / arc / arc_batch
+	Volume                   int                       `json:"volume,omitempty"`
+	Arc                      int                       `json:"arc,omitempty"`
+	BatchFrom                int                       `json:"batch_from,omitempty"`
+	BatchTo                  int                       `json:"batch_to,omitempty"`
+	Issues                   []ConsistencyIssue        `json:"issues"`
+	Dimensions               []DimensionScore          `json:"dimensions,omitempty"`      // 分维度评分
+	ContractStatus           string                    `json:"contract_status,omitempty"` // met / partial / missed
+	ContractMisses           []string                  `json:"contract_misses,omitempty"` // 未达成的 contract 条目
+	ContractNotes            string                    `json:"contract_notes,omitempty"`  // 对 contract 履行情况的简述
+	Verdict                  string                    `json:"verdict"`                   // accept / polish / rewrite
+	Summary                  string                    `json:"summary"`
+	AffectedChapters         []int                     `json:"affected_chapters,omitempty"` // 需要重写/打磨的章节号
+}
+
+// SimulationShouldFinding is Editor-owned subjective evidence. Deterministic
+// copy and measurable-must facts remain owned by SimulationCheckReport.
+type SimulationShouldFinding struct {
+	FeatureID  string `json:"feature_id"`
+	Evidence   string `json:"evidence"`
+	Suggestion string `json:"suggestion"`
 }
 
 // CriticalCount 返回 critical 级别问题数量。

@@ -43,6 +43,7 @@ type Store struct {
 	Usage                  *UsageStore
 	Simulation             *SimulationStore
 	SimulationContracts    *SimulationContractStore
+	SimulationChecks       *SimulationCheckStore
 	DeAI                   *DeAIStore
 	Adaptation             *AdaptationStore
 	Continuation           *ContinuationStore
@@ -91,6 +92,7 @@ func NewStore(dir string) *Store {
 		Usage:                  NewUsageStore(newIO(dir)),
 		Simulation:             NewSimulationStore(newIO(dir)),
 		SimulationContracts:    NewSimulationContractStore(newIO(dir)),
+		SimulationChecks:       NewSimulationCheckStore(newIO(dir)),
 		DeAI:                   NewDeAIStore(newIO(dir)),
 		Adaptation:             adaptation,
 		Continuation:           NewContinuationStore(newIO(dir), migration),

@@ -205,7 +205,7 @@ func currentWriterTurn(msgs []agentcore.AgentMessage) []agentcore.AgentMessage {
 func hasWriterValidationReceipt(msgs []agentcore.AgentMessage) bool {
 	return hasSuccessfulToolResult(msgs, func(name string) bool {
 		switch name {
-		case "check_consistency", "check_adaptation", "check_de_ai":
+		case "check_consistency", "check_adaptation", "check_de_ai", "check_simulation":
 			return true
 		default:
 			return false

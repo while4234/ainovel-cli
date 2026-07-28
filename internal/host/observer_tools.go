@@ -766,7 +766,7 @@ func displayToolName(tool string, args json.RawMessage) string {
 		if json.Unmarshal(args, &p) == nil && p.Type != "" {
 			return fmt.Sprintf("%s[%s]", tool, p.Type)
 		}
-	case "commit_chapter", "plan_chapter", "draft_chapter", "check_consistency", "check_de_ai", "repair_de_ai_batch":
+	case "commit_chapter", "plan_chapter", "draft_chapter", "check_consistency", "check_de_ai", "check_simulation", "repair_de_ai_batch":
 		var p struct {
 			Chapter int `json:"chapter"`
 		}

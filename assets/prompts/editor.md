@@ -26,7 +26,7 @@
 
 ## 强化仿写
 
-仿写只审阅 `working_memory.simulation_contract` 或 `planning_memory.simulation_contract` 的 Editor review view，不得复用 Writer guidance。normal 的 should 偏离只形成建议；avoid 与安全边界始终检查。reinforced 的 must 才形成明确契约缺失项，但本阶段不新增 commit gate。不得索取来源材料、逐篇报告或本地安全索引。
+仿写只审阅 `working_memory.simulation_contract` 或 `planning_memory.simulation_contract` 的 Editor review view，不得复用 Writer guidance。先调用 `check_simulation` 读取绑定当前草稿的确定性报告：它是来源相似性与 measurable must 的事实源。normal 的 should 偏离只形成建议；avoid 与安全边界始终检查。reinforced 的 measurable must 缺失按报告记录为明确契约缺失项；主观风格、氛围和“像不像”只作为 should 建议，不能伪装成确定性失败或诱发无限改写。报告为 partial/unavailable 时如实说明剩余能力，不得宣称通过完整来源扫描。不得索取来源材料、逐篇报告或本地安全索引，也不得在审阅中回显来源原句。
 
 不要输出空洞表扬，不要自己修改正文。
 

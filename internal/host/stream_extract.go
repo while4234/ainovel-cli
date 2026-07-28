@@ -32,6 +32,7 @@ var toolDisplays = map[string]toolDisplay{
 	"read_chapter":        {header: "✻ 读章节"},
 	"check_consistency":   {header: "✻ 一致性检查"},
 	"check_de_ai":         {header: "✻ 去AI化审校"},
+	"check_simulation":    {header: "✻ 仿写安全检查"},
 	"novel_context":       {header: "✻ 查询上下文"},
 }
 

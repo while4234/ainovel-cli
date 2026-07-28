@@ -54,7 +54,7 @@ Web-only AI 长篇小说创作工作台。Coordinator 驱动 Architect / Writer 
 | **Coordinator** | 调度全局，处理评审裁定和用户干预 | `subagent` `novel_context` |
 | **Character** | 独占生成、补全与独立审查规范角色卡；确认前只写候选区 | `character_context` `save_character_candidate` `save_character_review` |
 | **Architect** | 生成前提、世界规则和大纲；只消费已确认角色卡 | `novel_context` `save_foundation` |
-| **Writer** | 自主完成一章的构思、写作、自审和提交 | `novel_context` `read_chapter` `plan_chapter` `draft_chapter` `check_consistency` `check_adaptation` `commit_chapter` |
+| **Writer** | 自主完成一章的构思、写作、自审和提交 | `novel_context` `read_chapter` `plan_chapter` `draft_chapter` `check_consistency` `check_adaptation` `check_de_ai` `check_simulation` `commit_chapter` |
 | **Editor** | 阅读原文，从结构和审美两个层面审阅 | `novel_context` `read_chapter` `save_review` `save_arc_summary` `save_volume_summary` |
 
 ### 写作流程
@@ -445,6 +445,7 @@ POST /api/projects/{id}/models/apply-recommendation
 ```text
 output/novel/meta/simulation_profile.json        # v2 portable 画像
 output/novel/meta/simulation_evidence.local.json # 本项目专用逐篇证据、来源信息与 safety index
+output/novel/meta/simulation_checks/NNN.json     # 绑定当前草稿/画像/契约/checker 的章节检查报告
 ```
 
 `simulation_profile.json` 默认使用 `simulation_profile.v2`，只保存脱敏 feature、support/coverage/confidence、阶段/冲突、能力/健康状态和分析签名，不包含绝对语料目录、逐篇报告、专名或标志短语，可安全用于画像库和跨项目导入。`simulation_evidence.local.json` 保留当前分析流程仍需的来源路径、结构化逐篇报告和本地 safety index，只在本项目内读取，不进入画像库或 Agent 上下文。旧 `simulation_profile.v1` 仍可直接加载；首次成功写入时会确定性投影为 v2，并把旧 reports 分流到 local evidence。缺少分析签名的旧画像明确标记为 `legacy` / `analysis_signature_unknown`，不会冒充 fresh。
@@ -469,7 +470,11 @@ Runner 对超过 15,000 rune 的单文件使用确定性的头/中/尾三窗口�
 
 `reinforced` 需要在 Web 右侧栏开启：`设定 -> 仿写画像 -> 仿写模式`。开启后，冷启动共创、阶段共创和正式写作使用同一结构化 contract：预算和维度覆盖显著高于 normal，只有稳定、高覆盖、高置信度且可客观验收的结构/钩子/节奏 feature 可成为 `must`；模糊审美仍是 `should`。用户要求、creative brief、Foundation、改编/章节合同和当前 POV 始终优先。
 
-无论 `normal` 还是 `reinforced`，Agent 上下文只解析 contract 引用的 portable 抽象 feature，不注入 `source_reports`、raw source、本地路径、safety index、来源专名或 signature phrase 库；也不会复制源文句子、人物、地名、专有设定或固定桥段。确定性相似性扫描和 commit gate 属于后续安全阶段，本 contract 本身不新增提交门禁。
+无论 `normal` 还是 `reinforced`，Agent 上下文只解析 contract 引用的 portable 抽象 feature，不注入 `source_reports`、raw source、本地路径、safety index、来源专名或 signature phrase 库；也不会复制源文句子、人物、地名、专有设定或固定桥段。
+
+Writer 在最终正文修改结束后、`commit_chapter` 前必须运行 `check_simulation`。本地 scanner 会在进程内做 Unicode/空白/标点规范化，结合跨来源 rarity 检查长连续片段、罕见 n-gram、来源特有专名/术语、标志短语和高辨识度短语组合；常用短表达会通过 allowlist 和跨来源支持数降权。报告只展示当前草稿中的可修改片段与脱敏 source reference，不回显来源原句、绝对路径、完整专名库，也不把索引发送给模型。草稿、profile digest、contract revision/mode、安全索引或 checker 配置变化后，旧报告立即 stale，commit gate 要求重跑。
+
+`normal` 只因确定性 copy/safety 风险阻塞；主观 should 偏离仅交给 Editor 建议。`reinforced` 还会阻塞缺失的 measurable must，但只接受章节计划/细纲中的结构化证据，不用脆弱关键词给风格“像不像”打硬分。缺少本地 safety index 的 portable-only/legacy 项目会明确返回 `partial/unavailable`，不会虚假声称通过完整来源扫描，也不会仅因能力缺失无条件禁止提交。该检查是工程风险控制，不构成法律结论。
 
 Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目录，把导入的画像 JSON 保存到当前项目的 `profiles/imported/` 目录；小说改编上传的原文保存在当前项目的 `uploads/adaptation/` 目录。这些文件不会被写入仓库，也不会混到其他 Web 项目里。点击“分析”后，语料内容会按所选模型/provider 的正常调用路径发送给模型生成画像；不要上传没有授权处理的私人文本。
 

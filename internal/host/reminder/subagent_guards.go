@@ -10,6 +10,7 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	adaptpkg "github.com/voocel/ainovel-cli/internal/host/adapt"
+	"github.com/voocel/ainovel-cli/internal/simulationcheck"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -152,6 +153,9 @@ func writerStopBlockMessage(st *store.Store) string {
 			if msg := writerDeAICheckBlockMessage(st, chapter, content); msg != "" {
 				return msg
 			}
+			if msg := writerSimulationCheckBlockMessage(st, chapter, content); msg != "" {
+				return msg
+			}
 		}
 		return generic
 	}
@@ -160,6 +164,9 @@ func writerStopBlockMessage(st *store.Store) string {
 		plan.RewritePolicy != domain.AdaptationRewritePreserveDetails {
 		if content, _, contentErr := st.Drafts.LoadChapterContent(chapter); contentErr == nil {
 			if msg := writerDeAICheckBlockMessage(st, chapter, content); msg != "" {
+				return msg
+			}
+			if msg := writerSimulationCheckBlockMessage(st, chapter, content); msg != "" {
 				return msg
 			}
 		}
@@ -200,7 +207,55 @@ func writerStopBlockMessage(st *store.Store) string {
 	if msg := writerDeAICheckBlockMessage(st, chapter, content); msg != "" {
 		return msg
 	}
+	if msg := writerSimulationCheckBlockMessage(st, chapter, content); msg != "" {
+		return msg
+	}
 	return generic
+}
+
+func writerSimulationCheckBlockMessage(st *store.Store, chapter int, content string) string {
+	if st == nil || st.Simulation == nil || st.SimulationContracts == nil ||
+		st.SimulationChecks == nil || chapter <= 0 || content == "" {
+		return ""
+	}
+	profile, err := st.Simulation.LoadPortable()
+	if err != nil || profile == nil {
+		return ""
+	}
+	contract, err := st.SimulationContracts.Load()
+	if err != nil || contract == nil {
+		return fmt.Sprintf("第 %d 章尚未建立当前仿写检查契约。下一次响应直接调用 check_simulation；不要再次修改正文或直接 commit_chapter。", chapter)
+	}
+	if contract.Status == domain.SimulationContractInactive {
+		return ""
+	}
+	evidence, _ := st.Simulation.LoadLocalEvidence()
+	var index *domain.SimulationSafetyIndex
+	if evidence != nil && evidence.ProfileDigest == profile.ProfileDigest {
+		index = evidence.SafetyIndex
+	}
+	report, err := st.SimulationChecks.Load(chapter)
+	if err != nil {
+		return fmt.Sprintf("第 %d 章无法读取仿写检查报告：%v。下一次响应直接调用 check_simulation。", chapter, err)
+	}
+	binding := simulationcheck.Binding{
+		ProjectDigest:     store.TextSHA256(strings.ToLower(strings.TrimSpace(st.Dir()))),
+		Chapter:           chapter,
+		DraftDigest:       store.TextSHA256(content),
+		ProfileDigest:     profile.ProfileDigest,
+		ContractRevision:  contract.Revision,
+		ContractDigest:    contract.ContractDigest,
+		EffectiveMode:     contract.EffectiveMode,
+		CheckerDigest:     simulationcheck.ConfigurationDigest(),
+		SafetyIndexDigest: simulationcheck.SafetyIndexDigest(index),
+	}
+	if current, reason := simulationcheck.Current(report, binding); !current {
+		return fmt.Sprintf("第 %d 章尚未对当前最终草稿完成仿写检查（%s）。下一次响应直接调用 check_simulation；不得复用旧报告或直接 commit_chapter。", chapter, reason)
+	}
+	if !report.Passed {
+		return fmt.Sprintf("第 %d 章仿写检查未通过（copy=%s contract=%s）。按报告 remediation 修复后重跑全部受影响检查和 check_simulation；不得直接 commit_chapter。", chapter, report.CopyStatus, report.ContractStatus)
+	}
+	return ""
 }
 
 func writerConsistencyCheckBlockMessage(st *store.Store, chapter int, content string) string {

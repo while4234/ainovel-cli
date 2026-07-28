@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `this commit` `feat: gate simulation safety before chapter commit`:
+  adds digest/revision-bound SimulationCheckReport receipts, an in-process
+  normalized rarity-aware scanner with bounded/cancelable caches, truthful
+  portable-only degradation, reinforced measurable-must checks, shared
+  Writer/Editor tooling, and exact-draft commit invalidation. Focused
+  simulation, store, tools, agents, assets, benchmark, and vet validation are
+  recorded in `.codex/HANDOFF.md`.
 - 2026-07-29 `this commit` `feat: add role-bound simulation contracts`:
   centralizes normal/reinforced feature budgets and health degradation, persists
   a digest/revision-bound SimulationContract, binds ContextTool instances to

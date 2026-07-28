@@ -23,6 +23,9 @@ func TestSaveReviewPersistsContractAssessment(t *testing.T) {
 			t.Fatalf("MarkChapterComplete(%d): %v", ch, err)
 		}
 	}
+	if err := s.Drafts.SaveDraft(3, "用于绑定 Editor 审阅的当前合成草稿。"); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
 
 	tool := NewSaveReviewTool(s)
 	args, err := json.Marshal(map[string]any{
@@ -60,6 +63,9 @@ func TestSaveReviewPersistsContractAssessment(t *testing.T) {
 	}
 	if review.Dimension("aesthetic") == nil {
 		t.Fatalf("expected aesthetic dimension persisted, got %+v", review.Dimensions)
+	}
+	if review.DraftSHA256 != store.TextSHA256("用于绑定 Editor 审阅的当前合成草稿。") {
+		t.Fatalf("review draft digest = %q", review.DraftSHA256)
 	}
 }
 

@@ -20,10 +20,27 @@ import (
 type CommitChapterTool struct {
 	store          *store.Store
 	completionGate CompletionGate
+	simulationGate ChapterSimulationGate
 }
 
 func NewCommitChapterTool(store *store.Store, gates ...CompletionGate) *CommitChapterTool {
 	return &CommitChapterTool{store: store, completionGate: completionGateFrom(gates)}
+}
+
+// ChapterSimulationGate validates the exact final draft immediately before
+// commit. Implementations must not trust model-supplied mode or digests.
+type ChapterSimulationGate interface {
+	EnsureCurrent(context.Context, int, string) error
+}
+
+func NewCommitChapterToolWithSimulation(
+	st *store.Store,
+	completionGate CompletionGate,
+	simulationGate ChapterSimulationGate,
+) *CommitChapterTool {
+	return &CommitChapterTool{
+		store: st, completionGate: completionGate, simulationGate: simulationGate,
+	}
 }
 
 // commitOutput 在 domain.CommitResult 之上嵌入扩展字段，保持 domain 包不依赖 rules。
@@ -97,7 +114,7 @@ func (t *CommitChapterTool) Schema() map[string]any {
 	)
 }
 
-func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+func (t *CommitChapterTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
 		Chapter             int                        `json:"chapter"`
 		Summary             string                     `json:"summary"`
@@ -134,6 +151,7 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		progress, _ := t.store.Progress.Load()
 		if progress != nil && slices.Contains(progress.PendingRewrites, a.Chapter) {
 			return t.executeRewriteCommit(
+				ctx,
 				a.Chapter,
 				a.Summary,
 				a.Characters,
@@ -197,6 +215,9 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		return nil, err
 	}
 	if err := t.ensureAdaptationGate(a.Chapter, content); err != nil {
+		return nil, err
+	}
+	if err := t.ensureSimulationGate(ctx, a.Chapter, content); err != nil {
 		return nil, err
 	}
 	if budgetRejection, err := t.checkWordBudgetGate(a.Chapter, wordCount); err != nil {
@@ -510,6 +531,13 @@ func (t *CommitChapterTool) ensureDeAIGate(chapter int, content string) error {
 	return nil
 }
 
+func (t *CommitChapterTool) ensureSimulationGate(ctx context.Context, chapter int, content string) error {
+	if t == nil || t.simulationGate == nil {
+		return nil
+	}
+	return t.simulationGate.EnsureCurrent(ctx, chapter, content)
+}
+
 // checkRules 对章节正文做机械检查：内置产品底线 Lint（机制残留，始终执行）
 // + 用户规则 Check（读本书快照的 structured；快照缺失退到内置默认，保证机械底线始终在）。
 type wordBudgetGateRejection struct {
@@ -613,6 +641,7 @@ func (t *CommitChapterTool) checkRules(text string, wordCount int) []rules.Viola
 // 跳过所有世界状态追加（timeline / foreshadow / relationship / state_changes）与弧边界检测，
 // 这些已在章节原始提交时应用。
 func (t *CommitChapterTool) executeRewriteCommit(
+	ctx context.Context,
 	chapter int,
 	summary string,
 	characters, keyEvents []string,
@@ -659,6 +688,9 @@ func (t *CommitChapterTool) executeRewriteCommit(
 			chapter, chapter, errs.ErrToolPrecondition)
 	}
 	if err := t.ensureAdaptationGate(chapter, content); err != nil {
+		return nil, err
+	}
+	if err := t.ensureSimulationGate(ctx, chapter, content); err != nil {
 		return nil, err
 	}
 	if budgetRejection, err := t.checkWordBudgetGate(chapter, wordCount); err != nil {

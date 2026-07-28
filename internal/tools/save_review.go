@@ -49,6 +49,11 @@ func (t *SaveReviewTool) Schema() map[string]any {
 		schema.Property("verdict", schema.Enum("维度结论；系统会按 score 自动覆盖，≥80 pass / ≥60 warning / <60 fail", "pass", "warning", "fail")).Required(),
 		schema.Property("comment", schema.String("该维度的简要结论；每个维度必填，aesthetic 必须引用原文或具体统计事实")).Required(),
 	)
+	simulationShouldSchema := schema.Object(
+		schema.Property("feature_id", schema.String("Editor review view 中的 should feature ID")).Required(),
+		schema.Property("evidence", schema.String("当前草稿中的主观偏离证据")).Required(),
+		schema.Property("suggestion", schema.String("非阻塞、可执行的改进建议")).Required(),
+	)
 	return schema.Object(
 		schema.Property("chapter", schema.Int("审阅的章节号（全局审阅填最新章节号）")).Required(),
 		schema.Property("scope", schema.Enum("审阅范围", "chapter", "global", "arc", "arc_batch")).Required(),
@@ -61,6 +66,7 @@ func (t *SaveReviewTool) Schema() map[string]any {
 		schema.Property("contract_status", schema.Enum("章节契约完成度；无明确缺漏时传 met", "met", "partial", "missed")).Required(),
 		schema.Property("contract_misses", schema.Array("未完成或违背的 contract 条目；无则传 []", schema.String(""))).Required(),
 		schema.Property("contract_notes", schema.String("对 contract 履行情况的简要说明；无则传空字符串")).Required(),
+		schema.Property("simulation_should_findings", schema.Array("仿写 should 的主观审阅建议；无则传 []。不得在此重判确定性复制风险或 measurable must", simulationShouldSchema)).Required(),
 		schema.Property("verdict", schema.Enum("审阅结论", "accept", "polish", "rewrite")).Required(),
 		schema.Property("summary", schema.String("审阅总结")).Required(),
 		schema.Property("affected_chapters", schema.Array("需要重写或打磨的章节号列表；accept 传 []，polish/rewrite 必须填目标章节", schema.Int(""))).Required(),
@@ -85,11 +91,65 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 	if err := validateReviewEntry(r); err != nil {
 		return nil, err
 	}
+	if err := t.bindSimulationReview(&r); err != nil {
+		return nil, err
+	}
 
 	if r.Scope == "arc_batch" {
 		return t.saveArcBatchReview(r)
 	}
 	return t.saveFinalReview(r)
+}
+
+func (t *SaveReviewTool) bindSimulationReview(review *domain.ReviewEntry) error {
+	content, _, err := t.store.Drafts.LoadChapterContent(review.Chapter)
+	if err != nil {
+		return fmt.Errorf("load reviewed draft: %w", err)
+	}
+	if strings.TrimSpace(content) == "" {
+		content, err = t.store.Drafts.LoadChapterText(review.Chapter)
+		if err != nil {
+			return fmt.Errorf("load reviewed final chapter: %w", err)
+		}
+	}
+	if strings.TrimSpace(content) == "" {
+		if len(review.SimulationShouldFindings) > 0 {
+			return fmt.Errorf("simulation should findings require a current chapter draft")
+		}
+		return nil
+	}
+	review.DraftSHA256 = store.TextSHA256(content)
+	report, err := t.store.SimulationChecks.Load(review.Chapter)
+	if err != nil {
+		return fmt.Errorf("load simulation check for review: %w", err)
+	}
+	if report != nil && report.DraftDigest == review.DraftSHA256 {
+		review.SimulationCheckDigest = report.ReportDigest
+	}
+	if len(review.SimulationShouldFindings) == 0 {
+		return nil
+	}
+	if report == nil || report.DraftDigest != review.DraftSHA256 {
+		return fmt.Errorf("simulation should findings require a current check_simulation report")
+	}
+	allowed := make(map[string]struct{}, len(report.ShouldAdvisories))
+	for _, advisory := range report.ShouldAdvisories {
+		allowed[advisory.FeatureID] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(review.SimulationShouldFindings))
+	for _, finding := range review.SimulationShouldFindings {
+		if _, ok := allowed[finding.FeatureID]; !ok {
+			return fmt.Errorf("simulation should feature %q is not in the current Editor advisory set", finding.FeatureID)
+		}
+		if _, duplicate := seen[finding.FeatureID]; duplicate {
+			return fmt.Errorf("simulation should feature %q is duplicated", finding.FeatureID)
+		}
+		if strings.TrimSpace(finding.Evidence) == "" || strings.TrimSpace(finding.Suggestion) == "" {
+			return fmt.Errorf("simulation should finding %q requires evidence and suggestion", finding.FeatureID)
+		}
+		seen[finding.FeatureID] = struct{}{}
+	}
+	return nil
 }
 
 func (t *SaveReviewTool) saveFinalReview(r domain.ReviewEntry) (json.RawMessage, error) {
