@@ -6,31 +6,32 @@
 
 ```text
 共创需求
-  → CoreCastContract 完整性检查
-  → 用户显式确认 CoreCast
-  → 生成并审查 StoryFoundation
+  → Character Agent 生成角色候选
+  → Character Agent 独立审查
+  → 用户显式确认角色卡
+  → Architect 生成 premise / world rules / outline
   → 用户确认 Foundation
   → 分卷骨架 → 分卷/故事弧审查 → 详细大纲审查
   → 用户确认大纲
   → 正文
 ```
 
-Foundation 未确认前，服务端门禁会拒绝任何分卷或章节大纲正式写入。CoreCast 也不能由 Foundation 编辑绕过：删除核心角色或改变核心关系时，必须先在既有 CoreCast 入口重新确认，再生成新的 Foundation preview。
+角色卡与 Foundation 未确认前，服务端门禁会拒绝任何分卷或章节大纲正式写入。Character Agent 是角色与计划关系的唯一写入者；Architect 只能读取已确认角色卡。确认角色候选时会同步生成兼容 `CoreCastContract`，供旧项目和既有门禁继续工作；新共创不再要求或生成 `<cast>`。
 
 ## 改编阶段
 
 ```text
 来源分析
   → SourceFoundation（永久只读）
-  → 来源主要角色处置 + 原创新增角色
-  → CoreCastContract 显式确认
+  → Character Agent 基于有界来源证据完成保留/合并/排除/原创映射
+  → 独立审查 + 用户显式确认角色卡
   → target StoryFoundation 生成/审查/确认
   → skeleton/proposal → source-fidelity 与 target-consistency 审查
   → AdaptationPlan 与大纲确认
   → 正文
 ```
 
-`SourceFoundation` 是来源证据，不是目标设定编辑器。设定中心只能修改 target `StoryFoundation`；任何携带 `source_foundation`、`source`、`mode` 或客户端 impact 的写请求都会被拒绝。改编的 target Foundation 未确认前，不能生成 skeleton/proposal。
+`SourceFoundation` 是来源证据，不是目标设定编辑器。设定中心只能修改 target `StoryFoundation`；任何携带 `source_foundation`、`source`、`mode` 或客户端 impact 的写请求都会被拒绝。Character Agent 只读取按章节切片、摘要与签名组成的有界证据包，不回填或改写 SourceFoundation。改编的 target Foundation 未确认前，不能生成 skeleton/proposal。
 
 ## 范围和关系语义
 

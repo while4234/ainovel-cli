@@ -202,6 +202,23 @@ func (s *AdaptationStore) ResetGenerated() error {
 	})
 }
 
+// ResetConfirmedArtifactsForProposal clears output from an older confirmed
+// adaptation run without deleting the proposal, target-Foundation review, or
+// planning workflow that authenticate the proposal currently being confirmed.
+func (s *AdaptationStore) ResetConfirmedArtifactsForProposal() error {
+	return s.withLegacyFormalMutation("reset confirmed adaptation artifacts for proposal", func() error {
+		if err := s.io.WithWriteLock(func() error {
+			if err := s.io.RemoveFileUnlocked(adaptationPlanFile); err != nil {
+				return err
+			}
+			return os.RemoveAll(s.io.path(adaptationCheckDir))
+		}); err != nil {
+			return err
+		}
+		return s.clearCanonicalChecks()
+	})
+}
+
 func (s *AdaptationStore) clearCanonicalChecks() error {
 	if s.migration == nil {
 		return nil
@@ -570,7 +587,8 @@ func (s *AdaptationStore) SaveCharacterBrief(brief domain.AdaptationCharacterBri
 	brief.IntentHash = strings.TrimSpace(brief.IntentHash)
 	brief.CoreCastSignature = strings.TrimSpace(brief.CoreCastSignature)
 	if brief.Version != 1 || brief.Brief == "" || len(brief.SourceSignature) != 64 ||
-		len(brief.IntentHash) != 64 || len(brief.CoreCastSignature) != 64 {
+		len(brief.IntentHash) != 64 ||
+		(brief.CoreCastSignature != "" && len(brief.CoreCastSignature) != 64) {
 		return fmt.Errorf("adaptation character brief is incomplete")
 	}
 	return s.withLegacyFormalMutation(
@@ -592,7 +610,8 @@ func (s *AdaptationStore) LoadCharacterBrief() (*domain.AdaptationCharacterBrief
 	brief.IntentHash = strings.TrimSpace(brief.IntentHash)
 	brief.CoreCastSignature = strings.TrimSpace(brief.CoreCastSignature)
 	if brief.Version != 1 || brief.Brief == "" || len(brief.SourceSignature) != 64 ||
-		len(brief.IntentHash) != 64 || len(brief.CoreCastSignature) != 64 {
+		len(brief.IntentHash) != 64 ||
+		(brief.CoreCastSignature != "" && len(brief.CoreCastSignature) != 64) {
 		return nil, fmt.Errorf("adaptation character brief is incomplete")
 	}
 	return &brief, nil

@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `ce83f31` `docs: finalize character workflow migration`:
+  publishes the remaining Character Agent migration documentation, relaxes
+  adaptation character-brief compatibility for projects without legacy
+  CoreCast signatures, clears only stale confirmed adaptation artifacts during
+  proposal confirmation, stabilizes confirmation/revision-fence tests, and
+  keeps Go test temporary files under the repository cache. Focused store,
+  adaptation, host, and model-inventory tests pass.
 - 2026-07-28 `f0c72954` `fix: accept exact evidence across paragraphs`:
   keeps consistency evidence text-and-punctuation exact while ignoring only
   Unicode whitespace, so an otherwise verbatim quote spanning Markdown

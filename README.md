@@ -44,7 +44,7 @@ Web-only AI 长篇小说创作工作台。Coordinator 驱动 Architect / Writer 
 
 - **Host** — 启动 Coordinator、崩溃恢复、事件投影给 Web。不做任何调度决策
 - **Coordinator** — 唯一的决策者，在一次 Run 里驱动规划→写作→评审→总结的完整流程
-- **SubAgents** — Architect / Writer / Editor 各自独立 context，通过 Store 中的工件协作
+- **SubAgents** — Character / Architect / Writer / Editor 各自独立 context，通过 Store 中的工件协作
 - **Tools** — 原子 IO + checkpoint 写入，只返事实 JSON，不夹带指令
 
 ### 智能体职责
@@ -52,19 +52,20 @@ Web-only AI 长篇小说创作工作台。Coordinator 驱动 Architect / Writer 
 | 智能体 | 职责 | 工具 |
 |--------|------|------|
 | **Coordinator** | 调度全局，处理评审裁定和用户干预 | `subagent` `novel_context` |
-| **Architect** | 生成前提、大纲、角色档案、世界规则 | `novel_context` `save_foundation` |
+| **Character** | 独占生成、补全与独立审查规范角色卡；确认前只写候选区 | `character_context` `save_character_candidate` `save_character_review` |
+| **Architect** | 生成前提、世界规则和大纲；只消费已确认角色卡 | `novel_context` `save_foundation` |
 | **Writer** | 自主完成一章的构思、写作、自审和提交 | `novel_context` `read_chapter` `plan_chapter` `draft_chapter` `check_consistency` `check_adaptation` `commit_chapter` |
 | **Editor** | 阅读原文，从结构和审美两个层面审阅 | `novel_context` `read_chapter` `save_review` `save_arc_summary` `save_volume_summary` |
 
 ### 写作流程
 
 ```
-用户需求 → Architect 规划骨架 + 首弧章节 → Writer 逐章写作 → Editor 弧级评审
-                                                  ↑                   │
-                                                  ├── 重写/打磨 ◄──────┘
-                                                  │
-                                           Architect 展开下一弧/卷
-                                          （参考前文摘要+角色快照）
+用户需求 → Character 分析/独立审查 → 用户确认角色卡 → Architect 规划 → Writer 逐章写作 → Editor 弧级评审
+                                                                   ↑                   │
+                                                                   ├── 重写/打磨 ◄──────┘
+                                                                   │
+                                                            Architect 展开下一弧/卷
+                                                           （参考前文摘要+角色快照）
 ```
 
 Writer 按固定顺序完成每章（写作内容完全自主，工具调用顺序严格）：
@@ -522,13 +523,15 @@ Web UI 的“作品工具 → 小说导出”可以把已完成章节合并为 T
     "anthropic": { "api_key": "sk-ant-xxx" }
   },
   "roles": {
+    "character": { "provider": "openrouter", "model": "google/gemini-2.5-pro", "reasoning_effort": "high" },
+    "stage:character_review": { "provider": "anthropic", "model": "claude-sonnet-4", "reasoning_effort": "high" },
     "writer": { "provider": "anthropic", "model": "claude-sonnet-4", "reasoning_effort": "high" },
     "architect": { "provider": "openrouter", "model": "google/gemini-2.5-pro", "reasoning_effort": "low" }
   }
 }
 ```
 
-可配置的角色：`coordinator` / `architect` / `writer` / `editor`
+可配置的角色：`coordinator` / `character` / `architect` / `writer` / `editor`。Character Agent 还可分别覆盖 `stage:character_analysis` 与 `stage:character_review`；未配置 stage 时回退到 `character`，再回退到全局默认。三处都支持 `provider`、`model`、`fallbacks` 与 `reasoning_effort`，全局 prompt 规则也会注入 Character Agent。
 
 #### 自定义代理
 
@@ -840,6 +843,6 @@ MIT
 本项目积极参与并认可 [linux.do 社区](https://linux.do/)。
 # StoryFoundation 设定中心
 
-Web 设定中心以 canonical `StoryFoundation` 管理原创与改编目标故事的 premise、稳定 ID 角色、计划关系和世界规则。普通与改编流程都必须先完成 `CoreCastContract` 和 Foundation 显式确认，才能进入正式规划；改编的 `SourceFoundation` 永久只读，正文开始后 target Foundation 也只读。
+Web 设定中心以 canonical `StoryFoundation` 管理原创与改编目标故事的 premise、稳定 ID 角色、计划关系和世界规则。普通与改编的新流程都由 Character Agent 生成候选、独立审查并经用户显式确认；确认时才原子发布角色卡及兼容 `CoreCastContract`，之后 Architect 只负责 premise、world rules 和 outline。旧五段共创/CoreCast checkpoint 仍可读取与恢复，但不会让新流程重新生成 `<cast>`。改编的 `SourceFoundation` 永久只读，正文开始后 target Foundation 也只读。
 
-计划关系图谱基于 `@xyflow/react`，只映射 `StoryFoundation.relationships`，不读取正文 runtime `relationship_state`。图上的 connect/删除只进入本地 dirty draft，正式写入仍必须经过服务端 signed preview，再以 `preview_id + idempotency_key` apply。使用说明、恢复语义、隐私边界和故障排查见 [设定中心文档](docs/story-foundation-center.md)，发布验收见 [StoryFoundation 发布检查清单](docs/story-foundation-release-checklist.md)，依赖许可证见 [第三方许可证](THIRD_PARTY_LICENSES.md)。
+计划关系图谱基于 `@xyflow/react`，只映射 `StoryFoundation.relationships`，不读取正文 runtime `relationship_state`。图上的 connect/删除只进入本地 dirty draft，正式写入仍必须经过服务端 signed preview，再以 `preview_id + idempotency_key` apply。角色新旧流程与迁移矩阵见 [Character Agent 迁移说明](docs/character-agent-migration.md)，使用说明、恢复语义、隐私边界和故障排查见 [设定中心文档](docs/story-foundation-center.md)，发布验收见 [StoryFoundation 发布检查清单](docs/story-foundation-release-checklist.md)，依赖许可证见 [第三方许可证](THIRD_PARTY_LICENSES.md)。

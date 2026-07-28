@@ -12,6 +12,7 @@ import (
 func TestProductionModelCallInventoryIsExplicit(t *testing.T) {
 	root := repositoryRoot(t)
 	want := []string{
+		"internal/agents/character_model.go",
 		"internal/agents/context_manager.go",
 		"internal/agents/model_boundary.go",
 		"internal/agents/toolcall_repair_model.go",
@@ -29,6 +30,7 @@ func TestProductionModelCallInventoryIsExplicit(t *testing.T) {
 		"internal/host/imp/foundation.go",
 		"internal/host/imp/structured_call.go",
 		"internal/host/manuscript_model.go",
+		"internal/host/manuscript_action_dialogue.go",
 		"internal/host/model_probe.go",
 		"internal/host/semantic_audit.go",
 		"internal/host/sim/retry.go",

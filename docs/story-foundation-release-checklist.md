@@ -6,14 +6,16 @@
 
 | 场景 | 主要自动化证据 |
 |---|---|
-| 普通 CoreCast 完整性、显式确认、Foundation 前禁止规划 | `TestCoreCastHTTPConfirmationGateAndFoundationPublish`、`TestAuthoritativeOutlineGateBlocksDirectBypassesAndPreservesAdaptationSemantics`、`TestFoundationReviewCannotBeginWithoutConfirmedCoreCast` |
+| 普通 Character analyze/review/confirm、Foundation 前禁止规划 | `TestConfirmOriginalCharacterCandidatePublishesReviewedCandidateAndIsIdempotent`、Character Workspace HTTP/Playwright tests、`TestAuthoritativeOutlineGateBlocksDirectBypassesAndPreservesAdaptationSemantics` |
 | Foundation 确认后分卷/详细大纲、局部重建与重审 | `TestFoundationRevisionAwaitsExistingOutlineApprovalBeforeCompletion`、`TestFoundationImpactAllowsStructuredLocalScope`、`TestFoundationDiffIsCanonicalAndStableIDBased` |
 | 缺依赖、核心角色、hard rule 扩大全书 | `TestFoundationImpactRequiresEvidenceAndExpandsHardRules`、`TestFoundationRevisionRequiresCoreCastReconfirmationBeforeApply` |
-| 改编来源角色处置、原创人物、SourceFoundation 只读 | `TestAdaptationCoreCastRequiresEverySourceMajorDisposition`、`TestAdaptationFoundationPreviewApplyAndRetryPreserveSource`、Foundation HTTP source-mutation tests |
+| 改编无预置 CoreCast、来源角色处置、原创人物、SourceFoundation 只读 | `TestAdaptationCharacterWorkflowPublishesCompleteCastAndTargetFoundation`、`TestAdaptationFoundationPreviewApplyAndRetryPreserveSource`、Foundation HTTP source-mutation tests |
 | target Foundation 后才生成 proposal；source-fidelity 重审 | `TestAdaptationFoundationReviewCompletionUsesSameSessionAndDoesNotStartBody`、adaptation Foundation preview/baseline tests |
 | 发布后 host 失败 retry 不重复 revision | `TestFoundationRevisionApplyRetryDoesNotPublishTwice`、`TestFoundationRevisionRouteLaunchFailureRetriesSameSession` |
 | stale 草稿、正文后只读 | Foundation Center Playwright stale/readonly 场景、`TestFoundationRevisionServiceTreatsPersistedDraftAsBodyStarted` |
-| 旧普通/改编项目与旧 CoreCast checkpoint | `TestFoundationLegacyLoadIsReadOnlyAndFirstSaveMigrates`、`TestFoundationV1DirectionMigrationIsReadOnlyUntilSaveAndKeepsRevision`、`TestOldCheckpointWithoutCoreCastRestoresBlocked`、adaptation legacy workflow tests |
+| 旧 sparse card、旧普通/改编项目与旧 CoreCast checkpoint | `TestCharacterWorkspaceStateLazilyReportsLegacyCardCompletenessWithoutMutation`、`TestFoundationLoadsSchemaV1AndV2WithoutRevisionOrFileMutation`、legacy co-create/parser tests |
+| Character stale、retry、reload、并发与幂等 | `TestCharacterWorkspaceServiceAnalyzeReviewAndRetry`、`TestCharacterWorkspaceStoreIdempotencyExclusionAndRecovery`、Character HTTP stale/reload tests |
+| 稳定 ID workset、成熟项目上下文预算与模型路由 | `TestCharacterWorksetPrefersIDsAndStaysBounded`、`TestContextToolMaturePlanningContextIsSourceBounded`、`TestProductionModelCallInventoryIsExplicit`、Character model route/failover tests |
 | pending journal、进程重启、active revision recovery | Foundation recovery failure-point tests、`TestFoundationRevisionStorePersistsAndDetectsTamperedPreview`、pending migration recovery tests |
 | clone、rollback 与文件集合 | `TestCloneProjectCopiesCompletedStoryFoundationAndRejectsPendingJournal`、projection/clone concurrency tests、Foundation rollback lifecycle tests |
 | 100/300 图、方向/筛选/一跳/布局/移动端/降级 | `relationshipGraphModel.test.js`、`FoundationGraphErrorBoundary.test.jsx`、Foundation Center Playwright graph 场景 |
@@ -28,6 +30,7 @@ npm --prefix internal/entry/web/ui test
 npm --prefix internal/entry/web/ui run build
 npm --prefix internal/entry/web/ui run test:browser
 go test ./...
+go build ./cmd/ainovel-cli
 go test -race ./internal/domain ./internal/store ./internal/host ./internal/entry/web
 go vet ./...
 git diff --check

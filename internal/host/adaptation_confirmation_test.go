@@ -134,6 +134,7 @@ func TestConfirmAdaptationProposalFastTerminalOrdering(t *testing.T) {
 				t.Fatal("waitDone did not observe immediate terminal model")
 			}
 			waitForConfirmationOwnershipRelease(t, h)
+			h.coordinator.WaitForIdle()
 			h.mu.Lock()
 			finalLifecycle := h.lifecycle
 			h.mu.Unlock()
@@ -668,7 +669,10 @@ func waitForConfirmationOwnershipRelease(t *testing.T, h *Host) {
 		released := h.normalFlowLease == nil && !h.normalFlowRunOwned
 		h.mu.Unlock()
 		if released {
-			return
+			fence, err := h.store.Revisions.SnapshotFence()
+			if err == nil && fence.LeaseToken == "" {
+				return
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

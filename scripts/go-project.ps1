@@ -11,6 +11,11 @@ if ($args.Count -eq 0) {
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $environment = Initialize-AINovelGoEnvironment -RepoRoot $repoRoot
+$goProjectTemp = Join-Path $environment.CacheRoot "go-project-temp"
+[System.IO.Directory]::CreateDirectory($goProjectTemp) | Out-Null
+$environment.TEMP = $goProjectTemp
+$env:TEMP = $goProjectTemp
+$env:TMP = $goProjectTemp
 $goExecutable = Resolve-AINovelGoExecutable
 $goArguments = @($args)
 $isTestCommand = $goArguments.Count -gt 0 -and $goArguments[0] -eq "test"

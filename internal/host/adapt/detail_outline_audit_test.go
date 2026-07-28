@@ -121,6 +121,7 @@ func TestPersistDetailRepairFailureCountsAcrossCandidates(t *testing.T) {
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	seedDirectConfirmedAdaptationTargetFoundation(t, st, 1, "persist repair failure")
 	runtime := &domain.AdaptationProposalRuntime{Version: adaptationProposalRuntimeVersion}
 	batch := plannerSkeletonBatch{Index: 54, TargetFrom: 203, TargetTo: 205, SourceFrom: 100, SourceTo: 101}
 	observer := persistDetailRepairFailureObserver(Deps{Store: st}, runtime, batch)
@@ -246,6 +247,7 @@ func TestAuditAndRepairDetailBatchOnlyCompletesAfterSemanticReaudit(t *testing.T
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	seedDirectConfirmedAdaptationTargetFoundation(t, st, 1, "semantic detail re-audit")
 	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1}
 	skeleton := plannerSkeleton{Granularity: domain.AdaptationGranularityFree, TargetChapterCount: 1, Batches: []plannerSkeletonBatch{batch}}
 	opts := ProposalOptions{Brief: "free rewrite", Granularity: domain.AdaptationGranularityFree, RewritePolicy: domain.AdaptationRewriteFullRewrite}
@@ -281,6 +283,7 @@ func TestAuditAndRepairDetailBatchStopsAfterTwoUnchangedFindingRounds(t *testing
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	seedDirectConfirmedAdaptationTargetFoundation(t, st, 1, "bounded unchanged repair")
 	batch := plannerSkeletonBatch{Index: 1, TargetFrom: 1, TargetTo: 1, SourceFrom: 1, SourceTo: 1}
 	skeleton := plannerSkeleton{Granularity: domain.AdaptationGranularityFree, TargetChapterCount: 1, Batches: []plannerSkeletonBatch{batch}}
 	opts := ProposalOptions{Brief: "free rewrite", Granularity: domain.AdaptationGranularityFree, RewritePolicy: domain.AdaptationRewriteFullRewrite}

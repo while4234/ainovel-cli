@@ -37,7 +37,7 @@ function Initialize-AINovelGoEnvironment {
         GOCACHE = Join-Path $cacheRoot "go-build"
         GOTMPDIR = Join-Path $cacheRoot "go-tmp"
         GOMODCACHE = Join-Path $cacheRoot "go-mod"
-        TEMP = Join-Path $cacheRoot "temp"
+        TEMP = Join-Path $cacheRoot "go-temp"
     }
 
     foreach ($path in $paths.Values) {

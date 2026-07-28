@@ -1601,6 +1601,7 @@ func TestPreparePlannerRuntimeAfterValidationErrorScansCompletedParents(t *testi
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	seedDirectConfirmedAdaptationTargetFoundation(t, st, 1, "scan invalid completed parents")
 	opts := ProposalOptions{
 		Granularity:   domain.AdaptationGranularityArc,
 		RewritePolicy: domain.AdaptationRewriteFullRewrite,
@@ -1664,6 +1665,7 @@ func TestPreparePlannerRuntimeAfterValidationErrorDropsDuplicateMainlineBatches(
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	seedDirectConfirmedAdaptationTargetFoundation(t, st, 1, "drop duplicate mainline batches")
 	first := plannerBatchPlans(1, 2, 1, 1)
 	first[0].EventIDs = []string{"event-duplicate"}
 	second := plannerBatchPlans(3, 4, 2, 2)
@@ -1725,6 +1727,7 @@ func TestBuildPlanRejectsForeignMainlineBeforeFinalValidation(t *testing.T) {
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
+	seedDirectConfirmedAdaptationTargetFoundation(t, st, 1, "reject foreign mainline")
 	manifest := &domain.AdaptationSourceManifest{
 		ChapterCount: 2,
 		Chapters: []domain.AdaptationSource{
