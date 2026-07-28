@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -273,6 +275,70 @@ func TestDraftChapterDefersOverwriteOfCurrentOutOfBudgetDraft(t *testing.T) {
 	}
 	if got, loadErr := s.Drafts.LoadDraft(1); loadErr != nil || got != existing {
 		t.Fatalf("deferred draft write changed content: err=%v", loadErr)
+	}
+}
+
+func TestDraftChapterReplacesSeverelyOversizedDraftOnlyWithValidCandidate(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	existing := strings.Repeat("原", 180)
+	if err := s.Drafts.SaveDraft(1, existing); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	rejected, err := NewDraftChapterTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter":               1,
+		"content":               strings.Repeat("短", 10),
+		"mode":                  "write",
+		"replace_out_of_budget": true,
+	}))
+	if err != nil {
+		t.Fatalf("reject invalid candidate: %v", err)
+	}
+	var rejection struct {
+		CandidateRejected bool `json:"candidate_rejected"`
+	}
+	if err := json.Unmarshal(rejected, &rejection); err != nil || !rejection.CandidateRejected {
+		t.Fatalf("invalid regeneration candidate was not rejected: %s err=%v", rejected, err)
+	}
+	if got, _ := s.Drafts.LoadDraft(1); got != existing {
+		t.Fatalf("invalid candidate replaced the durable draft: %q", got)
+	}
+
+	candidate := strings.Repeat("新", 100)
+	raw, err := NewDraftChapterTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter":               1,
+		"content":               candidate,
+		"mode":                  "write",
+		"replace_out_of_budget": true,
+	}))
+	if err != nil {
+		t.Fatalf("replace with valid candidate: %v", err)
+	}
+	var result struct {
+		Written             bool   `json:"written"`
+		ReplacedOutOfBudget bool   `json:"replaced_out_of_budget"`
+		RecoveryBackup      string `json:"recovery_backup"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil || !result.Written || !result.ReplacedOutOfBudget || result.RecoveryBackup == "" {
+		t.Fatalf("valid candidate did not safely replace draft: %+v err=%v raw=%s", result, err, raw)
+	}
+	if got, _ := s.Drafts.LoadDraft(1); got != candidate {
+		t.Fatalf("valid candidate was not saved: %q", got)
+	}
+	backup, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(result.RecoveryBackup)))
+	if err != nil || string(backup) != existing {
+		t.Fatalf("recovery backup mismatch: err=%v content=%q", err, backup)
 	}
 }
 

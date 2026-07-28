@@ -54,9 +54,10 @@ func (t *DraftChapterTool) StrictSchema() bool { return true }
 
 func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	var a struct {
-		Chapter int    `json:"chapter"`
-		Content string `json:"content"`
-		Mode    string `json:"mode"`
+		Chapter            int    `json:"chapter"`
+		Content            string `json:"content"`
+		Mode               string `json:"mode"`
+		ReplaceOutOfBudget bool   `json:"replace_out_of_budget"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
@@ -79,13 +80,32 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 	if err := EnsureChapterExpanded(t.store, a.Chapter); err != nil {
 		return nil, err
 	}
+	backupPath := ""
 	if existing, loadErr := t.store.Drafts.LoadDraft(a.Chapter); loadErr == nil && existing != "" {
-		if _, outside := currentWriterBudgetWindow(t.store, a.Chapter, existing); outside {
-			return json.Marshal(map[string]any{
-				"chapter": a.Chapter, "written": false, "deferred_to_host": true,
-				"word_count": len([]rune(existing)),
-				"next_step":  "当前进行中草稿超出字数预算，未覆盖或追加正文。立即结束本轮；Host 会按唯一行段完成局部字数恢复。",
-			})
+		if window, outside := currentWriterBudgetWindow(t.store, a.Chapter, existing); outside {
+			candidateCount := utf8.RuneCountInString(a.Content)
+			candidateInBudget := candidateCount >= window.MinWords && candidateCount <= window.MaxWords
+			if a.ReplaceOutOfBudget && a.Mode == "write" && candidateInBudget {
+				var backupErr error
+				backupPath, backupErr = t.store.Drafts.BackupDraftForRecovery(a.Chapter, existing)
+				if backupErr != nil {
+					return nil, fmt.Errorf("backup out-of-budget draft: %w", backupErr)
+				}
+			} else {
+				nextStep := "当前进行中草稿超出字数预算，未覆盖或追加正文。立即结束本轮；Host 会选择局部字数恢复或干净上下文重生成。"
+				if a.ReplaceOutOfBudget {
+					nextStep = fmt.Sprintf(
+						"重生成候选稿为 %d 字，未进入 %d-%d 字安全区间；旧草稿未被替换。立即结束本轮，由 Host 使用新的干净 Writer 重试。",
+						candidateCount, window.MinWords, window.MaxWords,
+					)
+				}
+				return json.Marshal(map[string]any{
+					"chapter": a.Chapter, "written": false, "deferred_to_host": true,
+					"word_count": candidateCount, "existing_word_count": len([]rune(existing)),
+					"candidate_rejected": a.ReplaceOutOfBudget,
+					"next_step":          nextStep,
+				})
+			}
 		}
 	}
 	if t.store.Progress.IsChapterCompleted(a.Chapter) {
@@ -131,7 +151,12 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 		); err != nil {
 			return nil, fmt.Errorf("checkpoint draft: %w", err)
 		}
-		return json.Marshal(t.buildDraftResult(a.Chapter, "write", utf8.RuneCountInString(a.Content)))
+		result := t.buildDraftResult(a.Chapter, "write", utf8.RuneCountInString(a.Content))
+		if backupPath != "" {
+			result["replaced_out_of_budget"] = true
+			result["recovery_backup"] = backupPath
+		}
+		return json.Marshal(result)
 	}
 }
 

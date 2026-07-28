@@ -1433,7 +1433,14 @@ func (t *writerDraftChapterTool) ConcurrencySafe(args json.RawMessage) bool {
 func (t *writerDraftChapterTool) StrictSchema() bool { return false }
 
 func (t *writerDraftChapterTool) Schema() map[string]any {
-	return toolSchemaWithoutRequired(t.inner.Schema(), "chapter")
+	schema := toolSchemaWithoutRequired(t.inner.Schema(), "chapter")
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		properties["replace_out_of_budget"] = map[string]any{
+			"type":        "boolean",
+			"description": "Host-only recovery flag: replace a severely out-of-budget active draft only when the complete new candidate is already inside the hard budget.",
+		}
+	}
+	return schema
 }
 
 func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
@@ -1448,7 +1455,7 @@ func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessa
 	if chapter <= 0 {
 		return nil, fmt.Errorf("chapter is required and cannot be inferred from current writing state")
 	}
-	if writerDraftWouldOverwriteActiveDraft(t.store, chapter, raw["mode"]) {
+	if writerDraftWouldOverwriteActiveDraft(t.store, chapter, raw["mode"], raw["replace_out_of_budget"]) {
 		existing, _ := t.store.Drafts.LoadDraft(chapter)
 		return json.Marshal(map[string]any{
 			"chapter":          chapter,
@@ -1477,7 +1484,7 @@ func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessa
 	return t.inner.Execute(ctx, nextArgs)
 }
 
-func writerDraftWouldOverwriteActiveDraft(st *store.Store, chapter int, rawMode json.RawMessage) bool {
+func writerDraftWouldOverwriteActiveDraft(st *store.Store, chapter int, rawMode, rawReplaceOutOfBudget json.RawMessage) bool {
 	if st == nil || chapter <= 0 {
 		return false
 	}
@@ -1488,6 +1495,16 @@ func writerDraftWouldOverwriteActiveDraft(st *store.Store, chapter int, rawMode 
 	existing, err := st.Drafts.LoadDraft(chapter)
 	if err != nil || strings.TrimSpace(existing) == "" {
 		return false
+	}
+	var replaceOutOfBudget bool
+	if json.Unmarshal(rawReplaceOutOfBudget, &replaceOutOfBudget) == nil && replaceOutOfBudget {
+		progress, progressErr := st.Progress.Load()
+		_, policy, policyOK, policyErr := st.ChapterWordBudgetPolicy(progress, chapter)
+		existingCount := utf8.RuneCountInString(existing)
+		if progressErr == nil && progress != nil && policyErr == nil && policyOK &&
+			!policy.WithinHardRange(existingCount) {
+			return false
+		}
 	}
 	progress, err := st.Progress.Load()
 	if err != nil || progress == nil {

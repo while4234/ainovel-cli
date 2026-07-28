@@ -369,6 +369,9 @@ func RouteResume(s State) *Instruction {
 	progress := s.Progress
 	chapter := progress.InProgressChapter
 	if s.InProgressWordMin > 0 && s.InProgressWordMax >= s.InProgressWordMin && !s.InProgressWordBudgetValid {
+		if writerBudgetNeedsRegeneration(s) {
+			return routeWriterBudgetRegeneration(s, chapter)
+		}
 		return routeWriterBudgetSegment(s, chapter)
 	}
 	if s.InProgressDeAIState == writerDeAIStateFailed && s.InProgressConsistencyValid {
@@ -403,6 +406,28 @@ func RouteResume(s State) *Instruction {
 
 const writerBudgetSegmentLines = 48
 
+func writerBudgetNeedsRegeneration(s State) bool {
+	if s.InProgressWordMax <= 0 || s.InProgressWordCount <= s.InProgressWordMax {
+		return false
+	}
+	return (s.InProgressWordCount-s.InProgressWordMax)*10 > s.InProgressWordMax
+}
+
+func routeWriterBudgetRegeneration(s State, chapter int) *Instruction {
+	target := max((s.InProgressWordMin+s.InProgressWordMax)/2, s.InProgressWordMin)
+	return &Instruction{
+		Agent: "writer",
+		Task: fmt.Sprintf(
+			"第 %d 章当前草稿 %d 字，超过安全上限 %d 字逾 10%%；大幅分段压缩会损伤节奏与场景承接，本轮必须使用干净上下文重新生成完整正文。旧草稿由工具保留为恢复备份，禁止读取、摘抄、压缩或改写旧草稿，也禁止读取其他章节。先且只调用一次 novel_context(chapter=%d) 获取已确认细纲、人物规则、previous_tail 与近期摘要；不要调用 plan_chapter 或 read_chapter。随后依据这些权威资料重新创作一版约 %d 字、且严格位于 %d-%d 字安全区间的完整章节，直接调用 draft_chapter(chapter=%d, mode=\"write\", replace_out_of_budget=true, content=完整新正文)。必须完整兑现章节契约、场景因果、人物选择、情感节奏和章末钩子。工具若拒绝候选稿，旧草稿仍然保留；立即结束本轮，由 Host 用新的干净 Writer 重试，禁止带着失败候选继续修补。",
+			chapter, s.InProgressWordCount, s.InProgressWordMax, chapter, target,
+			s.InProgressWordMin, s.InProgressWordMax, chapter,
+		),
+		Reason:         fmt.Sprintf("第 %d 章明显超预算，干净上下文安全重生成", chapter),
+		Chapter:        chapter,
+		ResumeRecovery: true,
+	}
+}
+
 func routeWriterBudgetSegment(s State, chapter int) *Instruction {
 	lineCount := max(s.InProgressLineCount, 1)
 	segmentCount := (lineCount + writerBudgetSegmentLines - 1) / writerBudgetSegmentLines
@@ -429,7 +454,7 @@ func routeWriterBudgetSegment(s State, chapter int) *Instruction {
 	return &Instruction{
 		Agent: "writer",
 		Task: fmt.Sprintf(
-			"恢复第 %d 章现有草稿的字数分段修复：当前 %d 字，预算 %d-%d 字；本轮只处理第 %d 段（行 %d-%d，草稿共 %d 行），目标约%s %d 字。先调用 novel_context(chapter=%d) 一次保留章节契约、连续性和人物情感依据，再且只再调用 read_chapter(chapter=%d, source=\"draft\", from_line=%d, to_line=%d) 读取本段。静默选择本段内多处有依据的局部修改，下一次响应必须直接调用一次 edit_chapter(chapter=%d, budget_segment=%d, edits=[...]) 原子落盘；只处理冗余解释、重复动作或缺失承接，保留本段关键事件、人物选择、情感落点和钩子。工具调用后立即结束本轮，由 Host 派下一段。禁止读取整章或其他章节，禁止 plan_chapter、draft_chapter、commit_chapter，禁止输出逐段分析或修改清单。",
+			"恢复第 %d 章现有草稿的字数分段修复：当前 %d 字，预算 %d-%d 字；本轮只处理第 %d 段（行 %d-%d，草稿共 %d 行），本段必须净%s至少 %d 字，不能只改几个词或只完成目标的一小部分。先调用 novel_context(chapter=%d) 一次保留章节契约、连续性和人物情感依据，再且只再调用 read_chapter(chapter=%d, source=\"draft\", from_line=%d, to_line=%d) 读取本段。静默完成足量压缩或补写，优先使用少量段落级 old_string/new_string 合并同义解释、重复动作、重复感官与可压缩过渡；提交前自行核算所有 new_string 相对 old_string 的合计净变化已达到本段目标。下一次响应必须直接调用一次 edit_chapter(chapter=%d, budget_segment=%d, edits=[...]) 原子落盘；保留本段关键事件、因果、人物选择、情感落点和钩子。工具调用后立即结束本轮，由 Host 派下一段。禁止读取整章或其他章节，禁止 plan_chapter、draft_chapter、commit_chapter，禁止输出逐段分析或修改清单。",
 			chapter, s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax,
 			segment, fromLine, toLine, lineCount, direction, max(target, 1), chapter,
 			chapter, fromLine, toLine, chapter, segment,

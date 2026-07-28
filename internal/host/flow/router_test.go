@@ -573,7 +573,7 @@ func TestRouteResume_RepairsOnlyOneWordBudgetSegment(t *testing.T) {
 		LastCompleted:             4,
 		InProgressDraftExists:     true,
 		InProgressCheckpoint:      "edit",
-		InProgressWordCount:       4292,
+		InProgressWordCount:       4000,
 		InProgressWordMin:         2550,
 		InProgressWordMax:         3703,
 		InProgressWordBudgetValid: false,
@@ -588,6 +588,9 @@ func TestRouteResume_RepairsOnlyOneWordBudgetSegment(t *testing.T) {
 		`novel_context(chapter=5)`,
 		`read_chapter(chapter=5, source="draft", from_line=97, to_line=130)`,
 		`edit_chapter(chapter=5, budget_segment=2, edits=[...])`,
+		`必须净删减至少 99 字`,
+		`段落级 old_string/new_string`,
+		`合计净变化已达到本段目标`,
 	} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("segment task missing %q: %s", want, got.Task)
@@ -596,6 +599,43 @@ func TestRouteResume_RepairsOnlyOneWordBudgetSegment(t *testing.T) {
 	for _, forbidden := range []string{"check_de_ai", "check_consistency"} {
 		if strings.Contains(got.Task, forbidden) {
 			t.Fatalf("segment task must not mix later validation %q: %s", forbidden, got.Task)
+		}
+	}
+}
+
+func TestRouteResume_RegeneratesSeverelyOversizedDraftFromCleanContext(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	got := RouteResume(State{
+		Progress:                  p,
+		LastCompleted:             4,
+		InProgressDraftExists:     true,
+		InProgressCheckpoint:      "word_budget_edit_segment_3",
+		InProgressWordCount:       7913,
+		InProgressWordMin:         3000,
+		InProgressWordMax:         6000,
+		InProgressWordBudgetValid: false,
+		InProgressLineCount:       520,
+	})
+	if got == nil || !got.ResumeRecovery || got.Agent != "writer" || got.Chapter != 5 {
+		t.Fatalf("expected clean regeneration recovery, got %+v", got)
+	}
+	for _, want := range []string{
+		`超过安全上限 6000 字逾 10%`,
+		`禁止读取、摘抄、压缩或改写旧草稿`,
+		`novel_context(chapter=5)`,
+		`不要调用 plan_chapter 或 read_chapter`,
+		`约 4500 字`,
+		`replace_out_of_budget=true`,
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("regeneration task missing %q: %s", want, got.Task)
+		}
+	}
+	for _, forbidden := range []string{"from_line=", "budget_segment=", "edit_chapter"} {
+		if strings.Contains(got.Task, forbidden) {
+			t.Fatalf("regeneration task retained segment repair %q: %s", forbidden, got.Task)
 		}
 	}
 }
@@ -609,7 +649,7 @@ func TestRoute_RepairsNewlyPersistedOutOfBudgetDraftBySegment(t *testing.T) {
 		LastCompleted:             4,
 		InProgressDraftExists:     true,
 		InProgressCheckpoint:      "draft",
-		InProgressWordCount:       5490,
+		InProgressWordCount:       4000,
 		InProgressWordMin:         2545,
 		InProgressWordMax:         3721,
 		InProgressWordBudgetValid: false,
@@ -711,7 +751,9 @@ func TestDispatcher_ResumeRecoverySurvivesSubagentBoundaries(t *testing.T) {
 	first := dispatcher.route(state)
 	second := dispatcher.route(state)
 	for index, got := range []*Instruction{first, second} {
-		if got == nil || !got.ResumeRecovery || !strings.Contains(got.Task, "恢复第 5 章现有草稿") {
+		if got == nil || !got.ResumeRecovery ||
+			(!strings.Contains(got.Task, "恢复第 5 章现有草稿") &&
+				!strings.Contains(got.Task, "干净上下文重新生成完整正文")) {
 			t.Fatalf("recovery route %d lost durable constraints: %+v", index+1, got)
 		}
 	}

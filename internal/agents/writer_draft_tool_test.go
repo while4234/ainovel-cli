@@ -607,6 +607,41 @@ func TestWriterDraftChapterToolDefersOverwriteOfActiveDraft(t *testing.T) {
 	}
 }
 
+func TestWriterDraftChapterToolAllowsHostAuthorizedOversizeRegeneration(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Save(&domain.Progress{NovelName: "test", Phase: domain.PhaseWriting, TotalChapters: 1, InProgressChapter: 1}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := st.Drafts.SaveDraft(1, strings.Repeat("原", 180)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	raw, err := newWriterDraftChapterTool(st).Execute(t.Context(), writerDraftArgs(t, map[string]any{
+		"chapter":               1,
+		"content":               strings.Repeat("新", 100),
+		"mode":                  "write",
+		"replace_out_of_budget": true,
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result struct {
+		Written             bool `json:"written"`
+		ReplacedOutOfBudget bool `json:"replaced_out_of_budget"`
+		DraftSkipped        bool `json:"draft_skipped"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil || !result.Written || !result.ReplacedOutOfBudget || result.DraftSkipped {
+		t.Fatalf("host-authorized regeneration was blocked: %+v err=%v raw=%s", result, err, raw)
+	}
+}
+
 func TestWriterDraftChapterToolAllowsExplicitQueuedRewrite(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

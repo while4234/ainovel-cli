@@ -97,6 +97,23 @@ func (s *DraftStore) SaveDraft(chapter int, content string) error {
 	return s.io.WriteMarkdown(fmt.Sprintf("drafts/%02d.draft.md", chapter), content)
 }
 
+func (s *DraftStore) BackupDraftForRecovery(chapter int, content string) (string, error) {
+	if chapter <= 0 || content == "" {
+		return "", fmt.Errorf("draft recovery backup requires chapter and content")
+	}
+	digest := TextSHA256(content)
+	rel := fmt.Sprintf("drafts/backups/%02d.%s.draft.md", chapter, digest[:12])
+	if existing, err := s.io.ReadFile(rel); err == nil && string(existing) == content {
+		return rel, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := s.io.WriteMarkdown(rel, content); err != nil {
+		return "", err
+	}
+	return rel, nil
+}
+
 // AppendDraft 追加内容到现有草稿（续写模式）。
 func (s *DraftStore) AppendDraft(chapter int, content string) error {
 	if s.migration != nil {
