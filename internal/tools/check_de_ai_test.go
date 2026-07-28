@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -115,6 +116,7 @@ func TestCheckDeAIReturnsCanonicalCommitContext(t *testing.T) {
 		len(result.CommitContext.CharacterIDs) != 2 ||
 		result.CommitContext.CharacterIDs[0] != "lin_shuran" ||
 		result.CommitContext.Characters[1] != "苏瑾琛" ||
+		!slices.Contains(result.CommitContext.AllowedCharacterStateFields, "injury") ||
 		result.CommitContext.DraftSHA256 == "" {
 		t.Fatalf("unexpected commit context: %+v", result.CommitContext)
 	}

@@ -31,6 +31,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
   const [tab, setTab] = useState('prose'), [proseMode, setProseMode] = useState('current'), [current, setCurrent] = useState(null), [candidate, setCandidate] = useState(null);
   const [history, setHistory] = useState({ items: [], nextCursor: 0, hasMore: false }), [historyVersion, setHistoryVersion] = useState(null);
   const [restorePreview, setRestorePreview] = useState(null), [artifacts, setArtifacts] = useState({}), [reviewDetails, setReviewDetails] = useState({});
+  const [artifactLoading, setArtifactLoading] = useState({}), [artifactErrors, setArtifactErrors] = useState({});
   const [historyRecovery, setHistoryRecovery] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [autoLoading, setAutoLoading] = useState({ current: false, candidate: false });
@@ -41,6 +42,8 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
   const chapters = useMemo(() => flattenManuscriptTree(tree), [tree]);
   const node = chapters.find((item) => item.stable_id === selectedId);
   const selectedIndex = chapters.findIndex((item) => item.stable_id === selectedId);
+  const previousChapter = selectedIndex > 0 && chapters[selectedIndex - 1]?.has_current && chapters[selectedIndex - 1]?.state === 'completed' ? chapters[selectedIndex - 1] : null;
+  const nextChapter = selectedIndex >= 0 && chapters[selectedIndex + 1]?.has_current && chapters[selectedIndex + 1]?.state === 'completed' ? chapters[selectedIndex + 1] : null;
   function beginRequest(kind, stableId = selectionIdRef.current) {
     requestRef.current[kind]?.controller.abort();
     const controller = new AbortController(), sequence = (requestRef.current[kind]?.sequence || 0) + 1;
@@ -95,7 +98,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     setHistory({ items: [], nextCursor: 0, hasMore: false }); setHistoryVersion(null); setRestorePreview(null); setHistoryRecovery(false);
     busyOwnerRef.current = '';
     tabRef.current = 'prose';
-    setArtifacts({}); setReviewDetails({}); setDrawerOpen(false); setError(''); setNotice(''); setBusy(false);
+    setArtifacts({}); setArtifactLoading({}); setArtifactErrors({}); setReviewDetails({}); setDrawerOpen(false); setError(''); setNotice(''); setBusy(false);
     invalidateManuscriptCache(projectId);
     setProseMode('current'); setRecovery(null); setAutoLoading({ current: false, candidate: false });
     if (active && projectId) queueMicrotask(() => void loadTree());
@@ -153,6 +156,11 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     });
   }, [active, projectId, proseMode, selectedId, tab]);
   useEffect(() => {
+    if (!active || !selectedId || !['outline', 'volume', 'review'].includes(tab)) return;
+    if (artifacts[tab] || artifactLoading[tab] || artifactErrors[tab]) return;
+    queueMicrotask(() => void chooseTab(tab, true));
+  }, [active, selectedId, tab, artifacts, artifactLoading, artifactErrors]);
+  useEffect(() => {
     const refresh = (event) => {
       if (!String(event.detail?.path || '').includes(`/projects/${encodeURIComponent(projectId)}/`)) return;
       invalidateManuscriptViews(projectId, event.detail || {});
@@ -203,7 +211,7 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
       setDrawerOpen(false);
       setSelectedId(stableId);
       if (!retainsLastSuccessful) { setCurrent(null); setCandidate(null); }
-      setHistoryVersion(null); setRestorePreview(null); setHistoryRecovery(false); setHistory({ items: [], nextCursor: 0, hasMore: false }); setArtifacts({}); setReviewDetails({}); setError('');
+      setHistoryVersion(null); setRestorePreview(null); setHistoryRecovery(false); setHistory({ items: [], nextCursor: 0, hasMore: false }); setArtifacts({}); setArtifactLoading({}); setArtifactErrors({}); setReviewDetails({}); setError('');
       setAutoLoading({ current: false, candidate: false });
     }
     try {
@@ -276,9 +284,17 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
       const stableId = next === 'volume' ? volume?.stable_id : selectedId;
       if (!stableId) return;
       const busyOwner = beginBusy(kind, request);
-      try { const data = await loadManuscriptArtifact(projectId, next, stableId, next === 'outline' ? node?.content_signature : '', controller.signal); if (isLatest(kind, sequence)) setArtifacts((old) => ({ ...old, [next]: data.artifact })); }
-      catch (cause) { if (cause.name !== 'AbortError' && isLatest(kind, sequence)) setError(cause.message); }
-      finally { endBusy(busyOwner); }
+      setArtifactLoading((old) => ({ ...old, [next]: true }));
+      setArtifactErrors((old) => ({ ...old, [next]: '' }));
+      try {
+        const data = await loadManuscriptArtifact(projectId, next, stableId, next === 'outline' ? node?.content_signature : '', controller.signal);
+        if (isLatest(kind, sequence)) setArtifacts((old) => ({ ...old, [next]: data.artifact }));
+      } catch (cause) {
+        if (cause.name !== 'AbortError' && isLatest(kind, sequence)) setArtifactErrors((old) => ({ ...old, [next]: cause.message }));
+      } finally {
+        if (isLatest(kind, sequence)) setArtifactLoading((old) => ({ ...old, [next]: false }));
+        endBusy(busyOwner);
+      }
       return;
     }
     if (next === 'history' && (force || !history.items.length)) await loadHistory(true);
@@ -439,10 +455,13 @@ export function ManuscriptWorkspace({ active = false, controlsTarget = null, pro
     </header>
     <main ref={contentScrollRef} className="manuscript-content-scroll" inert={drawerOpen || undefined} onScroll={(event) => scrollPositionsRef.current.set(`${projectId}:${selectedId}:${tab}:${proseMode}`, event.currentTarget.scrollTop)}>
       <div className="manuscript-reading-surface" role="tabpanel" id={`manuscript-panel-${tab}`} aria-labelledby={`manuscript-tab-${tab}`} tabIndex="0">
-        {tab === 'prose' && proseMode === 'current' ? <section className="manuscript-prose-section"><h3>当前正式稿</h3><ManuscriptReader chapter={current} busy={autoLoading.current} error={error} onMore={() => more('current')} onRetry={() => selectChapter(selectedId)} /></section> : null}
+        {tab === 'prose' && proseMode === 'current' ? <section className="manuscript-prose-section"><h3>当前正式稿</h3><ManuscriptReader chapter={current} busy={autoLoading.current} error={error} onMore={() => more('current')} onRetry={() => selectChapter(selectedId)} onPreviousChapter={previousChapter ? () => selectChapter(previousChapter.stable_id) : null} previousChapterLabel={previousChapter?.display_label || ''} onNextChapter={nextChapter ? () => selectChapter(nextChapter.stable_id) : null} nextChapterLabel={nextChapter?.display_label || ''} /></section> : null}
         {tab === 'prose' && proseMode === 'candidate' ? <section className="manuscript-candidate manuscript-prose-section"><h3>候选稿 <span>尚未发布</span></h3>{candidate ? <ManuscriptReader chapter={candidate} busy={autoLoading.candidate} error={error} onMore={() => more('candidate')} onRetry={() => selectChapter(selectedId)} /> : <p className="empty-state">当前章节没有候选稿。</p>}</section> : null}
         {tab === 'prose' && proseMode === 'compare' ? <RevisionCompare current={current} candidate={candidate} busy={busy} currentBusy={autoLoading.current} candidateBusy={autoLoading.candidate} error={error} onMoreCurrent={() => more('current')} onMoreCandidate={() => more('candidate')} onRetry={() => selectChapter(selectedId)} /> : null}
-        {tab === 'outline' ? <ManuscriptOutlineView artifact={artifacts.outline} busy={busy} /> : null}
+        {tab === 'outline' ? <ManuscriptOutlineView artifact={artifacts.outline} busy={artifactLoading.outline} error={artifactErrors.outline} onRetry={() => {
+          setArtifactErrors((old) => ({ ...old, outline: '' }));
+          void chooseTab('outline', true);
+        }} /> : null}
         {tab === 'volume' ? <section className="manuscript-artifact-card" aria-busy={busy}><h3>所属分卷</h3>{artifacts.volume ? <><h4>{artifacts.volume.content?.title}</h4><p>{artifacts.volume.content?.theme}</p><ol>{(artifacts.volume.content?.arcs || []).map((arc) => <li key={arc.id}>{arc.title}：{arc.goal}</li>)}</ol><small>分卷内容已校验</small></> : <p>正在加载已校验的分卷视图…</p>}</section> : null}
         {tab === 'review' ? <ManuscriptReviewView artifact={artifacts.review} details={reviewDetails} busy={busy} onOpen={openReview} onMore={loadMoreReview} /> : null}
         {tab === 'history' ? <><RevisionHistory items={history.items} selected={historyVersion} preview={restorePreview} onOpen={openVersion} onPreview={previewRestore} onConfirm={confirmRestore} onMore={() => loadHistory(false)} hasMore={history.hasMore} loading={busy} />{historyRecovery ? <button type="button" disabled={busy} onClick={() => { setHistoryRecovery(false); void loadHistory(true); }}>重新加载历史</button> : null}{historyVersion ? <section className="manuscript-prose-section"><h3>历史版本正文</h3><ManuscriptReader chapter={historyVersion} busy={busy} error={error} onMore={moreVersion} onRetry={() => openVersion({ revision_id: historyVersion.revision_id })} /></section> : null}</> : null}

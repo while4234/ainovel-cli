@@ -35,6 +35,52 @@ describe('ManuscriptWorkspace', () => {
     await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === '正文对比').click()); await settle();
     expect(container.textContent).toContain('候选稿'); expect(container.textContent).toContain('尚未发布'); expect(container.textContent).toContain('c1-candidate');
   });
+  it('renders the complete chapter and enables chapter-end navigation only for completed formal prose', async () => {
+    const completedTree = {
+      ...tree,
+      nodes: [{ ...tree.nodes[0], children: [{ ...tree.nodes[0].children[0], children: tree.nodes[0].children[0].children.map((item) => ({ ...item, state: 'completed', has_current: true, has_candidate: false })) }] }]
+    };
+    api.loadManuscriptTree.mockResolvedValue(completedTree);
+    api.loadManuscriptChunk.mockImplementation(async (_p, id, options = {}) => chapter(id, options.view));
+    await act(async () => root.render(<WorkspaceFixture projectId="p" />)); await settle();
+
+    let navigation = container.querySelector('[aria-label="章末章节导航"]');
+    expect(navigation.querySelectorAll('button')[0].disabled).toBe(true);
+    expect(navigation.querySelectorAll('button')[1].disabled).toBe(false);
+    await act(async () => navigation.querySelectorAll('button')[1].click()); await settle();
+    expect(container.textContent).toContain('c2-current');
+
+    navigation = container.querySelector('[aria-label="章末章节导航"]');
+    expect(navigation.querySelectorAll('button')[0].disabled).toBe(false);
+    expect(navigation.querySelectorAll('button')[1].disabled).toBe(true);
+  });
+  it('recovers an aborted outline load and keeps prose and outlines isolated across repeated chapter switches', async () => {
+    api.loadManuscriptTree.mockResolvedValue(tree);
+    api.loadManuscriptChunk.mockImplementation(async (_p, id, options = {}) => chapter(id, options.view));
+    const abort = Object.assign(new Error('superseded'), { name: 'AbortError' });
+    api.loadManuscriptArtifact
+      .mockRejectedValueOnce(abort)
+      .mockImplementation(async (_project, kind, stableId) => ({
+        artifact: { kind, stable_id: stableId, signature: `${kind}-${stableId}`, content: { title: `OUTLINE-${stableId}`, core_event: `CORE-${stableId}`, hook: `HOOK-${stableId}`, scenes: [] } }
+      }));
+    await act(async () => root.render(<WorkspaceFixture projectId="p" />)); await settle();
+
+    await act(async () => document.getElementById('manuscript-tab-outline').click()); await settle(); await settle();
+    expect(container.textContent).toContain('OUTLINE-c1');
+    expect(api.loadManuscriptArtifact.mock.calls.filter((call) => call[1] === 'outline' && call[2] === 'c1').length).toBeGreaterThanOrEqual(2);
+
+    for (let round = 0; round < 2; round += 1) {
+      await act(async () => container.querySelector('[data-tree-index="3"]').click()); await settle();
+      expect(container.textContent).toContain('OUTLINE-c2');
+      expect(container.textContent).not.toContain('OUTLINE-c1');
+      await act(async () => document.getElementById('manuscript-tab-prose').click()); await settle();
+      expect(container.textContent).toContain('c2-current');
+      await act(async () => container.querySelector('[data-tree-index="2"]').click()); await settle();
+      await act(async () => document.getElementById('manuscript-tab-outline').click()); await settle();
+      expect(container.textContent).toContain('OUTLINE-c1');
+      expect(container.textContent).not.toContain('OUTLINE-c2');
+    }
+  });
   it('cancels stale chapter reads so an old response cannot replace the new selection', async () => {
     let resolveOld; api.loadManuscriptTree.mockResolvedValue(tree); api.loadManuscriptChunk.mockImplementation((_p, id, options = {}) => id === 'c1' && options.view !== 'candidate' ? new Promise((resolve) => { resolveOld = resolve; }) : Promise.resolve(chapter(id, options.view)));
     await act(async () => root.render(<WorkspaceFixture projectId="p" />)); await settle();
@@ -52,7 +98,8 @@ describe('ManuscriptWorkspace', () => {
     await act(async () => root.render(<WorkspaceFixture projectId="p" />)); await settle();
     expect(container.textContent).toContain('已加载 140 / 140 段');
     expect(api.loadManuscriptChunk).toHaveBeenCalledWith('p', 'c1', expect.objectContaining({ cursor: 40, limit: 100 }));
-    expect(container.querySelectorAll('.manuscript-prose p').length).toBeLessThanOrEqual(120);
+    expect(container.querySelectorAll('.manuscript-prose p')).toHaveLength(140);
+    expect(container.textContent).toContain('已显示本章真正结尾');
   });
   it('shows actionable manuscript recovery metadata in the right controls', async () => {
     api.loadManuscriptRecovery.mockResolvedValue({ recovery: { required: true, retryable: true, owners: ['manuscript_publication'] } });
@@ -163,7 +210,7 @@ describe('ManuscriptWorkspace', () => {
 		await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent.includes('2026-07-16')).click()); await settle();
 		await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === '继续加载').click()); await settle();
 		expect(container.textContent).toContain('已加载 240 / 240 段');
-		expect(container.querySelectorAll('.manuscript-reader p').length).toBeLessThanOrEqual(121);
+		expect(container.querySelectorAll('.manuscript-prose p')).toHaveLength(240);
 		expect(api.loadManuscriptVersion).toHaveBeenLastCalledWith('p', 'history-1', 'c1', 120, expect.any(AbortSignal));
 	});
 	it('recovers from a tombstoned history version without discarding current prose', async () => {

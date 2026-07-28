@@ -34,11 +34,19 @@ func (t *CommitChapterTool) validateChapterCommitCharacterIDs(chapter int, submi
 	)
 }
 
-var runtimeCharacterFields = map[string]struct{}{
-	"status": {}, "location": {}, "resources": {}, "power": {},
-	"short_term_motivation": {}, "motivation": {}, "knowledge": {},
-	"emotion": {}, "injury": {}, "relation": {}, "relationship": {},
+var runtimeCharacterFieldNames = []string{
+	"status", "location", "resources", "power",
+	"short_term_motivation", "motivation", "knowledge",
+	"emotion", "injury", "relation", "relationship",
 }
+
+var runtimeCharacterFields = func() map[string]struct{} {
+	fields := make(map[string]struct{}, len(runtimeCharacterFieldNames))
+	for _, field := range runtimeCharacterFieldNames {
+		fields[field] = struct{}{}
+	}
+	return fields
+}()
 
 func (t *CommitChapterTool) validateDynamicCharacterUpdates(
 	characterIDs []string,
@@ -94,7 +102,10 @@ func (t *CommitChapterTool) validateDynamicCharacterUpdates(
 			return fmt.Errorf("state_changes[%d] attempts static field %q; create a Character Agent revision request instead: %w", index, change.Field, errs.ErrToolPrecondition)
 		}
 		if _, ok := runtimeCharacterFields[field]; !ok {
-			return fmt.Errorf("state_changes[%d] field %q is not an allowed dynamic character field: %w", index, change.Field, errs.ErrToolArgs)
+			return fmt.Errorf(
+				"state_changes[%d] field %q is not an allowed dynamic character field; allowed=%v. Do not retry with a synonym: use one exact value from check_de_ai.commit_context.allowed_character_state_fields, or omit this state change: %w",
+				index, change.Field, runtimeCharacterFieldNames, errs.ErrToolArgs,
+			)
 		}
 	}
 	return nil

@@ -67,7 +67,7 @@ func (t *CommitChapterTool) Schema() map[string]any {
 	stateChangeSchema := schema.Object(
 		schema.Property("character_id", schema.String("stable character ID for character state; preferred over entity name")),
 		schema.Property("entity", schema.String("角色名或实体名（旧 name-only 兼容）")),
-		schema.Property("field", schema.String("变化属性")).Required(),
+		schema.Property("field", schema.String("变化属性。角色状态只能逐字使用 check_de_ai.commit_context.allowed_character_state_fields 中的英文值；不要翻译、改写或尝试同义词。非角色实体才可使用其他字段。")).Required(),
 		schema.Property("old_value", schema.String("变化前的值")),
 		schema.Property("new_value", schema.String("变化后的值")).Required(),
 		schema.Property("reason", schema.String("变化原因")),
@@ -86,7 +86,7 @@ func (t *CommitChapterTool) Schema() map[string]any {
 		schema.Property("timeline_events", schema.Array("本章时间线事件", timelineSchema)),
 		schema.Property("foreshadow_updates", schema.Array("伏笔操作", foreshadowSchema)),
 		schema.Property("relationship_changes", schema.Array("关系变化", relationshipSchema)),
-		schema.Property("state_changes", schema.Array("角色/实体状态变化", stateChangeSchema)),
+		schema.Property("state_changes", schema.Array("角色/实体状态变化。没有符合允许字段的变化时传空数组，不要猜测字段名。", stateChangeSchema)),
 		schema.Property("cast_intros", schema.Array("本章首次引入且后续可能再出现的次要角色简介（不含主角及 characters.json 已有角色）", schema.Object(
 			schema.Property("name", schema.String("角色名")).Required(),
 			schema.Property("brief_role", schema.String("一句话定位（如：客栈老板/赌坊打手）")).Required(),

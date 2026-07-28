@@ -1,25 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
-
-const WINDOW_PARAGRAPHS = 120;
-
-export function ManuscriptReader({ chapter, busy, error, onMore, onRetry }) {
-  const [windowStart, setWindowStart] = useState(0);
-  useEffect(() => setWindowStart(0), [chapter?.stable_id, chapter?.view, chapter?.content_signature]);
+export function ManuscriptReader({ chapter, busy, error, onMore, onRetry, onPreviousChapter, previousChapterLabel, onNextChapter, nextChapterLabel }) {
   const paragraphs = chapter?.paragraphs || [];
   const totalParagraphs = Number(chapter?.total_paragraphs) || paragraphs.length;
-  const visible = useMemo(() => paragraphs.slice(windowStart, windowStart + WINDOW_PARAGRAPHS), [paragraphs, windowStart]);
   if (error && !chapter) return <div role="alert">{error}<button type="button" onClick={onRetry}>重试</button></div>;
   return <article className="manuscript-reader" aria-busy={busy}>
     {error ? <div role="alert">网络异常，保留上次成功正文。<button type="button" onClick={onRetry}>重试</button></div> : null}
     <div className="manuscript-window-status" aria-live="polite">
-      <span>显示第 {paragraphs.length ? windowStart + 1 : 0}–{Math.min(windowStart + WINDOW_PARAGRAPHS, paragraphs.length)} 段</span>
+      <span>显示完整正文</span>
       <strong>{busy ? '正在自动加载' : '已加载'} {paragraphs.length} / {totalParagraphs} 段</strong>
       {chapter?.next_cursor != null && !busy ? <button type="button" onClick={onMore}>继续加载</button> : null}
     </div>
-    <div className="manuscript-window-navigation">
-      <button type="button" disabled={windowStart <= 0} onClick={() => setWindowStart(Math.max(0, windowStart - WINDOW_PARAGRAPHS))}>上一窗口</button>
-      <button type="button" disabled={windowStart + WINDOW_PARAGRAPHS >= paragraphs.length} onClick={() => setWindowStart(windowStart + WINDOW_PARAGRAPHS)}>下一窗口</button>
+    <div className="manuscript-prose">{paragraphs.map((paragraph, index) => <p data-paragraph-index={index + 1} key={`${index}-${paragraph.slice(0, 20)}`}>{paragraph}</p>)}</div>
+    <div className="manuscript-chapter-end" role="status">
+      <p>{paragraphs.length < totalParagraphs ? '正文仍在加载，请稍候。' : '已显示本章真正结尾。'}</p>
+      <div className="manuscript-chapter-navigation" aria-label="章末章节导航">
+        <button type="button" className="tool-button" disabled={!onPreviousChapter || paragraphs.length < totalParagraphs} onClick={onPreviousChapter}>上一章{previousChapterLabel ? `：${previousChapterLabel}` : ''}</button>
+        <button type="button" className="tool-button" disabled={!onNextChapter || paragraphs.length < totalParagraphs} onClick={onNextChapter}>下一章{nextChapterLabel ? `：${nextChapterLabel}` : ''}</button>
+      </div>
     </div>
-    <div className="manuscript-prose">{visible.map((paragraph, index) => <p data-paragraph-index={windowStart + index + 1} key={`${windowStart + index}-${paragraph.slice(0, 20)}`}>{paragraph}</p>)}</div>
   </article>;
 }

@@ -663,6 +663,55 @@ func TestWriterPhaseKeepsSchemaValidArgumentsForClearedResults(t *testing.T) {
 	}
 }
 
+func TestWriterPhaseCleanRestartsAfterRepeatedContractError(t *testing.T) {
+	messages := []agentcore.AgentMessage{agentcore.UserMsg("write chapter 11")}
+	for index := 0; index < 2; index++ {
+		callID := fmt.Sprintf("consistency-error-%d", index)
+		messages = append(messages,
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+				agentcore.ThinkingBlock(strings.Repeat("repairing the rejected quote ", 200)),
+				agentcore.ToolCallBlock(agentcore.ToolCall{
+					ID: callID, Name: "check_consistency", Args: []byte(`{"chapter":11}`),
+				}),
+			}},
+			agentcore.ToolResultMsg(callID, []byte(`scene_checks[2].evidence is not an exact current-draft quote of at least 8 characters`), true),
+		)
+	}
+
+	strategy := newWriterValidationPhaseStrategy(*writerToolResultMicrocompactConfig())
+	view, result, err := strategy.Apply(t.Context(), messages, messages, corecontext.Budget{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied || result.Name != "writer_clean_error_recovery" {
+		t.Fatalf("repeated contract error did not trigger clean recovery: %+v", result)
+	}
+	if len(view) != 2 {
+		t.Fatalf("clean recovery retained polluted history: %d messages", len(view))
+	}
+	recovery := view[1].(agentcore.Message)
+	if recovery.Role != agentcore.RoleUser || !strings.Contains(recovery.TextContent(), writerCleanRecoveryMarker) {
+		t.Fatalf("missing clean recovery instruction: %+v", recovery)
+	}
+	if strings.Contains(recovery.TextContent(), "scene_checks[2]") {
+		t.Fatal("clean recovery copied the rejected argument context")
+	}
+}
+
+func TestWriterValidationReceiptRequiresSuccessfulToolResult(t *testing.T) {
+	callID := "failed-check"
+	messages := []agentcore.AgentMessage{
+		agentcore.UserMsg("write chapter 11"),
+		agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{
+			agentcore.ToolCallBlock(agentcore.ToolCall{ID: callID, Name: "check_consistency", Args: []byte(`{"chapter":11}`)}),
+		}},
+		agentcore.ToolResultMsg(callID, []byte(`scene_checks count mismatch`), true),
+	}
+	if hasWriterValidationReceipt(messages) {
+		t.Fatal("failed validation tool result must not advance the validation phase")
+	}
+}
+
 func TestWriterOverflowRecoveryEvictsWholePriorPhase(t *testing.T) {
 	messages := []agentcore.AgentMessage{agentcore.UserMsg(strings.Repeat("baseline ", 2_200))}
 	for index, toolName := range []string{"novel_context", "read_chapter", "check_consistency"} {

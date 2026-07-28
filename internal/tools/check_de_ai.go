@@ -26,13 +26,14 @@ type checkDeAIResult struct {
 }
 
 type chapterCommitContext struct {
-	DraftSHA256  string   `json:"draft_sha256"`
-	Title        string   `json:"title"`
-	CoreEvent    string   `json:"core_event"`
-	Hook         string   `json:"hook"`
-	CharacterIDs []string `json:"character_ids"`
-	Characters   []string `json:"characters"`
-	Scenes       []string `json:"scenes"`
+	DraftSHA256                 string   `json:"draft_sha256"`
+	Title                       string   `json:"title"`
+	CoreEvent                   string   `json:"core_event"`
+	Hook                        string   `json:"hook"`
+	CharacterIDs                []string `json:"character_ids"`
+	Characters                  []string `json:"characters"`
+	Scenes                      []string `json:"scenes"`
+	AllowedCharacterStateFields []string `json:"allowed_character_state_fields"`
 }
 
 func NewCheckDeAITool(store *store.Store) *CheckDeAITool { return &CheckDeAITool{store: store} }
@@ -124,12 +125,13 @@ func (t *CheckDeAITool) buildChapterCommitContext(chapter int, digest string) *c
 		}
 	}
 	return &chapterCommitContext{
-		DraftSHA256:  digest,
-		Title:        outline.Title,
-		CoreEvent:    outline.CoreEvent,
-		Hook:         outline.Hook,
-		CharacterIDs: characterIDs,
-		Characters:   characters,
-		Scenes:       append([]string(nil), outline.Scenes...),
+		DraftSHA256:                 digest,
+		Title:                       outline.Title,
+		CoreEvent:                   outline.CoreEvent,
+		Hook:                        outline.Hook,
+		CharacterIDs:                characterIDs,
+		Characters:                  characters,
+		Scenes:                      append([]string(nil), outline.Scenes...),
+		AllowedCharacterStateFields: append([]string(nil), runtimeCharacterFieldNames...),
 	}
 }

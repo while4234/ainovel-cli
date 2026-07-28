@@ -122,6 +122,9 @@ func (s *writerValidationPhaseStrategy) Name() string { return "writer_validatio
 
 func (s *writerValidationPhaseStrategy) Apply(ctx context.Context, transcript, view []agentcore.AgentMessage, budget corecontext.Budget) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
 	currentTurn := currentWriterTurn(view)
+	if shouldCleanRestartWriterTurn(currentTurn) {
+		return cleanRestartWriterTurn(view)
+	}
 	hasValidation := hasWriterValidationReceipt(currentTurn)
 	hasPersistedDraft := hasPersistedWriterDraftReceipt(currentTurn)
 	hasDuplicateEvidence := hasDuplicateWriterContextResults(currentTurn)
@@ -195,7 +198,7 @@ func currentWriterTurn(msgs []agentcore.AgentMessage) []agentcore.AgentMessage {
 }
 
 func hasWriterValidationReceipt(msgs []agentcore.AgentMessage) bool {
-	return hasToolResult(msgs, func(name string) bool {
+	return hasSuccessfulToolResult(msgs, func(name string) bool {
 		switch name {
 		case "check_consistency", "check_adaptation", "check_de_ai":
 			return true
@@ -239,6 +242,8 @@ type writerToolResultCandidate struct {
 	toolName       string
 	key            string
 	alreadyCleared bool
+	isError        bool
+	resultText     string
 }
 
 func compactWriterPhase(
@@ -356,6 +361,8 @@ func collectWriterToolResults(msgs []agentcore.AgentMessage) []writerToolResultC
 			toolName:       call.toolName,
 			key:            call.key,
 			alreadyCleared: message.Metadata["compacted_tool_result"] == true,
+			isError:        message.Metadata["is_error"] == true,
+			resultText:     strings.TrimSpace(message.TextContent()),
 		})
 	}
 	return candidates
@@ -547,6 +554,14 @@ func cloneWriterMetadata(metadata map[string]any) map[string]any {
 }
 
 func hasToolResult(msgs []agentcore.AgentMessage, matches func(string) bool) bool {
+	return hasMatchingToolResult(msgs, matches, false)
+}
+
+func hasSuccessfulToolResult(msgs []agentcore.AgentMessage, matches func(string) bool) bool {
+	return hasMatchingToolResult(msgs, matches, true)
+}
+
+func hasMatchingToolResult(msgs []agentcore.AgentMessage, matches func(string) bool, requireSuccess bool) bool {
 	pending := make(map[string]string)
 	for _, item := range msgs {
 		message, ok := item.(agentcore.Message)
@@ -563,11 +578,78 @@ func hasToolResult(msgs []agentcore.AgentMessage, matches func(string) bool) boo
 			continue
 		}
 		callID, _ := message.Metadata["tool_call_id"].(string)
-		if matches(pending[callID]) {
+		if matches(pending[callID]) && (!requireSuccess || message.Metadata["is_error"] != true) {
 			return true
 		}
 	}
 	return false
+}
+
+const writerCleanRecoveryMarker = "[Writer clean recovery]"
+
+func shouldCleanRestartWriterTurn(msgs []agentcore.AgentMessage) bool {
+	for _, item := range msgs {
+		message, ok := item.(agentcore.Message)
+		if ok && message.Role == agentcore.RoleUser && strings.Contains(message.TextContent(), writerCleanRecoveryMarker) {
+			return false
+		}
+	}
+	counts := make(map[string]int)
+	total := 0
+	for _, candidate := range collectWriterToolResults(msgs) {
+		if !candidate.isError || candidate.alreadyCleared {
+			continue
+		}
+		total++
+		fingerprint := writerToolErrorFingerprint(candidate.toolName, candidate.resultText)
+		counts[fingerprint]++
+		if counts[fingerprint] >= 2 {
+			return true
+		}
+	}
+	return total >= 4
+}
+
+func writerToolErrorFingerprint(toolName, result string) string {
+	lower := strings.ToLower(result)
+	switch {
+	case strings.Contains(lower, "not an exact current-draft quote"):
+		return toolName + ":exact_quote"
+	case strings.Contains(lower, "scene_checks") && strings.Contains(lower, "count"):
+		return toolName + ":scene_count"
+	case strings.Contains(lower, "from_line/to_line"):
+		return toolName + ":line_range"
+	case strings.Contains(lower, "not an allowed dynamic character field"):
+		return toolName + ":dynamic_character_field"
+	case strings.Contains(lower, "character contract"):
+		return toolName + ":character_contract"
+	case strings.Contains(lower, "only available") || strings.Contains(lower, "must call"):
+		return toolName + ":gate_order"
+	case strings.Contains(lower, "invalid args") || strings.Contains(lower, "tool args invalid"):
+		return toolName + ":invalid_args"
+	default:
+		return toolName + ":other"
+	}
+}
+
+func cleanRestartWriterTurn(view []agentcore.AgentMessage) ([]agentcore.AgentMessage, corecontext.StrategyResult, error) {
+	current := currentWriterTurn(view)
+	if len(current) == 0 {
+		return view, corecontext.StrategyResult{Name: "writer_clean_error_recovery"}, nil
+	}
+	clean := []agentcore.AgentMessage{current[0], agentcore.Message{
+		Role: agentcore.RoleUser,
+		Content: []agentcore.ContentBlock{agentcore.TextBlock(writerCleanRecoveryMarker + `
+Repeated tool-contract errors were detected. The failed arguments and repair conversation have been discarded.
+Resume only from durable project state: call novel_context exactly once, obey its current_stage and next_step, and copy structured values from the latest successful tool receipt instead of memory.
+If a draft already exists, do not re-plan or rewrite it. Read the current draft once only when the durable stage requires evidence, then continue the required validation/commit sequence.
+Use each registered tool schema literally. Do not retry a rejected argument with synonyms.`)},
+	}}
+	return clean, corecontext.StrategyResult{
+		Applied:     true,
+		TokensSaved: max(0, corecontext.EstimateTotal(view)-corecontext.EstimateTotal(clean)),
+		Name:        "writer_clean_error_recovery",
+	}, nil
 }
 
 func countCompactedToolResults(msgs []agentcore.AgentMessage) int {

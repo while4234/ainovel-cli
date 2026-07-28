@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `pending` `fix: recover writer errors and manuscript views`:
+  replaces repeated Writer tool-contract repair loops with a clean
+  durable-state context after limited self-correction, prevents failed
+  validation calls from advancing phase compaction, publishes the exact legal
+  dynamic character-state fields to commit, renders complete manuscript
+  chapters with completed-only chapter navigation, and makes outline loading
+  recover from aborted requests without leaking stale chapter data. Focused
+  Writer/Tools tests, 74 manuscript UI tests, the production UI build, service
+  restart, and repeated real-Chrome chapter/outline switching pass.
 - 2026-07-28 `ce83f31` `docs: finalize character workflow migration`:
   publishes the remaining Character Agent migration documentation, relaxes
   adaptation character-brief compatibility for projects without legacy
