@@ -522,6 +522,45 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 	}
 }
 
+func TestRouteResume_UsesPersistedDeAIRepairWithoutRepeatingCurrentConsistency(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	state := State{
+		Progress:                   p,
+		LastCompleted:              4,
+		InProgressDraftExists:      true,
+		InProgressCheckpoint:       "de_ai_check",
+		InProgressDeAIState:        writerDeAIStateFailed,
+		InProgressConsistencyValid: true,
+		InProgressWordCount:        4793,
+		InProgressWordMin:          3000,
+		InProgressWordMax:          6000,
+		InProgressWordBudgetValid:  true,
+	}
+
+	got := RouteResume(state)
+	if got == nil || got.Agent != "writer" || got.Chapter != 5 || !got.ResumeRecovery {
+		t.Fatalf("expected persisted de-AI repair recovery, got %+v", got)
+	}
+	for _, want := range []string{
+		"去AI化修订",
+		"consistency_current=true",
+		"不要在首次修订前重复调用 check_consistency",
+		`novel_context(chapter=5)`,
+		`read_chapter(chapter=5, source="draft")`,
+		"pending_de_ai_repair",
+		"repair_de_ai_batch",
+		"持久化报告",
+		"禁止 plan_chapter、draft_chapter",
+		"为了总字数预算删减有效内容",
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("de-AI recovery task missing %q: %s", want, got.Task)
+		}
+	}
+}
+
 func TestRouteResume_RepairsOnlyOneWordBudgetSegment(t *testing.T) {
 	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
 	p.TotalChapters = 20

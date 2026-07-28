@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -799,13 +800,21 @@ func architectLongShouldStopAfterToolResult(toolName string, result json.RawMess
 
 func writerShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
 	var payload struct {
-		DeferredToHost bool `json:"deferred_to_host"`
-		BudgetSegment  *int `json:"budget_segment"`
+		DeferredToHost bool  `json:"deferred_to_host"`
+		BudgetSegment  *int  `json:"budget_segment"`
+		Passed         *bool `json:"passed"`
 	}
 	if json.Unmarshal(result, &payload) != nil {
 		return false
 	}
 	if payload.DeferredToHost {
+		return true
+	}
+	// A failed prose audit is a durable phase boundary. Ending this subagent
+	// turn lets the Host redispatch a compact repair-only task from the saved
+	// audit instead of carrying the full contract, draft, consistency receipt,
+	// and audit report through another provider request.
+	if toolName == "check_de_ai" && payload.Passed != nil && !*payload.Passed {
 		return true
 	}
 	return toolName == "edit_chapter" && payload.BudgetSegment != nil
@@ -998,6 +1007,9 @@ func (t *writerReadChapterTool) Execute(ctx context.Context, args json.RawMessag
 	if err != nil {
 		return nil, err
 	}
+	if requestedChapter > 0 && requestedChapter == activeChapter {
+		return attachPendingDeAIRepair(t.store, requestedChapter, result)
+	}
 	if requestedChapter <= 0 || activeChapter <= 0 || requestedChapter == activeChapter {
 		return result, nil
 	}
@@ -1009,6 +1021,55 @@ func (t *writerReadChapterTool) Execute(ctx context.Context, args json.RawMessag
 	payload["continuity_evidence_complete"] = true
 	payload["do_not_retry_for_more"] = true
 	payload["hint"] = "This bounded tail is the complete prior-chapter evidence required for continuity; novel_context already includes previous_tail and recent summaries. Do not reread this or another prior chapter and do not increase max_runes. Proceed directly to plan_chapter or draft_chapter."
+	return json.Marshal(payload)
+}
+
+func attachPendingDeAIRepair(st *store.Store, chapter int, result json.RawMessage) (json.RawMessage, error) {
+	if st == nil || st.DeAI == nil || chapter <= 0 {
+		return result, nil
+	}
+	audit, err := st.DeAI.LoadAudit(chapter)
+	if err != nil || audit == nil || audit.Passed {
+		return result, nil
+	}
+	content, _, err := st.Drafts.LoadChapterContent(chapter)
+	if err != nil || content == "" || audit.DraftSHA256 != store.TextSHA256(content) {
+		return result, nil
+	}
+	checkpoint := st.Checkpoints.LatestByStep(domain.ChapterScope(chapter), "consistency_check")
+	if checkpoint == nil || checkpoint.Digest != "sha256:"+audit.DraftSHA256 {
+		return result, nil
+	}
+	plan := audit.Report.RepairPlan()
+	if len(plan.Batches) == 0 {
+		return result, nil
+	}
+	batch := plan.Batches[0]
+	findings := make([]any, 0, len(batch.FindingCodes))
+	for _, finding := range audit.Report.Findings {
+		if finding.Severity != "repair" || !slices.Contains(batch.FindingCodes, finding.Code) {
+			continue
+		}
+		findings = append(findings, map[string]any{
+			"code":        finding.Code,
+			"actual":      finding.Actual,
+			"limit":       finding.Limit,
+			"examples":    finding.Examples,
+			"repair_hint": finding.RepairHint,
+		})
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(result, &payload); err != nil {
+		return result, nil
+	}
+	payload["pending_de_ai_repair"] = map[string]any{
+		"draft_sha256":                          audit.DraftSHA256,
+		"consistency_current":                   true,
+		"do_not_repeat_consistency_before_edit": true,
+		"batch":                                 batch,
+		"findings":                              findings,
+		"next_action":                           "Use the exact examples above to call repair_de_ai_batch now. After the edit, rerun check_consistency and check_de_ai on the changed draft.",
+	}
 	return json.Marshal(payload)
 }
 

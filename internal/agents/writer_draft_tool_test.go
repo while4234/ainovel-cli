@@ -185,6 +185,62 @@ func TestWriterReadChapterToolInfersCurrentDraftAndSource(t *testing.T) {
 	}
 }
 
+func TestWriterReadChapterToolAttachesCurrentPersistedDeAIRepair(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 2); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(1); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	draft := "# 第一章\n\n" + strings.Repeat("他停住——又向前走了一步。\n", 20)
+	if err := st.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if _, err := st.Checkpoints.AppendArtifact(domain.ChapterScope(1), "consistency_check", "drafts/01.draft.md"); err != nil {
+		t.Fatalf("consistency checkpoint: %v", err)
+	}
+	if _, err := tools.NewCheckDeAITool(st).Execute(t.Context(), json.RawMessage(`{"chapter":1}`)); err != nil {
+		t.Fatalf("check_de_ai: %v", err)
+	}
+
+	raw, err := newWriterReadChapterTool(tools.NewReadChapterTool(st), st).Execute(
+		t.Context(),
+		json.RawMessage(`{"chapter":1,"source":"draft"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Pending *struct {
+			ConsistencyCurrent bool `json:"consistency_current"`
+			DoNotRepeat        bool `json:"do_not_repeat_consistency_before_edit"`
+			Batch              struct {
+				ID string `json:"id"`
+			} `json:"batch"`
+			Findings []struct {
+				Code     string   `json:"code"`
+				Examples []string `json:"examples"`
+			} `json:"findings"`
+			NextAction string `json:"next_action"`
+		} `json:"pending_de_ai_repair"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Pending == nil || !payload.Pending.ConsistencyCurrent || !payload.Pending.DoNotRepeat {
+		t.Fatalf("pending repair guidance missing: %s", raw)
+	}
+	if payload.Pending.Batch.ID != "punctuation" || len(payload.Pending.Findings) == 0 ||
+		len(payload.Pending.Findings[0].Examples) == 0 ||
+		!strings.Contains(payload.Pending.NextAction, "repair_de_ai_batch") {
+		t.Fatalf("pending repair is not actionable: %+v", payload.Pending)
+	}
+}
+
 func TestWriterChapterInferenceToolAddsActiveChapter(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
