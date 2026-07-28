@@ -67,11 +67,42 @@ func (t *CheckConsistencyTool) Schema() map[string]any {
 		schema.Property("description", schema.String("what is inconsistent")).Required(),
 		schema.Property("suggestion", schema.String("executable repair instruction")).Required(),
 	)
+	sceneChecksSchema := schema.Array("逐场景、以当前草稿原文为证据的契约核对；数量必须等于章节细纲场景数", sceneCheckSchema)
+	if sceneCount, contracts := t.activeSceneContracts(); sceneCount > 0 {
+		sceneChecksSchema["minItems"] = sceneCount
+		sceneChecksSchema["maxItems"] = sceneCount
+		sceneChecksSchema["description"] = fmt.Sprintf(
+			"当前活动章节必须且只能提交 %d 项，scene 依次为 1-%d；每项对应一个计划场景，不是正文小节。计划场景：%s",
+			sceneCount, sceneCount, contracts,
+		)
+	}
 	return schema.Object(
 		schema.Property("chapter", schema.Int("要检查的章节号")).Required(),
-		schema.Property("scene_checks", schema.Array("逐场景、以当前草稿原文为证据的契约核对；数量必须等于章节细纲场景数", sceneCheckSchema)).Required(),
+		schema.Property("scene_checks", sceneChecksSchema).Required(),
 		schema.Property("findings", schema.Array("structured character and continuity findings; [] means no finding", findingSchema)).Required(),
 	)
+}
+
+func (t *CheckConsistencyTool) activeSceneContracts() (int, string) {
+	if t == nil || t.store == nil || t.store.Progress == nil || t.store.Outline == nil {
+		return 0, ""
+	}
+	progress, err := t.store.Progress.Load()
+	if err != nil || progress == nil {
+		return 0, ""
+	}
+	chapter := progress.InProgressChapter
+	if chapter <= 0 {
+		chapter = progress.CurrentChapter
+	}
+	if chapter <= 0 {
+		return 0, ""
+	}
+	outline, err := t.store.Outline.GetChapterOutline(chapter)
+	if err != nil || outline == nil || len(outline.Scenes) == 0 {
+		return 0, ""
+	}
+	return len(outline.Scenes), compactIndexedSceneContracts(outline.Scenes)
 }
 
 func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {

@@ -46,7 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-28 `pending` `fix: preserve chapter-scoped writer validation`:
+- 2026-07-28 `pending` `fix: pin active scene validation schema`:
+  publishes the active chapter's exact planned-scene count and compact indexed
+  contracts in `check_consistency` JSON Schema, with equal `minItems` and
+  `maxItems`, so Writer cannot confuse prose subsections with the four planned
+  scenes while the strict evidence and mismatch gates remain unchanged.
+- 2026-07-28 `18521edd` `fix: preserve chapter-scoped writer validation`:
   gives Writer a 96 KiB diagnostic boundary for one active chapter, its
   canonical work package, and validation schemas while retaining the 60 KiB
   boundary for Coordinator and planning agents. This prevents a valid

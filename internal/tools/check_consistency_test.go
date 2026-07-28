@@ -73,6 +73,44 @@ func TestCheckConsistencyRequiresGroundedEvidenceForEveryPlannedScene(t *testing
 	}
 }
 
+func TestCheckConsistencySchemaPinsActiveChapterSceneCount(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 3); err != nil {
+		t.Fatalf("Init progress: %v", err)
+	}
+	if err := st.Progress.StartChapter(2); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		Chapter: 2,
+		Scenes:  []string{"第一场抵达", "第二场试探", "第三场决定", "第四场钩子"},
+	}}); err != nil {
+		t.Fatalf("SaveOutline: %v", err)
+	}
+
+	toolSchema := NewCheckConsistencyTool(st).Schema()
+	properties, ok := toolSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties=%T", toolSchema["properties"])
+	}
+	sceneChecks, ok := properties["scene_checks"].(map[string]any)
+	if !ok {
+		t.Fatalf("scene_checks=%T", properties["scene_checks"])
+	}
+	if sceneChecks["minItems"] != 4 || sceneChecks["maxItems"] != 4 {
+		t.Fatalf("scene count bounds=%v-%v, want 4-4", sceneChecks["minItems"], sceneChecks["maxItems"])
+	}
+	description, _ := sceneChecks["description"].(string)
+	if !strings.Contains(description, "只能提交 4 项") ||
+		!strings.Contains(description, "1:第一场抵达") ||
+		!strings.Contains(description, "4:第四场钩子") {
+		t.Fatalf("dynamic scene contract missing from description: %q", description)
+	}
+}
+
 func TestCheckConsistencyRejectsInventedSceneEvidence(t *testing.T) {
 	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {
