@@ -42,6 +42,15 @@ func TestRepairDeAIBatchAppliesBoundedExactRevisions(t *testing.T) {
 	if !strings.Contains(string(result), "同一版草稿") {
 		t.Fatalf("result must require rechecking one stable draft: %s", result)
 	}
+	var next struct {
+		NextStep string `json:"next_step"`
+	}
+	if err := json.Unmarshal(result, &next); err != nil {
+		t.Fatal(err)
+	}
+	if consistency, deAI := strings.Index(next.NextStep, "check_consistency"), strings.Index(next.NextStep, "check_de_ai"); consistency < 0 || deAI < 0 || consistency >= deAI {
+		t.Fatalf("repair must require consistency before de-AI: %q", next.NextStep)
+	}
 	draft, err := s.Drafts.LoadDraft(1)
 	if err != nil {
 		t.Fatal(err)
@@ -136,8 +145,11 @@ func TestRepairDeAIBatchSkipsStaleEntryAndAppliesCurrentMatches(t *testing.T) {
 		len(payload.SkippedStaleIndices) != 1 || payload.SkippedStaleIndices[0] != 0 {
 		t.Fatalf("unexpected stale-entry result: %+v", payload)
 	}
-	if !strings.Contains(payload.NextStep, "不要重放旧批次") || !strings.Contains(payload.NextStep, "立即调用 check_de_ai") {
+	if !strings.Contains(payload.NextStep, "不要重放旧批次") {
 		t.Fatalf("missing safe recovery guidance: %q", payload.NextStep)
+	}
+	if consistency, deAI := strings.Index(payload.NextStep, "check_consistency"), strings.Index(payload.NextStep, "check_de_ai"); consistency < 0 || deAI < 0 || consistency >= deAI {
+		t.Fatalf("stale recovery must require consistency before de-AI: %q", payload.NextStep)
 	}
 	draft, err := s.Drafts.LoadDraft(1)
 	if err != nil {

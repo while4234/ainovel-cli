@@ -38,7 +38,7 @@ func NewRepairDeAIBatchTool(s *store.Store) *RepairDeAIBatchTool {
 func (t *RepairDeAIBatchTool) Name() string  { return "repair_de_ai_batch" }
 func (t *RepairDeAIBatchTool) Label() string { return "去AI化分批修订" }
 func (t *RepairDeAIBatchTool) Description() string {
-	return "按最新 failed check_de_ai 报告做一小批精确文本修订（1-8 处）。每个 old_string 必须在当前草稿中唯一出现，new_string 必须是保留剧情信息后的真实重写；每批落盘后立即重新 check_de_ai。不要用它做整章重写或机械同义词替换。"
+	return "按最新 failed check_de_ai 报告做一小批精确文本修订（1-8 处）。每个 old_string 必须在当前草稿中唯一出现，new_string 必须是保留剧情信息后的真实重写；每批落盘后先重新 check_consistency，通过后再 check_de_ai。不要用它做整章重写或机械同义词替换。"
 }
 
 func (t *RepairDeAIBatchTool) ReadOnly(_ json.RawMessage) bool        { return false }
@@ -54,7 +54,7 @@ func (t *RepairDeAIBatchTool) Schema() map[string]any {
 	)
 	return schema.Object(
 		schema.Property("chapter", schema.Int("章节号")).Required(),
-		schema.Property("repairs", schema.Array("同一问题类别的一小批 1-8 处精确修订；改完必须重新 check_de_ai", repair)).Required(),
+		schema.Property("repairs", schema.Array("同一问题类别的一小批 1-8 处精确修订；改完必须先重新 check_consistency，通过后再 check_de_ai", repair)).Required(),
 	)
 }
 
@@ -105,9 +105,9 @@ func (t *RepairDeAIBatchTool) Execute(_ context.Context, args json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
-	nextStep := "本批已落盘，旧的去AI化、一致性和改编检查均已失效。立即调用 check_de_ai；若仍有 repair finding，按下一类别再做一小批修订。check_de_ai 通过后，重跑 check_consistency、check_adaptation（如适用）。若任一后续检查又要求改稿，改完后必须重新 check_de_ai，直到同一版草稿的全部检查都通过，最后才 commit_chapter。"
+	nextStep := "本批已落盘，旧的去AI化、一致性和改编检查均已失效。立即重跑 check_consistency；一致性通过后再调用 check_de_ai。若仍有 repair finding，按下一类别再做一小批修订，然后再次从 check_consistency 开始。check_de_ai 通过后再跑 check_adaptation（如适用）。直到同一版草稿的全部检查都通过，最后才 commit_chapter。"
 	if len(staleIndices) > 0 {
-		nextStep = "本批中已跳过当前草稿里不再存在的过期 old_string，其余唯一匹配项已安全处理。不要重放旧批次；立即调用 check_de_ai。若仍有 repair finding，先回读当前草稿，再按最新原文做下一小批精确修订。全部检查必须在同一版草稿上通过后才能 commit_chapter。"
+		nextStep = "本批中已跳过当前草稿里不再存在的过期 old_string，其余唯一匹配项已安全处理。不要重放旧批次；立即重跑 check_consistency，一致性通过后再调用 check_de_ai。若仍有 repair finding，先回读当前草稿，再按最新原文做下一小批精确修订，并再次从 check_consistency 开始。全部检查必须在同一版草稿上通过后才能 commit_chapter。"
 	}
 	if repairedCount == 0 {
 		return json.Marshal(map[string]any{
