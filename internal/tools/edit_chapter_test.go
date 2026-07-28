@@ -336,6 +336,104 @@ func TestEditChapterBatchAllowsQualityPreservingSmallEdits(t *testing.T) {
 	}
 }
 
+func TestEditChapterPendingPolishAppliesValidSubsetAndSkipsStaleItems(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	const original = "第一处重复表达。第二处准确原文。"
+	if err := s.Drafts.SaveDraft(3, original); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		NovelName:         "test",
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowPolishing,
+		TotalChapters:     3,
+		CompletedChapters: []int{1, 2, 3},
+		InProgressChapter: 3,
+		PendingRewrites:   []int{3},
+	}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), json.RawMessage(`{
+		"chapter":3,
+		"edits":[
+			{"old_string":"模型记错的旧文本","new_string":"不会落盘"},
+			{"old_string":"第二处准确原文","new_string":"第二处精确改写"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Changed        bool  `json:"changed"`
+		EditCount      int   `json:"edit_count"`
+		SkippedCount   int   `json:"skipped_stale_edit_count"`
+		SkippedIndices []int `json:"skipped_stale_edit_indices"`
+		DeferredToHost bool  `json:"deferred_to_host"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !payload.Changed || payload.EditCount != 1 || payload.SkippedCount != 1 ||
+		len(payload.SkippedIndices) != 1 || payload.SkippedIndices[0] != 0 || payload.DeferredToHost {
+		t.Fatalf("unexpected partial polish result: %+v raw=%s", payload, raw)
+	}
+	got, err := s.Drafts.LoadDraft(3)
+	if err != nil || got != "第一处重复表达。第二处精确改写。" {
+		t.Fatalf("valid polish subset was not applied: got=%q err=%v", got, err)
+	}
+}
+
+func TestEditChapterPendingPolishDefersWhenEveryItemIsStale(t *testing.T) {
+	dir := testStoreDir(t)
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	const original = "当前草稿保持不变。"
+	if err := s.Drafts.SaveDraft(3, original); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		NovelName:         "test",
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowPolishing,
+		TotalChapters:     3,
+		CompletedChapters: []int{1, 2, 3},
+		InProgressChapter: 3,
+		PendingRewrites:   []int{3},
+	}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), json.RawMessage(`{
+		"chapter":3,
+		"edits":[{"old_string":"不存在的旧文本","new_string":"不会落盘"}]
+	}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload struct {
+		Changed        bool `json:"changed"`
+		DeferredToHost bool `json:"deferred_to_host"`
+		SkippedCount   int  `json:"skipped_stale_edit_count"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload.Changed || !payload.DeferredToHost || payload.SkippedCount != 1 {
+		t.Fatalf("unexpected stale polish result: %+v raw=%s", payload, raw)
+	}
+	got, err := s.Drafts.LoadDraft(3)
+	if err != nil || got != original {
+		t.Fatalf("stale polish batch changed the draft: got=%q err=%v", got, err)
+	}
+}
+
 func TestEditChapterRepeatedPatchIsIdempotent(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

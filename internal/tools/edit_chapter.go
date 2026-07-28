@@ -175,8 +175,28 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 		}
 		a.Edits = validEdits
 	}
+	var skippedStaleEdits []int
+	if batchMode && a.BudgetSegment == nil && t.pendingPolishChapter(a.Chapter) {
+		validEdits, skipped, filterErr := filterStalePolishEdits(current, a.Edits)
+		if filterErr != nil {
+			return nil, filterErr
+		}
+		skippedStaleEdits = skipped
+		if len(validEdits) == 0 {
+			return json.Marshal(map[string]any{
+				"chapter":                    a.Chapter,
+				"changed":                    false,
+				"deferred_to_host":           true,
+				"skipped_stale_edit_indices": skippedStaleEdits,
+				"skipped_stale_edit_count":   len(skippedStaleEdits),
+				"word_count":                 len([]rune(current)),
+				"next_step":                  "本批 old_string 均已过期或不唯一，未修改草稿。不要重放本批；立即结束本轮，由 Host 从持久化草稿重新派发一次干净的打磨上下文。",
+			})
+		}
+		a.Edits = validEdits
+	}
 	if batchMode {
-		return t.executeBatch(a.Chapter, current, a.Edits, a.BudgetSegment, skippedBudgetEdits)
+		return t.executeBatch(a.Chapter, current, a.Edits, a.BudgetSegment, skippedBudgetEdits, skippedStaleEdits)
 	}
 	// Recovery and context compaction can make a weak model repeat the exact
 	// same patch. Treat only a provably completed replacement as an idempotent
@@ -226,7 +246,14 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	return json.Marshal(passthrough)
 }
 
-func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chapterTextEdit, budgetSegment *int, skippedBudgetEdits []int) (json.RawMessage, error) {
+func (t *EditChapterTool) executeBatch(
+	chapter int,
+	current string,
+	edits []chapterTextEdit,
+	budgetSegment *int,
+	skippedBudgetEdits []int,
+	skippedStaleEdits []int,
+) (json.RawMessage, error) {
 	updated, changed, alreadyApplied, err := applyChapterEditBatch(current, edits)
 	if err != nil {
 		return nil, err
@@ -254,6 +281,11 @@ func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chap
 		payload["skipped_budget_edit_indices"] = skippedBudgetEdits
 		payload["skipped_budget_edit_count"] = len(skippedBudgetEdits)
 	}
+	if len(skippedStaleEdits) > 0 {
+		payload["skipped_stale_edit_indices"] = skippedStaleEdits
+		payload["skipped_stale_edit_count"] = len(skippedStaleEdits)
+		payload["message"] = "已安全应用当前草稿中唯一匹配的修改，并跳过过期或不唯一的编辑项；不要重放被跳过的项。"
+	}
 	if changed == 0 {
 		payload["already_applied"] = true
 		payload["message"] = "这一批局部修改已全部存在于当前草稿，无需重复写入。"
@@ -279,6 +311,42 @@ func (t *EditChapterTool) executeBatch(chapter int, current string, edits []chap
 	}
 	t.addDraftStatus(payload, chapter)
 	return json.Marshal(payload)
+}
+
+func (t *EditChapterTool) pendingPolishChapter(chapter int) bool {
+	if t == nil || t.store == nil {
+		return false
+	}
+	progress, err := t.store.Progress.Load()
+	return err == nil && progress != nil && progress.Flow == domain.FlowPolishing &&
+		slices.Contains(progress.PendingRewrites, chapter)
+}
+
+func filterStalePolishEdits(content string, edits []chapterTextEdit) ([]chapterTextEdit, []int, error) {
+	valid := make([]chapterTextEdit, 0, len(edits))
+	skipped := make([]int, 0)
+	seen := make(map[string]struct{}, len(edits))
+	for index, edit := range edits {
+		if edit.OldString == "" {
+			return nil, nil, fmt.Errorf("edits[%d].old_string cannot be empty: %w", index, errs.ErrToolArgs)
+		}
+		if edit.OldString == edit.NewString {
+			return nil, nil, fmt.Errorf("edits[%d] does not change the text: %w", index, errs.ErrToolArgs)
+		}
+		if _, duplicate := seen[edit.OldString]; duplicate {
+			return nil, nil, fmt.Errorf("edits[%d] duplicates an earlier old_string: %w", index, errs.ErrToolArgs)
+		}
+		seen[edit.OldString] = struct{}{}
+
+		matches := strings.Count(content, edit.OldString)
+		alreadyApplied := matches == 0 && edit.NewString != "" && strings.Contains(content, edit.NewString)
+		if matches == 1 || alreadyApplied {
+			valid = append(valid, edit)
+			continue
+		}
+		skipped = append(skipped, index)
+	}
+	return valid, skipped, nil
 }
 
 func applyChapterEditBatch(content string, edits []chapterTextEdit) (string, int, int, error) {
