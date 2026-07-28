@@ -443,8 +443,11 @@ POST /api/projects/{id}/models/apply-recommendation
 在 Web 的“作品工具 → 仿写画像”上传 `.txt`、`.md` 或 `.markdown` 参考文章并点击“分析”。系统会用 architect 模型分析语料，并写入当前项目：
 
 ```text
-output/novel/meta/simulation_profile.json
+output/novel/meta/simulation_profile.json        # v2 portable 画像
+output/novel/meta/simulation_evidence.local.json # 本项目专用逐篇证据与来源信息
 ```
+
+`simulation_profile.json` 默认使用 `simulation_profile.v2`，只保存脱敏 feature、摘要统计、能力/健康状态和安全签名占位，不包含绝对语料目录或逐篇报告，可安全用于画像库和跨项目导入。`simulation_evidence.local.json` 保留当前分析流程仍需的来源路径、来源明细和逐篇报告，只在本项目内读取，不进入画像库或 Agent 上下文。旧 `simulation_profile.v1` 仍可直接加载；首次成功写入时会确定性投影为 v2，并把旧 reports 分流到 local evidence。缺少分析签名的旧画像明确标记为 `legacy` / `analysis_signature_unknown`，不会冒充 fresh。
 
 再次分析时，会按 `relative_path + sha256` 跳过未变化文件；如果没有新增或变更内容，会提示“画像已是最新”并且不会调用 LLM。若已有画像且出现新增或修改文章，系统会在原画像基础上继续合成。
 
@@ -452,7 +455,7 @@ output/novel/meta/simulation_profile.json
 
 私有发行版内置加密的搜索/下载凭据和固定版本的 BaiduPCS-Go 安装信息。首次使用会在运行时目录自动下载并校验 BaiduPCS-Go，另一台 Windows 电脑拉取并构建本仓库后不需要复制浏览器 profile、Cookie 或手工配置下载工具。内置密文与解密材料同仓库分发，只用于私有仓库的免配置部署，并不构成对仓库读取者的安全隔离；仓库访问权限必须保持私有。
 
-也可以在同一面板导入之前生成的画像，避免重复分析同一批文章。导入只接受本功能生成的 `simulation_profile.v1` JSON，并按语料指纹合并，重复来源会跳过。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
+也可以在同一面板导入之前生成的画像，避免重复分析同一批文章。导入接受本功能生成的 `simulation_profile.v2` portable JSON，并在兼容窗口内继续接受 v1；v1 导入画像在进入画像库前会自动脱敏投影为 v2。只导入可信来源的画像文件；导入内容会成为后续 Agent 的上下文参考。画像会以 compact 形式注入 `novel_context`，Coordinator、Architect、Writer、Editor 都能读取；各 Agent 只借鉴结构、节奏、钩子和吸引读者手法，不复制原文表达或专有设定。
 
 ### 普通仿写与强化仿写
 

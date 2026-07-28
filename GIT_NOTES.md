@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-28 `this commit` `feat: add portable simulation profiles`:
+  introduces strict `simulation_profile.v2` portable artifacts, separates
+  source paths/reports into project-local evidence, preserves v1 loading and
+  existing compact-context behavior through a compatibility adapter, and makes
+  the Web profile library portable by default. Simulation-focused tests and
+  affected-package vet pass. A broader affected-package run hit the existing
+  Windows expansion-authority concurrency/DPAPI timeout; the named test passed
+  when rerun alone.
 - 2026-07-28 `current HEAD` `fix: allow canonical relationship endpoints`:
   permits the domain-owned `source_character_id` relationship endpoint through
   the normal-manuscript firewall while continuing to reject adaptation source

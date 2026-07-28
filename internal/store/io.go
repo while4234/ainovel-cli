@@ -42,6 +42,12 @@ func (io *IO) ReadFileUnlocked(rel string) ([]byte, error) {
 	return os.ReadFile(p)
 }
 
+func (io *IO) WriteFile(rel string, data []byte) error {
+	io.mu.Lock()
+	defer io.mu.Unlock()
+	return io.WriteFileUnlocked(rel, data)
+}
+
 func (io *IO) WriteFileUnlocked(rel string, data []byte) error {
 	p, err := io.safeRelPath(rel)
 	if err != nil {

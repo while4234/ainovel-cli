@@ -84,17 +84,18 @@ func (s *Server) handleSimulationLibraryUpload(w http.ResponseWriter, r *http.Re
 		return
 	}
 	items := make([]apiLibraryItem, 0, len(uploads))
-	for _, upload := range uploads {
-		profile, err := decodeSimulationProfile(upload.data)
+	for i, upload := range uploads {
+		portableData, sourceCount, err := portableSimulationProfileData(upload.data)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s: %v", upload.Name, err))
 			return
 		}
+		uploads[i].data = portableData
 		items = append(items, apiLibraryItem{
 			Name:        strings.TrimSuffix(upload.Name, filepath.Ext(upload.Name)),
 			FileName:    upload.Name,
-			Size:        int64(len(upload.data)),
-			SourceCount: len(profile.Corpus.Sources),
+			Size:        int64(len(portableData)),
+			SourceCount: sourceCount,
 		})
 	}
 	if err := writePendingUploads(uploads, s.libraries.SimulationDir()); err != nil {
@@ -384,8 +385,10 @@ func (s *LibraryService) ListSimulationProfiles(query string) ([]apiLibraryItem,
 			Size:      info.Size(),
 			UpdatedAt: info.ModTime(),
 		}
-		if profile, err := readSimulationProfileFile(filepath.Join(s.SimulationDir(), entry.Name())); err == nil {
-			item.SourceCount = len(profile.Corpus.Sources)
+		if data, err := os.ReadFile(filepath.Join(s.SimulationDir(), entry.Name())); err == nil {
+			if _, sourceCount, err := portableSimulationProfileData(data); err == nil {
+				item.SourceCount = sourceCount
+			}
 		}
 		items = append(items, item)
 	}
@@ -398,7 +401,7 @@ func (s *LibraryService) SaveSimulationProfile(name string, data []byte) (apiLib
 	if err != nil {
 		return apiLibraryItem{}, err
 	}
-	profile, err := decodeSimulationProfile(data)
+	portableData, sourceCount, err := portableSimulationProfileData(data)
 	if err != nil {
 		return apiLibraryItem{}, err
 	}
@@ -409,7 +412,7 @@ func (s *LibraryService) SaveSimulationProfile(name string, data []byte) (apiLib
 	if err != nil {
 		return apiLibraryItem{}, err
 	}
-	if err := writeNewFile(target, bytes.TrimSpace(data)); err != nil {
+	if err := writeNewFile(target, bytes.TrimSpace(portableData)); err != nil {
 		return apiLibraryItem{}, err
 	}
 	info, err := os.Stat(target)
@@ -421,7 +424,7 @@ func (s *LibraryService) SaveSimulationProfile(name string, data []byte) (apiLib
 		FileName:    fileName,
 		Size:        info.Size(),
 		UpdatedAt:   info.ModTime(),
-		SourceCount: len(profile.Corpus.Sources),
+		SourceCount: sourceCount,
 	}, nil
 }
 
@@ -470,8 +473,18 @@ func (s *LibraryService) LoadSimulationProfileIntoProject(manifest ProjectManife
 		FileName:    fileName,
 		Size:        info.Size(),
 		UpdatedAt:   info.ModTime(),
-		SourceCount: len(profile.Corpus.Sources),
+		SourceCount: simulationCompatibilitySourceCount(profile, source),
 	}, target, nil
+}
+
+func simulationCompatibilitySourceCount(profile domain.SimulationProfile, path string) int {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if _, count, decodeErr := portableSimulationProfileData(data); decodeErr == nil {
+			return count
+		}
+	}
+	return len(profile.Corpus.Sources)
 }
 
 func (s *LibraryService) ListNovelEntries(query string) ([]apiLibraryItem, error) {
@@ -816,14 +829,46 @@ func writeLibraryActionError(w http.ResponseWriter, err error) {
 }
 
 func decodeSimulationProfile(data []byte) (domain.SimulationProfile, error) {
-	var profile domain.SimulationProfile
-	if err := json.Unmarshal(bytes.TrimSpace(data), &profile); err != nil {
-		return profile, fmt.Errorf("invalid simulation profile JSON: %w", err)
+	profile, _, err := domain.UnmarshalSimulationProfileForCompatibility(bytes.TrimSpace(data))
+	return profile, err
+}
+
+func portableSimulationProfileData(data []byte) ([]byte, int, error) {
+	profile, portable, err := domain.UnmarshalSimulationProfileForCompatibility(bytes.TrimSpace(data))
+	if err != nil {
+		return nil, 0, err
 	}
-	if err := domain.ValidateSimulationProfile(&profile); err != nil {
-		return profile, err
+	if portable == nil {
+		projected, _, err := domain.ProjectSimulationProfileV1(profile)
+		if err != nil {
+			return nil, 0, err
+		}
+		portable = &projected
 	}
-	return profile, nil
+	portable.Capabilities.LocalEvidence = false
+	if portable.Health.State != "legacy" && portable.Health.State != "stale" {
+		portable.Health.State = "portable_only"
+	}
+	if !containsSimulationHealthReason(portable.Health.Reasons, "local_evidence_unavailable") {
+		portable.Health.Reasons = append(portable.Health.Reasons, "local_evidence_unavailable")
+	}
+	if err := domain.SetSimulationProfileDigest(portable); err != nil {
+		return nil, 0, err
+	}
+	encoded, err := domain.MarshalSimulationPortableProfile(*portable)
+	if err != nil {
+		return nil, 0, err
+	}
+	return encoded, portable.Corpus.SourceCount, nil
+}
+
+func containsSimulationHealthReason(reasons []string, want string) bool {
+	for _, reason := range reasons {
+		if reason == want {
+			return true
+		}
+	}
+	return false
 }
 
 func readSimulationProfileFile(path string) (domain.SimulationProfile, error) {

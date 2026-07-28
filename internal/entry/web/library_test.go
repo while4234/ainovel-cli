@@ -39,6 +39,25 @@ func TestSimulationLibraryUploadSearchAndLoad(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(runtimeRoot, simulationLibraryDirName, "voice.json")); err != nil {
 		t.Fatalf("simulation profile was not saved to library: %v", err)
 	}
+	libraryData, err := os.ReadFile(filepath.Join(runtimeRoot, simulationLibraryDirName, "voice.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(libraryData, []byte(domain.SimulationPortableProfileVersion)) {
+		t.Fatalf("library profile is not portable v2: %s", libraryData)
+	}
+	portable, err := domain.UnmarshalSimulationPortableProfile(libraryData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if portable.Capabilities.LocalEvidence {
+		t.Fatal("portable library profile claims local evidence")
+	}
+	for _, forbidden := range []string{"source_dir", "source_reports", "voice.txt"} {
+		if bytes.Contains(libraryData, []byte(forbidden)) {
+			t.Fatalf("portable library profile contains %q", forbidden)
+		}
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/libraries/simulation?q=voi", nil)
 	rec = httptest.NewRecorder()

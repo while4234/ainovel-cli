@@ -2,7 +2,6 @@ package sim
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -35,18 +34,24 @@ func importProfileWithOptions(ctx context.Context, deps Deps, path string, opts 
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ImportResult{}, err
+		return ImportResult{}, fmt.Errorf("read simulation profile failed")
 	}
-	var imported domain.SimulationProfile
-	if err := json.Unmarshal(data, &imported); err != nil {
-		return ImportResult{}, fmt.Errorf("parse simulation profile: %w", err)
-	}
-	if err := domain.ValidateSimulationProfile(&imported); err != nil {
+	imported, importedPortable, err := domain.UnmarshalSimulationProfileForCompatibility(data)
+	if err != nil {
 		return ImportResult{}, err
 	}
 	existing, err := deps.Store.Simulation.Load()
 	if err != nil {
 		return ImportResult{}, err
+	}
+	if importedPortable != nil && existing == nil {
+		if err := deps.Store.Simulation.SavePortable(*importedPortable); err != nil {
+			return ImportResult{}, err
+		}
+		return ImportResult{
+			ProfilePath:     path,
+			ImportedSources: importedPortable.Corpus.SourceCount,
+		}, nil
 	}
 
 	merged, result := mergeImportedProfile(existing, imported, time.Now())

@@ -4,12 +4,59 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestImportPortableProfilePreservesIdentityWithoutLocalEvidence(t *testing.T) {
+	root := t.TempDir()
+	st := store.NewStore(root)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	legacy := testProfile("portable.txt", "sha-portable", "synthetic portable report")
+	portable, _, err := domain.ProjectSimulationProfileV1(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := domain.MarshalSimulationPortableProfile(portable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "portable.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ImportProfile(context.Background(), Deps{Store: st}, path)
+	if err != nil {
+		t.Fatalf("ImportProfile: %v", err)
+	}
+	if result.ImportedSources != portable.Corpus.SourceCount {
+		t.Fatalf("ImportedSources = %d, want %d", result.ImportedSources, portable.Corpus.SourceCount)
+	}
+	saved, err := st.Simulation.LoadPortable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil || saved.ProfileDigest != portable.ProfileDigest || saved.Corpus != portable.Corpus {
+		t.Fatalf("portable identity changed: %+v", saved)
+	}
+	runtimeProfile, err := st.Simulation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtimeProfile.SourceReports) != 0 || runtimeProfile.Corpus.SourceDir != "" {
+		t.Fatal("portable import acquired local evidence")
+	}
+	if !reflect.DeepEqual(runtimeProfile.Synthesis, legacy.Synthesis) {
+		t.Fatal("portable import changed compatibility synthesis")
+	}
+}
 
 func TestImportProfileValidatesSchemaAndMergesByFingerprint(t *testing.T) {
 	dir := t.TempDir()

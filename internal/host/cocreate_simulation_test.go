@@ -174,7 +174,8 @@ func simulationPromptTestProfile() domain.SimulationProfile {
 			},
 		},
 		SourceReports: []domain.SimulationSourceReport{{
-			RelativePath:      "simulate/raw.txt",
+			RelativePath:      "simulate/a.txt",
+			SHA256:            "sha-a",
 			Summary:           "RAW_SOURCE_REPORT_SENTENCE 原始报告里的专属桥段",
 			StyleObservations: []string{"这个原始报告细节不应进入共创提示"},
 		}},
