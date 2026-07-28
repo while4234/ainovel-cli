@@ -818,6 +818,9 @@ func writerShouldStopAfterToolResult(toolName string, result json.RawMessage) bo
 	if toolName == "check_de_ai" && payload.Passed != nil && !*payload.Passed {
 		return true
 	}
+	if toolName == "repair_de_ai_batch" {
+		return true
+	}
 	return toolName == "edit_chapter" && payload.BudgetSegment != nil
 }
 

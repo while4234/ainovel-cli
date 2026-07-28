@@ -613,6 +613,8 @@ func TestRouteResume_RegeneratesSeverelyOversizedDraftFromCleanContext(t *testin
 		InProgressDraftExists:     true,
 		InProgressCheckpoint:      "word_budget_edit_segment_3",
 		InProgressWordCount:       7913,
+		InProgressRecommendedMin:  3273,
+		InProgressRecommendedMax:  4000,
 		InProgressWordMin:         3000,
 		InProgressWordMax:         6000,
 		InProgressWordBudgetValid: false,
@@ -622,11 +624,13 @@ func TestRouteResume_RegeneratesSeverelyOversizedDraftFromCleanContext(t *testin
 		t.Fatalf("expected clean regeneration recovery, got %+v", got)
 	}
 	for _, want := range []string{
-		`超过安全上限 6000 字逾 10%`,
+		`超过审核安全上限 6000 字逾 10%`,
 		`禁止读取、摘抄、压缩或改写旧草稿`,
 		`novel_context(chapter=5)`,
+		`推荐范围 3273-4000 字`,
+		`明确目标为 3636 字`,
+		`3000-6000 字只是写完后工具审核使用`,
 		`不要调用 plan_chapter 或 read_chapter`,
-		`约 4500 字`,
 		`replace_out_of_budget=true`,
 	} {
 		if !strings.Contains(got.Task, want) {

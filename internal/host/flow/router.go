@@ -89,6 +89,8 @@ type State struct {
 	InProgressDeAIState        string
 	InProgressConsistencyValid bool
 	InProgressWordCount        int
+	InProgressRecommendedMin   int
+	InProgressRecommendedMax   int
 	InProgressWordMin          int
 	InProgressWordMax          int
 	InProgressWordBudgetValid  bool
@@ -414,13 +416,19 @@ func writerBudgetNeedsRegeneration(s State) bool {
 }
 
 func routeWriterBudgetRegeneration(s State, chapter int) *Instruction {
-	target := max((s.InProgressWordMin+s.InProgressWordMax)/2, s.InProgressWordMin)
+	recommendedMin := s.InProgressRecommendedMin
+	recommendedMax := s.InProgressRecommendedMax
+	if recommendedMin <= 0 || recommendedMax < recommendedMin {
+		recommendedMin = s.InProgressWordMin
+		recommendedMax = s.InProgressWordMax
+	}
+	target := max((recommendedMin+recommendedMax)/2, recommendedMin)
 	return &Instruction{
 		Agent: "writer",
 		Task: fmt.Sprintf(
-			"第 %d 章当前草稿 %d 字，超过安全上限 %d 字逾 10%%；大幅分段压缩会损伤节奏与场景承接，本轮必须使用干净上下文重新生成完整正文。旧草稿由工具保留为恢复备份，禁止读取、摘抄、压缩或改写旧草稿，也禁止读取其他章节。先且只调用一次 novel_context(chapter=%d) 获取已确认细纲、人物规则、previous_tail 与近期摘要；不要调用 plan_chapter 或 read_chapter。随后依据这些权威资料重新创作一版约 %d 字、且严格位于 %d-%d 字安全区间的完整章节，直接调用 draft_chapter(chapter=%d, mode=\"write\", replace_out_of_budget=true, content=完整新正文)。必须完整兑现章节契约、场景因果、人物选择、情感节奏和章末钩子。工具若拒绝候选稿，旧草稿仍然保留；立即结束本轮，由 Host 用新的干净 Writer 重试，禁止带着失败候选继续修补。",
-			chapter, s.InProgressWordCount, s.InProgressWordMax, chapter, target,
-			s.InProgressWordMin, s.InProgressWordMax, chapter,
+			"第 %d 章当前草稿 %d 字，超过审核安全上限 %d 字逾 10%%；大幅分段压缩会损伤节奏与场景承接，本轮必须使用干净上下文重新生成完整正文。旧草稿由工具保留为恢复备份，禁止读取、摘抄、压缩或改写旧草稿，也禁止读取其他章节。先且只调用一次 novel_context(chapter=%d) 获取已确认细纲、人物规则、previous_tail、近期摘要以及 working_memory.word_budget.current_chapter。创作预算必须使用细纲与滚动篇幅计划给出的推荐范围 %d-%d 字，明确目标为 %d 字；%d-%d 字只是写完后工具审核使用的异常膨胀安全护栏，不能反过来作为创作目标。不要调用 plan_chapter 或 read_chapter。随后依据这些权威资料重新创作一版完整章节，直接调用 draft_chapter(chapter=%d, mode=\"write\", replace_out_of_budget=true, content=完整新正文)。必须完整兑现章节契约、场景因果、人物选择、情感节奏和章末钩子。工具若拒绝候选稿，旧草稿仍然保留；立即结束本轮，由 Host 用新的干净 Writer 重试，禁止带着失败候选继续修补。",
+			chapter, s.InProgressWordCount, s.InProgressWordMax, chapter,
+			recommendedMin, recommendedMax, target, s.InProgressWordMin, s.InProgressWordMax, chapter,
 		),
 		Reason:         fmt.Sprintf("第 %d 章明显超预算，干净上下文安全重生成", chapter),
 		Chapter:        chapter,

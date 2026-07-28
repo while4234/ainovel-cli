@@ -195,6 +195,8 @@ func loadWriterWordBudgetState(s *State, st *storepkg.Store, progress *domain.Pr
 	}
 	s.InProgressWordMin = policy.HardMinWords
 	s.InProgressWordMax = policy.HardMaxWords
+	s.InProgressRecommendedMin = policy.RecommendedMinWords
+	s.InProgressRecommendedMax = policy.RecommendedMaxWords
 	s.InProgressWordBudgetValid = policy.WithinHardRange(s.InProgressWordCount)
 }
 

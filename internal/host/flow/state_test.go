@@ -82,6 +82,7 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	}
 	if state.InProgressWordCount != len([]rune(draft)) ||
 		state.InProgressLineCount != len(strings.Split(draft, "\n")) ||
+		state.InProgressRecommendedMin != 45 || state.InProgressRecommendedMax != 55 ||
 		state.InProgressWordMin != 30 || state.InProgressWordMax != 82 ||
 		state.InProgressWordBudgetValid {
 		t.Fatalf("in-progress word budget facts were not loaded: %+v", state)
