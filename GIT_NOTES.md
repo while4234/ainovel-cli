@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: make portable profile import idempotent`:
+  importing the exact same portable profile again now keeps its original
+  profile/corpus identity and reports every source as skipped instead of
+  summing `source_count` again. The real project has 17 source files; its
+  displayed 34 came from two pre-fix imports and will return to 17 after a
+  successful full reanalysis rebuilds the profile from those files.
 - 2026-07-30 `04fedd0` `fix: archive simulation corpus with profiles`:
   project saves and automatic simulation-profile sync now persist a verified
   sidecar copy of the original corpus beside the portable profile. Loading a

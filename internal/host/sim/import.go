@@ -66,6 +66,12 @@ func importProfileWithOptions(ctx context.Context, deps Deps, path string, opts 
 		if existingPortable == nil {
 			return ImportResult{}, fmt.Errorf("existing simulation profile is not portable")
 		}
+		if existingPortable.ProfileDigest == importedPortable.ProfileDigest {
+			return ImportResult{
+				ProfilePath:    path,
+				SkippedSources: importedPortable.Corpus.SourceCount,
+			}, nil
+		}
 		if localEvidence != nil && localEvidence.ProfileDigest == existingPortable.ProfileDigest &&
 			(len(localEvidence.Sources) > 0 || len(localEvidence.SourceReports) > 0) {
 			return ImportResult{}, fmt.Errorf("cannot merge a portable-only profile into a project with local simulation evidence")

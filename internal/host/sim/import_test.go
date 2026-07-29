@@ -56,6 +56,22 @@ func TestImportPortableProfilePreservesIdentityWithoutLocalEvidence(t *testing.T
 	if !reflect.DeepEqual(runtimeProfile.Synthesis, legacy.Synthesis) {
 		t.Fatal("portable import changed compatibility synthesis")
 	}
+
+	repeated, err := ImportProfile(context.Background(), Deps{Store: st}, path)
+	if err != nil {
+		t.Fatalf("repeat ImportProfile: %v", err)
+	}
+	if repeated.ImportedSources != 0 || repeated.SkippedSources != portable.Corpus.SourceCount {
+		t.Fatalf("repeated import result = %+v, want all sources skipped", repeated)
+	}
+	repeatedPortable, err := st.Simulation.LoadPortable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeatedPortable == nil || repeatedPortable.ProfileDigest != portable.ProfileDigest ||
+		repeatedPortable.Corpus.SourceCount != portable.Corpus.SourceCount {
+		t.Fatalf("repeated portable import changed identity: %+v", repeatedPortable)
+	}
 }
 
 func TestImportMergesCompatiblePortableOnlyProfilesByFeatureIdentity(t *testing.T) {
