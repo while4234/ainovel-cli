@@ -12,6 +12,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
 )
 
+const structuredInputLimitBytes = 60 * 1024
+
 type LLMStreamChat interface {
 	GenerateStream(ctx context.Context, messages []agentcore.Message, tools []agentcore.ToolSpec, opts ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error)
 }
@@ -161,7 +163,16 @@ func beginIMPDiagnostic(ctx context.Context, task string, chapter int, messages 
 		system = messages[0].TextContent()
 	}
 	user, _ := json.Marshal(messages[1:])
-	return modeldiag.Begin(modeldiag.Request{Store: modeldiag.StoreFromContext(ctx), Task: task, ChapterID: impChapterDiagnosticID(chapter), Batch: attempt, System: system, User: user, InputLimitBytes: 60 * 1024, OutputLimitTokens: maxTokens})
+	return modeldiag.Begin(modeldiag.Request{Store: modeldiag.StoreFromContext(ctx), Task: task, ChapterID: impChapterDiagnosticID(chapter), Batch: attempt, System: system, User: user, InputLimitBytes: structuredInputLimitBytes, OutputLimitTokens: maxTokens})
+}
+
+func structuredInputBytes(messages []agentcore.Message) int {
+	var system string
+	if len(messages) > 0 {
+		system = messages[0].TextContent()
+	}
+	user, _ := json.Marshal(messages[1:])
+	return len(system) + len(user)
 }
 
 func impChapterDiagnosticID(chapter int) string {

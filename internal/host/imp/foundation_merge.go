@@ -77,7 +77,7 @@ func MergeFoundationFromReportsBatched(
 		batchRuneLimit = DefaultFoundationMergeRunes
 	}
 
-	batches := FoundationMergeReportBatches(reports, batchRuneLimit)
+	batches := foundationMergeReportBatches(reports, batchRuneLimit, systemPrompt)
 	if len(batches) <= 1 {
 		if onBatch != nil {
 			onBatch(FoundationMergeBatchEvent{
@@ -148,6 +148,16 @@ type FoundationMergePartial struct {
 }
 
 func FoundationMergeReportBatches(reports []domain.AdaptationSourceReport, runeLimit int) [][]domain.AdaptationSourceReport {
+	return foundationMergeReportBatches(reports, runeLimit, "")
+}
+
+// FoundationMergeReportBatchesForPrompt keeps each compiled merge request
+// within both the model-profile rune budget and the structured-call byte cap.
+func FoundationMergeReportBatchesForPrompt(reports []domain.AdaptationSourceReport, runeLimit int, systemPrompt string) [][]domain.AdaptationSourceReport {
+	return foundationMergeReportBatches(reports, runeLimit, systemPrompt)
+}
+
+func foundationMergeReportBatches(reports []domain.AdaptationSourceReport, runeLimit int, systemPrompt string) [][]domain.AdaptationSourceReport {
 	if runeLimit <= 0 {
 		runeLimit = DefaultFoundationMergeRunes
 	}
@@ -156,7 +166,10 @@ func FoundationMergeReportBatches(reports []domain.AdaptationSourceReport, runeL
 	currentRunes := 0
 	for _, report := range reports {
 		reportRunes := foundationMergeReportRunes(report)
-		if len(current) > 0 && currentRunes+reportRunes > runeLimit {
+		candidate := appendReportCandidate(current, report)
+		exceedsRunes := currentRunes+reportRunes > runeLimit
+		exceedsBytes := foundationMergeReportRequestBytes(systemPrompt, candidate) > structuredInputLimitBytes
+		if len(current) > 0 && (exceedsRunes || exceedsBytes) {
 			batches = append(batches, current)
 			current = nil
 			currentRunes = 0
@@ -168,6 +181,21 @@ func FoundationMergeReportBatches(reports []domain.AdaptationSourceReport, runeL
 		batches = append(batches, current)
 	}
 	return batches
+}
+
+func appendReportCandidate(current []domain.AdaptationSourceReport, report domain.AdaptationSourceReport) []domain.AdaptationSourceReport {
+	candidate := make([]domain.AdaptationSourceReport, len(current), len(current)+1)
+	copy(candidate, current)
+	return append(candidate, report)
+}
+
+func foundationMergeReportRequestBytes(systemPrompt string, reports []domain.AdaptationSourceReport) int {
+	system := cleanLLMText(strings.ReplaceAll(systemPrompt, "${chapter_count}", fmt.Sprintf("%d", len(reports))))
+	user := cleanLLMText(buildFoundationMergeUserPrompt(reports))
+	return structuredInputBytes([]agentcore.Message{
+		agentcore.SystemMsg(system),
+		agentcore.UserMsg(user),
+	})
 }
 
 func foundationMergeReportRunes(report domain.AdaptationSourceReport) int {
@@ -199,7 +227,7 @@ func MergeFoundationPartialsBatched(
 	level := 1
 	current := partials
 	for len(current) > 1 {
-		groups := FoundationMergePartialBatches(current, batchRuneLimit)
+		groups := foundationMergePartialBatches(current, batchRuneLimit, systemPrompt, totalReports)
 		if len(groups) == 1 {
 			result, err := MergeFoundationPartials(ctx, llm, systemPrompt, groups[0], totalReports, opts)
 			if err != nil {
@@ -240,6 +268,16 @@ func MergeFoundationPartialsBatched(
 }
 
 func FoundationMergePartialBatches(partials []FoundationMergePartial, runeLimit int) [][]FoundationMergePartial {
+	return foundationMergePartialBatches(partials, runeLimit, "", len(partials))
+}
+
+// FoundationMergePartialBatchesForPrompt keeps recursive summary requests
+// within the same compiled-input limits as the actual structured call.
+func FoundationMergePartialBatchesForPrompt(partials []FoundationMergePartial, runeLimit int, systemPrompt string, totalReports int) [][]FoundationMergePartial {
+	return foundationMergePartialBatches(partials, runeLimit, systemPrompt, totalReports)
+}
+
+func foundationMergePartialBatches(partials []FoundationMergePartial, runeLimit int, systemPrompt string, totalReports int) [][]FoundationMergePartial {
 	if runeLimit <= 0 {
 		runeLimit = DefaultFoundationMergeRunes
 	}
@@ -248,7 +286,10 @@ func FoundationMergePartialBatches(partials []FoundationMergePartial, runeLimit 
 	currentRunes := 0
 	for _, partial := range partials {
 		partialRunes := foundationMergePartialRunes(partial)
-		if len(current) > 0 && currentRunes+partialRunes > runeLimit {
+		candidate := appendPartialCandidate(current, partial)
+		exceedsRunes := currentRunes+partialRunes > runeLimit
+		exceedsBytes := foundationMergePartialRequestBytes(systemPrompt, candidate, totalReports) > structuredInputLimitBytes
+		if len(current) > 0 && (exceedsRunes || exceedsBytes) {
 			batches = append(batches, current)
 			current = nil
 			currentRunes = 0
@@ -260,6 +301,21 @@ func FoundationMergePartialBatches(partials []FoundationMergePartial, runeLimit 
 		batches = append(batches, current)
 	}
 	return batches
+}
+
+func appendPartialCandidate(current []FoundationMergePartial, partial FoundationMergePartial) []FoundationMergePartial {
+	candidate := make([]FoundationMergePartial, len(current), len(current)+1)
+	copy(candidate, current)
+	return append(candidate, partial)
+}
+
+func foundationMergePartialRequestBytes(systemPrompt string, partials []FoundationMergePartial, totalReports int) int {
+	system := cleanLLMText(strings.ReplaceAll(systemPrompt, "${chapter_count}", fmt.Sprintf("%d", totalReports)))
+	user := cleanLLMText(buildFoundationPartialMergeUserPrompt(partials, totalReports))
+	return structuredInputBytes([]agentcore.Message{
+		agentcore.SystemMsg(system),
+		agentcore.UserMsg(user),
+	})
 }
 
 func foundationMergePartialRunes(partial FoundationMergePartial) int {

@@ -43,16 +43,26 @@ export function CharacterEditor({
   const mappingsByTargetID = useMemo(() => sourceMappingByTargetID(workspace?.sourceMappings), [workspace?.sourceMappings]);
   const candidateCharacters = workspace?.candidate?.foundation?.characters || [];
   const candidateByID = useMemo(() => new Map(candidateCharacters.map((character) => [character.id, character])), [candidateCharacters]);
+  const sourceCharacters = useMemo(() => (Array.isArray(sourceFoundation?.characters) ? sourceFoundation.characters : [])
+    .map((character, index) => normalizeCharacter({
+      ...character,
+      id: character?.id || `source-character-${index + 1}`,
+      tier: character?.tier || 'important'
+    }))
+    .filter((character) => character.name || character.id), [sourceFoundation]);
+  const showingSourceOnly = mode === 'adaptation' && !value.length && !candidateCharacters.length && sourceCharacters.length > 0;
   const displayCharacters = useMemo(() => {
+    if (showingSourceOnly) return sourceCharacters;
     const currentIDs = new Set(value.map((character) => character.id));
     return [...value, ...candidateCharacters.filter((character) => !currentIDs.has(character.id))];
-  }, [value, candidateCharacters]);
+  }, [value, candidateCharacters, showingSourceOnly, sourceCharacters]);
   const visible = useMemo(() => filterAndSortCharacters(displayCharacters, {
     ...filters, query, coreIDs, completenessByID: workspace?.completenessByID,
     findings: workspace?.findings, reviewStale: workspace?.reviewStale, reviewCompleted, mappingByTargetID: mappingsByTargetID, modifiedByID
   }), [displayCharacters, filters, query, coreIDs, workspace?.completenessByID, workspace?.findings, workspace?.reviewStale, reviewCompleted, mappingsByTargetID, modifiedByID]);
   const selected = displayCharacters.find((character) => character.id === selectedID) || null;
   const selectedIsCandidateOnly = Boolean(selected && !value.some((character) => character.id === selected.id));
+  const selectedIsSourceOnly = Boolean(selected && showingSourceOnly);
 
   useEffect(() => {
     if (selectedID && displayCharacters.some((character) => character.id === selectedID)) return;
@@ -152,22 +162,23 @@ export function CharacterEditor({
   const noMatch = !empty && !visible.length;
   return <section aria-labelledby="foundation-character-heading" className="character-workspace">
     <div className="foundation-section-head character-workspace-head">
-      <div><h2 id="foundation-character-heading">角色卡工作台</h2><p>核心与非核心角色共享同一份 Foundation 草稿；Agent 候选不会自动覆盖编辑。</p></div>
+      <div><h2 id="foundation-character-heading">角色卡工作台</h2><p>{showingSourceOnly ? '当前展示原著 SourceFoundation 角色；完成改编共创后才会生成可编辑的目标角色卡。' : '核心与非核心角色共享同一份 Foundation 草稿；Agent 候选不会自动覆盖编辑。'}</p></div>
       <div className="inline-actions">
-        <button ref={addRef} className="tool-button" disabled={disabled} type="button" onClick={add}><Plus size={16} />新增角色</button>
-        <button className="tool-button" disabled={disabled || !selected} type="button" onClick={duplicate}><Copy size={16} />复制为新角色</button>
+        <button ref={addRef} className="tool-button" disabled={disabled || showingSourceOnly} type="button" onClick={add}><Plus size={16} />新增角色</button>
+        <button className="tool-button" disabled={disabled || !selected || showingSourceOnly} type="button" onClick={duplicate}><Copy size={16} />复制为新角色</button>
       </div>
     </div>
+    {showingSourceOnly ? <div className="warning-note source-only-character-note" role="status"><FileSearch size={16} />来源角色（只读，尚未转为目标角色）；请返回创作完成改编共创与角色取舍。</div> : null}
     {workspace?.reviewStale ? <div className="warning-note" role="status"><AlertTriangle size={16} />草稿已修改，旧角色审核立即标记为 stale；请在当前草稿上重新审核。</div> : null}
     {workspaceLoading ? <div className="character-workspace-skeleton" aria-live="polite" role="status">正在加载角色完整度与审核状态…</div> : null}
     <CharacterAgentPanel
-      selected={selected} workspace={workspace} disabled={agentBusy} dirty={dirty}
+      selected={selected} workspace={workspace} disabled={agentBusy || showingSourceOnly} dirty={dirty}
       instruction={instruction} allowSupporting={allowSupporting}
       onInstructionChange={setInstruction} onAllowSupportingChange={setAllowSupporting}
       onAnalyze={onAnalyze} onReview={onReview} onRetry={onRetry} onDiscard={onDiscard} onConfirm={onConfirm}
     />
     {workspace?.error ? <div className="error-banner" role="alert"><strong>{workspace.error.code}</strong><span>{workspace.error.message}</span></div> : null}
-    {mode === 'adaptation' ? <SourceCoverage coverage={workspace?.coverage} onFilterPending={() => setFilters({ ...filters, source: 'unmapped' })} /> : null}
+    {mode === 'adaptation' && !showingSourceOnly ? <SourceCoverage coverage={workspace?.coverage} onFilterPending={() => setFilters({ ...filters, source: 'unmapped' })} /> : null}
     <div className="character-layout">
       <aside aria-label="角色列表" className="character-list-pane">
         <div className="character-list-toolbar">
@@ -198,7 +209,7 @@ export function CharacterEditor({
         {!selected ? <div className="empty-state">从左侧选择角色查看详情。</div> : <>
           <header className="character-detail-header">
             <div><span className="eyebrow">{selected.id}</span><h3>{selected.name || '未命名角色'}</h3><p>{selected.role || '尚未填写故事职责'}</p></div>
-            <button className="tool-button danger-ghost" disabled={disabled || selectedIsCandidateOnly} type="button" onClick={(event) => requestDelete(selected, event.currentTarget)}><Trash2 size={16} />删除</button>
+            <button className="tool-button danger-ghost" disabled={disabled || selectedIsCandidateOnly || selectedIsSourceOnly} type="button" onClick={(event) => requestDelete(selected, event.currentTarget)}><Trash2 size={16} />删除</button>
           </header>
           <div className="character-status-row">
             <StatusBadge icon={<UserRound size={14} />} text={tierLabels[selected.tier] || '重要'} tone={selected.tier === 'core' ? 'risk' : ''} />
@@ -206,21 +217,21 @@ export function CharacterEditor({
             <StatusBadge icon={<ShieldCheck size={14} />} text={`审核：${reviewLabels[reviewStatusForCharacter(selected.id, workspace?.findings, workspace?.reviewStale, reviewCompleted)]}`} />
             {modifiedByID[selected.id] ? <StatusBadge icon={<CircleAlert size={14} />} text="未保存修改" tone="warning" /> : null}
           </div>
-          {selectedIsCandidateOnly ? <div className="warning-note" role="status"><Sparkles size={16} />Character Agent 候选（尚未发布）；确认本轮角色候选后才会写入 StoryFoundation。</div> : null}
+          {selectedIsSourceOnly ? <div className="warning-note" role="status"><FileSearch size={16} />这是原著分析得到的只读角色，不是改编目标角色。</div> : selectedIsCandidateOnly ? <div className="warning-note" role="status"><Sparkles size={16} />Character Agent 候选（尚未发布）；确认本轮角色候选后才会写入 StoryFoundation。</div> : null}
           <CharacterForm
-            character={selected} disabled={disabled || selectedIsCandidateOnly} errors={errors} index={value.findIndex((item) => item.id === selected.id)}
+            character={selected} disabled={disabled || selectedIsCandidateOnly || selectedIsSourceOnly} errors={selectedIsSourceOnly ? {} : errors} index={value.findIndex((item) => item.id === selected.id)}
             expanded={expanded} setExpanded={setExpanded} fieldRefs={fieldRefs}
             onChange={updateSelected}
           />
-          <RelationshipSummary
+          {!selectedIsSourceOnly ? <RelationshipSummary
             character={selected}
             relationships={selectedIsCandidateOnly ? workspace?.candidate?.foundation?.relationships || [] : relationships}
             characters={displayCharacters}
             onOpen={onOpenRelationships}
-          />
-          {mode === 'adaptation' ? <SourceMappingPanel mapping={mappingsByTargetID[selected.id]} sourceFoundation={sourceFoundation} /> : null}
-          <CharacterCompleteness value={workspace?.completenessByID?.[selected.id]} onFocus={focusFinding} characterID={selected.id} />
-          {!selectedIsCandidateOnly ? <CandidateDiff
+          /> : null}
+          {selectedIsSourceOnly ? <SourceCharacterEvidence character={selected} /> : mode === 'adaptation' ? <SourceMappingPanel mapping={mappingsByTargetID[selected.id]} sourceFoundation={sourceFoundation} /> : null}
+          {!selectedIsSourceOnly ? <CharacterCompleteness value={workspace?.completenessByID?.[selected.id]} onFocus={focusFinding} characterID={selected.id} /> : null}
+          {!selectedIsCandidateOnly && !selectedIsSourceOnly ? <CandidateDiff
             current={selected} candidate={selectedCandidate} diff={selectedDiff} workspace={workspace}
             disabled={disabled} onAcceptField={acceptField}
             onAcceptCharacter={acceptCharacter} onAcceptAll={acceptAllSafe}
@@ -416,6 +427,14 @@ function SourceMappingPanel({ mapping, sourceFoundation }) {
     })}</div>
     {mapping.evidence.length ? <ul className="evidence-list">{mapping.evidence.map((item, index) => <li key={`${item.reference}-${index}`}><strong>{item.reference || item.kind}</strong><span>{item.summary}</span></li>)}</ul> : <p>没有可展示的短证据摘要。</p>}
     <small>SourceFoundation 不可编辑，也不会包含在客户端写入 payload 中。</small>
+  </section>;
+}
+
+function SourceCharacterEvidence({ character }) {
+  return <section className="character-side-section source-mapping"><h4>来源映射与证据（只读）</h4>
+    <div className="source-character-grid"><article><strong>{character.name}</strong><span>{character.role || '来源角色'}</span><p>{character.description || character.arc || '来源角色事实已保存在 SourceFoundation。'}</p></article></div>
+    <p>{character.arc || '尚无单独的来源角色弧摘要。'}</p>
+    <small>完成改编共创后，系统才会记录保留、改名、合并、拆分或排除决定，并生成目标角色卡。</small>
   </section>;
 }
 

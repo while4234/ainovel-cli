@@ -347,7 +347,7 @@ func mergeSourceFoundationResumable(
 	promptSignature := sourceFoundationPromptSignature(deps.Prompts.FoundationMerge)
 	sourceSignature := store.AdaptationSourceSignature(*manifest)
 	opts := structuredCallOptionsWithDeps(deps, StageFoundation, total, total, emit)
-	reportBatches := imp.FoundationMergeReportBatches(reports, batchRuneLimit)
+	reportBatches := imp.FoundationMergeReportBatchesForPrompt(reports, batchRuneLimit, deps.Prompts.FoundationMerge)
 	partials := make([]imp.FoundationMergePartial, 0, len(reportBatches))
 	for i, batchReports := range reportBatches {
 		if err := ctx.Err(); err != nil {
@@ -426,7 +426,7 @@ func mergeSourceFoundationPartialsResumable(
 	current := partials
 	level := 1
 	for len(current) > 1 {
-		groups := imp.FoundationMergePartialBatches(current, batchRuneLimit)
+		groups := imp.FoundationMergePartialBatchesForPrompt(current, batchRuneLimit, deps.Prompts.FoundationMerge, totalReports)
 		next := make([]imp.FoundationMergePartial, 0, len(groups))
 		for i, group := range groups {
 			if err := ctx.Err(); err != nil {

@@ -116,4 +116,30 @@ describe('CharacterEditor workspace', () => {
     expect(container.textContent).not.toContain('来源映射与证据');
     expect(container.textContent).not.toContain('改编来源覆盖');
   });
+
+  it('共创前目标角色为空时展示只读来源角色卡', async () => {
+    const props = await render({
+      value: [],
+      disabled: true,
+      workspace: null,
+      sourceFoundation: {
+        characters: [{
+          id: 'source-hero',
+          name: '原著林舟',
+          role: '旧王继承人',
+          description: '背负流亡王庭的秘密，追查城市灾变。',
+          arc: '原著角色在灾变中守城。'
+        }]
+      }
+    });
+
+    expect(container.querySelectorAll('[role="option"]')).toHaveLength(1);
+    expect(container.textContent).toContain('来源角色（只读，尚未转为目标角色）');
+    expect(container.textContent).toContain('原著林舟');
+    expect(container.textContent).toContain('旧王继承人');
+    expect(container.textContent).toContain('背负流亡王庭的秘密，追查城市灾变。');
+    expect(container.textContent).toContain('原著角色在灾变中守城。');
+    expect(byText('button', '删除').disabled).toBe(true);
+    expect(props.onChange).not.toHaveBeenCalled();
+  });
 });

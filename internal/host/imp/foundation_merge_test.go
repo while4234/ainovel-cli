@@ -52,6 +52,39 @@ func TestMergeFoundationFromReportsBatchedSplitsAndRetries(t *testing.T) {
 	}
 }
 
+func TestFoundationMergeReportBatchesRespectCompiledByteLimit(t *testing.T) {
+	reports := make([]domain.AdaptationSourceReport, 17)
+	for index := range reports {
+		marker := strings.Repeat("梦中女孩因果事实", 80)
+		reports[index] = domain.AdaptationSourceReport{
+			Chapter:        index + 1,
+			Title:          "章节",
+			Summary:        marker,
+			CharacterFacts: []string{marker},
+			KeyEvents:      []string{marker},
+			WorldRules:     []string{marker},
+			Timeline: []domain.TimelineEvent{{
+				Time:  "当晚",
+				Event: marker,
+			}},
+		}
+	}
+	prompt := strings.Repeat("汇总规则", 400) + " ${chapter_count}"
+	if bytes := foundationMergeReportRequestBytes(prompt, reports); bytes <= structuredInputLimitBytes {
+		t.Fatalf("test setup request bytes=%d, want over %d", bytes, structuredInputLimitBytes)
+	}
+
+	batches := FoundationMergeReportBatchesForPrompt(reports, DefaultFoundationMergeRunes, prompt)
+	if len(batches) <= 1 {
+		t.Fatalf("compiled byte limit should split reports, got %d batch", len(batches))
+	}
+	for index, batch := range batches {
+		if bytes := foundationMergeReportRequestBytes(prompt, batch); bytes > structuredInputLimitBytes {
+			t.Fatalf("batch %d request bytes=%d, limit=%d", index+1, bytes, structuredInputLimitBytes)
+		}
+	}
+}
+
 func TestFoundationMergeCharacterDecoderMigratesLegacyFieldsWithoutSilentLoss(t *testing.T) {
 	envelope := testFoundationMergeEnvelope("Legacy")
 	envelope = replaceEnvelopeBody(t, envelope, "CHARACTERS", `[

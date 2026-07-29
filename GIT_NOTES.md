@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: bound adaptation foundation merge requests`:
+  changed SourceFoundation report and recursive-summary batching to enforce the
+  structured-call 60 KiB limit against exact compiled request bytes, not only
+  a rune estimate. Added a Chinese UTF-8 regression, rebuilt/restarted port
+  9898, and verified the real 17-chapter “梦中的女孩” upgrade split its formerly
+  rejected single request into two valid report batches, completed its final
+  summary, and synced the library. The pre-intent role-card tab now also
+  displays all analyzed source roles as read-only evidence while keeping target
+  role creation gated on adaptation co-create.
 - 2026-07-29 `a22a273` `fix: upgrade legacy adaptation source packages`:
   rejects unversioned SourceFoundation reuse, incrementally upgrades legacy
   novel-library packages, exposes forced source reanalysis for completed

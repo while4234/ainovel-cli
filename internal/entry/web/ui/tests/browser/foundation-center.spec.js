@@ -60,7 +60,8 @@ test('仅有来源分析时统一角色卡显示只读来源证据且固定栏�
   await page.request.post('/api/test/foundation/scenario?value=source-only');
   await page.reload();
   await page.getByRole('tab', { name: '角色卡' }).click();
-  await expect(page.getByRole('heading', { name: '林舟' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '原著林舟' })).toBeVisible();
+  await expect(page.getByText('来源角色（只读，尚未转为目标角色）')).toBeVisible();
   await expect(page.getByRole('heading', { name: '来源映射与证据（只读）' })).toBeVisible();
   await expect(page.getByText('原著林舟')).toBeVisible();
   await expect(page.getByText('旧王继承人')).toBeVisible();
