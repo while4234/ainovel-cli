@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-29 `pending` `fix: preserve pause during automatic recovery`:
+- 2026-07-29 `9ca248f` `fix: preserve pause during automatic recovery`:
   makes a manual pause claim the paused lifecycle while an automatic resume is
   between runs, and prevents the pending resume from overwriting that state.
   Focused Host state-machine and Web pause endpoint regressions pass.
