@@ -9,9 +9,11 @@ import (
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/retrypolicy"
+	"github.com/voocel/litellm"
 )
 
 const RuntimeFallbackPoolReasonPrefix = "runtime_fallback_pool"
+const transientInvalidArgumentMaxAttempts = 2
 
 type RuntimeFallbackTarget struct {
 	Provider string
@@ -259,7 +261,11 @@ func (m *runtimeFallbackModel) nextAfterFailure(ctx context.Context, current mod
 	if !decision.eligible {
 		return modelTarget{}, false, decision
 	}
-	if decision.networkRetry && *networkAttempt < m.maxAttempts-1 {
+	retryLimit := m.maxAttempts
+	if decision.sameBackendMaxAttempts > 0 && retryLimit > decision.sameBackendMaxAttempts {
+		retryLimit = decision.sameBackendMaxAttempts
+	}
+	if decision.networkRetry && *networkAttempt < retryLimit-1 {
 		*networkAttempt++
 		if waitErr := runtimeFallbackWait(ctx, runtimeFallbackDelay(*networkAttempt)); waitErr != nil {
 			return modelTarget{}, false, runtimeFallbackDecision{}
@@ -321,9 +327,10 @@ func (m *runtimeFallbackModel) startAttempt(ctx context.Context, target modelTar
 }
 
 type runtimeFallbackDecision struct {
-	eligible     bool
-	networkRetry bool
-	reason       string
+	eligible               bool
+	networkRetry           bool
+	sameBackendMaxAttempts int
+	reason                 string
 }
 
 func (d runtimeFallbackDecision) wrap(err error) error {
@@ -389,9 +396,25 @@ func classifyRuntimeFallbackError(err error) runtimeFallbackDecision {
 		return runtimeFallbackDecision{eligible: true, reason: "overloaded"}
 	case errors.Is(classified, agentcore.ErrProviderTimeout):
 		return runtimeFallbackDecision{eligible: true, reason: "timeout"}
+	case isTransientGatewayInvalidArgument(err):
+		return runtimeFallbackDecision{
+			eligible:               true,
+			networkRetry:           true,
+			sameBackendMaxAttempts: transientInvalidArgumentMaxAttempts,
+			reason:                 "gateway_invalid_argument",
+		}
 	default:
 		return runtimeFallbackDecision{}
 	}
+}
+
+func isTransientGatewayInvalidArgument(err error) bool {
+	var providerErr *litellm.LiteLLMError
+	if !errors.As(err, &providerErr) || providerErr.StatusCode != 400 {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(providerErr.Message))
+	return message == "invalid argument" || message == "invalid_argument"
 }
 
 func isRuntimeAuthErrorMessage(err error) bool {

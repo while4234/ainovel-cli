@@ -392,6 +392,59 @@ func TestRuntimeAutoSwitchNetworkRetriesBeforeSwitching(t *testing.T) {
 	}
 }
 
+func TestRuntimeAutoSwitchRetriesGenericGatewayInvalidArgumentOnce(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{
+		provider: "deepseek-proxy",
+		model:    "deepseek-v4-pro",
+		errs: []error{
+			litellm.NewHTTPError("openai", 400, `{"error":{"message":"Invalid Argument"}}`),
+		},
+	}
+	primary := NewSwappableModel("deepseek-proxy", "deepseek-v4-pro", first)
+	controller := &runtimeFallbackControllerStub{}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(7), controller, nil)
+	resp, err := model.Generate(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if got := responseText(resp); got != "deepseek-proxy/deepseek-v4-pro" {
+		t.Fatalf("response = %q, want same-backend recovery", got)
+	}
+	if first.Calls() != transientInvalidArgumentMaxAttempts {
+		t.Fatalf("calls = %d, want %d", first.Calls(), transientInvalidArgumentMaxAttempts)
+	}
+	if len(controller.calls) != 0 {
+		t.Fatalf("controller calls = %d, want no provider switch", len(controller.calls))
+	}
+}
+
+func TestRuntimeAutoSwitchDoesNotRetryDetailedBadRequest(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	first := &scriptedRuntimeModel{
+		provider: "deepseek-proxy",
+		model:    "deepseek-v4-pro",
+		errs: []error{
+			litellm.NewHTTPError("openai", 400, `{"error":{"message":"messages[2].tool_call_id is required"}}`),
+		},
+	}
+	primary := NewSwappableModel("deepseek-proxy", "deepseek-v4-pro", first)
+	controller := &runtimeFallbackControllerStub{}
+
+	model := newRuntimeFallbackModel("writer", primary, primary, runtimeFallbackTestConfig(7), controller, nil)
+	_, err := model.Generate(context.Background(), nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "tool_call_id") {
+		t.Fatalf("Generate error = %v, want detailed bad request", err)
+	}
+	if first.Calls() != 1 {
+		t.Fatalf("calls = %d, want no retry", first.Calls())
+	}
+	if len(controller.calls) != 0 {
+		t.Fatalf("controller calls = %d, want no provider switch", len(controller.calls))
+	}
+}
+
 func TestRuntimeAutoSwitchNetworkExhaustionSwitchesCandidate(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
 	first := &scriptedRuntimeModel{
