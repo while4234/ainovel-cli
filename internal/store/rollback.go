@@ -801,6 +801,9 @@ func rollbackPlanningReview(kind string, state rollbackState) (*domain.PlanningR
 	} else if state.meta != nil && state.meta.WordBudget != nil {
 		review.TargetTotalWords = state.meta.WordBudget.TargetTotalWords
 	}
+	if kind == domain.PlanningReviewKindBlueprint {
+		clearFoundationReviewBinding(review)
+	}
 	if strings.TrimSpace(review.Brief) == "" && kind == domain.PlanningReviewKindBlueprint {
 		return nil, fmt.Errorf("cannot restore draft without a planning brief")
 	}

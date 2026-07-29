@@ -510,6 +510,63 @@ func clonePlanningReview(review domain.PlanningReview) domain.PlanningReview {
 	return review
 }
 
+// SavePreFoundationCoCreateDraftReview repairs and saves the one planning
+// checkpoint that intentionally has no Foundation: a co-create draft restored
+// by structural rollback. It cannot clear Foundation authority from a partial
+// or otherwise active Foundation lifecycle.
+func (s *Store) SavePreFoundationCoCreateDraftReview(review *domain.PlanningReview) error {
+	if s == nil || review == nil {
+		return fmt.Errorf("co-create draft review is required")
+	}
+	if review.Kind != domain.PlanningReviewKindBlueprint ||
+		review.Status != domain.PlanningReviewStatusPending ||
+		strings.TrimSpace(review.Brief) == "" {
+		return fmt.Errorf("pre-Foundation co-create draft review is not in an editable stage")
+	}
+	return s.Revisions.withRevisionTransaction(func() error {
+		s.Foundation.lifecycle.reviewMu.Lock()
+		defer s.Foundation.lifecycle.reviewMu.Unlock()
+		s.crossMu.Lock()
+		defer s.crossMu.Unlock()
+		current, err := s.RunMeta.PlanningReview()
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Kind != domain.PlanningReviewKindBlueprint ||
+			current.Status != domain.PlanningReviewStatusPending {
+			return fmt.Errorf("current planning review is not a rolled-back co-create draft")
+		}
+		foundation, err := s.Foundation.Load()
+		if err != nil {
+			return fmt.Errorf("load rolled-back co-create Foundation: %w", err)
+		}
+		if strings.TrimSpace(foundation.Premise) != "" ||
+			len(foundation.Characters) > 0 ||
+			len(foundation.WorldRules) > 0 ||
+			len(foundation.Relationships) > 0 {
+			return fmt.Errorf("cannot clear Foundation authority while Foundation content exists")
+		}
+		copy := clonePlanningReview(*review)
+		clearFoundationReviewBinding(&copy)
+		return s.RunMeta.setPlanningReviewAuthoritative(&copy)
+	})
+}
+
+func clearFoundationReviewBinding(review *domain.PlanningReview) {
+	if review == nil {
+		return
+	}
+	review.FoundationStatus = ""
+	review.FoundationRevision = 0
+	review.FoundationAuditSignature = ""
+	review.CoreCastSignature = ""
+	review.FoundationGeneration = 0
+	review.FoundationBaseRevision = 0
+	review.FoundationSections = nil
+	review.FoundationFeedback = ""
+	review.FoundationConfirmedAt = ""
+}
+
 func (s *Store) CurrentFoundationAuditSignature() (string, error) {
 	foundation, err := s.Foundation.Load()
 	if err != nil {

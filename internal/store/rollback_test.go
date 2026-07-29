@@ -343,10 +343,19 @@ func TestRollbackToDraftRemovesCanonicalFoundationAndProjections(t *testing.T) {
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
-		Status: domain.PlanningReviewStatusPending,
-		Kind:   domain.PlanningReviewKindBlueprint,
-		Brief:  "foundation rollback brief",
+	if err := st.RunMeta.setPlanningReviewAuthoritative(&domain.PlanningReview{
+		Status:                   domain.PlanningReviewStatusPending,
+		Kind:                     domain.PlanningReviewKindBlueprint,
+		Brief:                    "foundation rollback brief",
+		FoundationStatus:         domain.FoundationReviewStatusApproved,
+		FoundationRevision:       7,
+		FoundationAuditSignature: "stale-audit",
+		CoreCastSignature:        "stale-cast",
+		FoundationGeneration:     3,
+		FoundationBaseRevision:   6,
+		FoundationSections:       []string{"premise", "characters", "world_rules", "planned_relationships"},
+		FoundationFeedback:       "stale feedback",
+		FoundationConfirmedAt:    "2026-07-29T00:00:00Z",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -375,6 +384,17 @@ func TestRollbackToDraftRemovesCanonicalFoundationAndProjections(t *testing.T) {
 	loaded, err := st.Foundation.Load()
 	if err != nil || loaded.Revision != 0 || loaded.Premise != "" {
 		t.Fatalf("foundation after rollback = %+v, %v", loaded, err)
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil || review == nil {
+		t.Fatalf("planning review after rollback = %+v, %v", review, err)
+	}
+	if review.FoundationStatus != "" || review.FoundationRevision != 0 ||
+		review.FoundationAuditSignature != "" || review.CoreCastSignature != "" ||
+		review.FoundationGeneration != 0 || review.FoundationBaseRevision != 0 ||
+		len(review.FoundationSections) != 0 || review.FoundationFeedback != "" ||
+		review.FoundationConfirmedAt != "" {
+		t.Fatalf("rollback retained deleted Foundation binding: %+v", review)
 	}
 }
 

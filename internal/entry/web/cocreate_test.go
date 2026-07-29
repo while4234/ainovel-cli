@@ -300,6 +300,104 @@ func TestProjectCoCreatePlanningRevisionRegeneratesPendingPlan(t *testing.T) {
 	}
 }
 
+func TestRolledBackCoCreateDraftCanBeRevisedAndRegenerateFoundation(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Rolled Back CoCreate Draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply(
+		"updated draft",
+		"## Revised premise\n- Remove the ensemble routes\n- Keep one main relationship",
+		true,
+	)
+	st := storepkg.NewStore(manifest.OutputDir)
+	establishWebApprovedNormalFoundationFixture(t, st)
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindBlueprint
+		review.Brief = "## Old draft\n- Multiple ensemble routes"
+		review.StartPrompt = host.BuildStartPrompt(review.Brief)
+		review.TargetTotalWords = 100_000
+	})
+	preview, err := st.RollbackPreview()
+	if err != nil || preview.TargetStage != domain.RollbackStageDraft {
+		t.Fatalf("rollback preview = %+v, %v", preview, err)
+	}
+	if _, err := st.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: preview.PreviewHash}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate projects rolled back by older builds: Foundation files were
+	// deleted, but the planning review still claimed the deleted binding was
+	// approved. The live v2 project reported by the user has this exact shape.
+	runMetaPath := filepath.Join(manifest.OutputDir, "meta", "run.json")
+	runMetaJSON, err := os.ReadFile(runMetaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runMeta domain.RunMeta
+	if err := json.Unmarshal(runMetaJSON, &runMeta); err != nil {
+		t.Fatal(err)
+	}
+	runMeta.PlanningReview.FoundationStatus = domain.FoundationReviewStatusApproved
+	runMeta.PlanningReview.FoundationRevision = 4
+	runMeta.PlanningReview.FoundationAuditSignature = "deleted-foundation-audit"
+	runMeta.PlanningReview.CoreCastSignature = "preserved-core-cast"
+	runMeta.PlanningReview.FoundationGeneration = 1
+	runMeta.PlanningReview.FoundationSections = []string{"premise", "characters", "world_rules", "planned_relationships"}
+	runMeta.PlanningReview.FoundationConfirmedAt = "2026-07-27T11:14:16Z"
+	runMetaJSON, err = json.MarshalIndent(runMeta, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runMetaPath, append(runMetaJSON, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+manifest.ID+"/cocreate/planning/revise",
+		bytes.NewBufferString(`{"feedback":"remove ensemble routes and keep only one main relationship"}`),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rolled-back draft revise status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.cocreateCalls != 1 || fake.startPreparedCalls != 0 {
+		t.Fatalf("draft revision calls co-create=%d start=%d", fake.cocreateCalls, fake.startPreparedCalls)
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil || review == nil || review.Kind != domain.PlanningReviewKindBlueprint ||
+		review.Status != domain.PlanningReviewStatusPending {
+		t.Fatalf("revised draft review=%+v err=%v", review, err)
+	}
+	if !strings.Contains(review.Brief, "Remove the ensemble routes") {
+		t.Fatalf("revised draft was not saved: %q", review.Brief)
+	}
+	if review.FoundationStatus != "" || review.FoundationRevision != 0 ||
+		review.FoundationAuditSignature != "" || review.FoundationConfirmedAt != "" {
+		t.Fatalf("revised draft restored a deleted Foundation binding: %+v", review)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/confirm", bytes.NewBufferString(`{}`))
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rolled-back draft confirm status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.startPreparedCalls != 1 || !strings.Contains(fake.startPreparedPrompt, "Remove the ensemble routes") {
+		t.Fatalf("Foundation regeneration calls=%d prompt=%q", fake.startPreparedCalls, fake.startPreparedPrompt)
+	}
+	review, err = st.RunMeta.PlanningReview()
+	if err != nil || review == nil || review.Kind != domain.PlanningReviewKindFoundation ||
+		review.Status != domain.PlanningReviewStatusCollecting {
+		t.Fatalf("Foundation regeneration review=%+v err=%v", review, err)
+	}
+}
+
 func TestProjectCoCreatePlanningRevisionTargetsSingleChapter(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

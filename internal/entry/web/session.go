@@ -2546,7 +2546,13 @@ func (s *ProjectSession) saveNormalCoCreatePlanningReview(plan startup.Plan, cre
 	if err != nil {
 		return err
 	}
-	return storepkg.NewStore(s.manifest.OutputDir).RunMeta.SetPlanningReview(review)
+	st := storepkg.NewStore(s.manifest.OutputDir)
+	if draftBeforeFoundation, err := isCoCreateDraftBeforeFoundation(st, review); err != nil {
+		return err
+	} else if draftBeforeFoundation {
+		return st.SavePreFoundationCoCreateDraftReview(review)
+	}
+	return st.RunMeta.SetPlanningReview(review)
 }
 
 func (s *ProjectSession) normalCoCreatePlanningReview(plan startup.Plan, createdAt, status string) (*domain.PlanningReview, error) {
@@ -2581,11 +2587,29 @@ func (s *ProjectSession) normalCoCreatePlanningReview(plan startup.Plan, created
 		UpdatedAt:        now,
 	}
 	if existing, err := st.RunMeta.PlanningReview(); err == nil && existing != nil {
-		preserveFoundationReviewBinding(review, existing)
+		if err := st.RequireConfirmedFoundation(); err == nil {
+			preserveFoundationReviewBinding(review, existing)
+		}
 	} else if err != nil {
 		return nil, err
 	}
 	return review, nil
+}
+
+func isCoCreateDraftBeforeFoundation(st *storepkg.Store, review *domain.PlanningReview) (bool, error) {
+	if st == nil || review == nil ||
+		review.Kind != domain.PlanningReviewKindBlueprint ||
+		review.Status != domain.PlanningReviewStatusPending {
+		return false, nil
+	}
+	foundation, err := st.Foundation.Load()
+	if err != nil {
+		return false, fmt.Errorf("load co-create draft foundation state: %w", err)
+	}
+	return strings.TrimSpace(foundation.Premise) == "" &&
+		len(foundation.Characters) == 0 &&
+		len(foundation.WorldRules) == 0 &&
+		len(foundation.Relationships) == 0, nil
 }
 
 func preserveFoundationReviewBinding(target, source *domain.PlanningReview) {
@@ -2639,9 +2663,6 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 		return fmt.Errorf("finish the active co-create session before revising the planning review")
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
-	if err := st.RequireConfirmedFoundation(); err != nil {
-		return err
-	}
 	review, err := st.RunMeta.PlanningReview()
 	if err != nil {
 		return fmt.Errorf("read planning review: %w", err)
@@ -2651,6 +2672,15 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 	}
 	if strings.TrimSpace(review.Brief) == "" {
 		return fmt.Errorf("pending co-create planning review has no brief")
+	}
+	draftBeforeFoundation, err := isCoCreateDraftBeforeFoundation(st, review)
+	if err != nil {
+		return err
+	}
+	if !draftBeforeFoundation {
+		if err := st.RequireConfirmedFoundation(); err != nil {
+			return err
+		}
 	}
 	target, err := normalizeCoCreatePlanningRevisionTarget(st, review, req, instruction)
 	if err != nil {
@@ -3013,15 +3043,43 @@ func (s *ProjectSession) ConfirmCoCreatePlanning() (string, error) {
 	defer unlock()
 
 	st := storepkg.NewStore(s.manifest.OutputDir)
-	if err := st.RequireConfirmedFoundation(); err != nil {
-		return "", err
-	}
 	review, err := st.RunMeta.PlanningReview()
 	if err != nil {
 		return "", fmt.Errorf("read planning review: %w", err)
 	}
 	if review == nil || review.Status != domain.PlanningReviewStatusPending {
 		return "", fmt.Errorf("no pending co-create planning review")
+	}
+	draftBeforeFoundation, err := isCoCreateDraftBeforeFoundation(st, review)
+	if err != nil {
+		return "", err
+	}
+	if draftBeforeFoundation {
+		if active, activeErr := st.Revisions.Active(); activeErr != nil {
+			return "", fmt.Errorf("read active revision before Foundation generation: %w", activeErr)
+		} else if active != nil {
+			return "", fmt.Errorf("Foundation generation is blocked by active revision %s", active.ID)
+		}
+		var budget *domain.WordBudget
+		if meta, loadErr := st.RunMeta.Load(); loadErr != nil {
+			return "", fmt.Errorf("load co-create draft word budget: %w", loadErr)
+		} else if meta != nil && meta.WordBudget != nil {
+			copy := *meta.WordBudget
+			budget = &copy
+		}
+		plan := startup.Plan{
+			RawPrompt:   strings.TrimSpace(review.Brief),
+			StartPrompt: host.BuildStartPromptWithBudget(review.Brief, budget),
+			WordBudget:  budget,
+		}
+		if err := s.prepareNormalFoundationGeneration(plan, review.CreatedAt); err != nil {
+			return "", fmt.Errorf("start Foundation generation from co-create draft: %w", err)
+		}
+		s.AppendSnapshot()
+		return "generating Foundation from revised co-create draft", nil
+	}
+	if err := st.RequireConfirmedFoundation(); err != nil {
+		return "", err
 	}
 	if active, activeErr := st.Revisions.Active(); activeErr != nil {
 		return "", fmt.Errorf("read active revision before planning approval: %w", activeErr)
