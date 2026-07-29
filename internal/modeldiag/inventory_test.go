@@ -34,6 +34,7 @@ func TestProductionModelCallInventoryIsExplicit(t *testing.T) {
 		"internal/host/model_probe.go",
 		"internal/host/semantic_audit.go",
 		"internal/host/sim/retry.go",
+		"internal/tools/check_consistency.go",
 		"internal/userrules/normalize.go",
 	}
 	got := directModelCallFiles(t, root)
