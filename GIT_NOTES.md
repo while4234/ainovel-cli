@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-30 `this commit` `fix: archive simulation corpus with profiles`:
+- 2026-07-30 `04fedd0` `fix: archive simulation corpus with profiles`:
   project saves and automatic simulation-profile sync now persist a verified
   sidecar copy of the original corpus beside the portable profile. Loading a
   bundled profile restores its corpus without overwriting different local
