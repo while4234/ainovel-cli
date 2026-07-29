@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `2580410` `fix: clarify active simulation guidance`:
+  gives active analysis precedence over the previous profile health card,
+  hides stale diagnostics until replacement synthesis completes, and keeps the
+  next-step guidance in an explicit running state. Real Chrome validation used
+  a cloned legacy 276/276 profile, eight repository corpus fixtures, and one
+  newly uploaded TXT; the UI progressed to fresh 8/8 and then fresh 9/9, with
+  both runs automatically replacing the project-named library profile.
 - 2026-07-29 `93bb0e6` `test: compare synced portable profile digests`:
   verifies automatic simulation-library replacement through portable profile
   digests instead of depending on project-local source paths that portable
