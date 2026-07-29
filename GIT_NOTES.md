@@ -46,6 +46,10 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `this commit` `test: compare synced portable profile digests`:
+  verifies automatic simulation-library replacement through portable profile
+  digests instead of depending on project-local source paths that portable
+  artifacts are designed not to expose.
 - 2026-07-29 `e870e9c` `test: verify simulation library replacement`:
   strengthens the automatic library-sync regression to assert that the
   project-named portable profile contains the refreshed source identity and no

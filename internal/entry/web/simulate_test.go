@@ -456,13 +456,31 @@ func TestProjectSimulationRescanAnalyzesStaleSourcesAndAutoSyncsLibrary(t *testi
 		t.Fatalf("rescan status = %d body=%s", rec.Code, rec.Body.String())
 	}
 
+	expectedPortableData, _, err := portableSimulationProfileData(profileData)
+	if err != nil {
+		t.Fatalf("project refreshed profile: %v", err)
+	}
+	expectedPortable, err := domain.UnmarshalSimulationPortableProfile(expectedPortableData)
+	if err != nil {
+		t.Fatalf("decode expected refreshed profile: %v", err)
+	}
+	oldPortableData, _, err := portableSimulationProfileData(oldLibraryData)
+	if err != nil {
+		t.Fatalf("old library profile: %v", err)
+	}
+	oldPortable, err := domain.UnmarshalSimulationPortableProfile(oldPortableData)
+	if err != nil {
+		t.Fatalf("decode old library profile: %v", err)
+	}
+
 	synced := false
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		data, readErr := os.ReadFile(filepath.Join(runtimeRoot, simulationLibraryDirName, manifest.Name+".json"))
-		if readErr == nil &&
-			bytes.Contains(data, []byte(`"relative_path":"source.txt"`)) &&
-			!bytes.Contains(data, []byte(`"relative_path":"stale.txt"`)) {
+		syncedPortable, decodeErr := domain.UnmarshalSimulationPortableProfile(data)
+		if readErr == nil && decodeErr == nil &&
+			syncedPortable.ProfileDigest == expectedPortable.ProfileDigest &&
+			syncedPortable.ProfileDigest != oldPortable.ProfileDigest {
 			synced = true
 			break
 		}
