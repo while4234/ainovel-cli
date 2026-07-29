@@ -242,6 +242,41 @@ func TestProjectStyleCanChangeAfterProposalBeforeWritingStarts(t *testing.T) {
 	}
 }
 
+func TestProjectStyleChangeReportsRunningNonWritingTaskAsBusy(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProjectWithStyle("Busy Style", "default")
+	if err != nil {
+		t.Fatalf("CreateProjectWithStyle: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.snapshot = host.UISnapshot{
+		NovelName:      "半熟恋人",
+		CompletedCount: 0,
+		TotalWordCount: 0,
+		RuntimeState:   "running",
+		IsRunning:      true,
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/"+manifest.ID+"/style", bytes.NewBufferString(`{"style":"romance"}`))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("busy style status = %d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), ErrSessionActionInProgress.Error()) {
+		t.Fatalf("busy style response = %s, want action-in-progress error", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), ErrProjectStyleLocked.Error()) {
+		t.Fatalf("busy non-writing task was reported as a permanent style lock: %s", rec.Body.String())
+	}
+	overlay := readProjectOverlay(t, manifest)
+	if overlay.Style != "default" {
+		t.Fatalf("busy project style changed to %q", overlay.Style)
+	}
+}
+
 func TestProjectStyleChangeRejectsStartedProject(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
 	defer server.Close()

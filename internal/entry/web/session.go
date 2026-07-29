@@ -424,8 +424,11 @@ func (m *SessionManager) SetProjectStyle(id, style string) (*ProjectSession, Pro
 	defer unlock()
 
 	snapshot := session.Snapshot()
-	if snapshot.IsRunning || snapshotHasStartedWriting(snapshot) {
+	if snapshotHasStartedWriting(snapshot) {
 		return nil, ProjectManifest{}, fmt.Errorf("%w: cannot change style after writing has started", ErrProjectStyleLocked)
+	}
+	if snapshot.IsRunning {
+		return nil, ProjectManifest{}, fmt.Errorf("%w: stop or pause the current project task before changing style", ErrSessionActionInProgress)
 	}
 
 	session.Close()

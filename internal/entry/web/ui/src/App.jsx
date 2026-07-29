@@ -5879,6 +5879,7 @@ function ProjectSettingsPanel({
   const selectedStyleInCatalog = styles.some((style) => style.id === selectedStyle);
   const currentStyleLabel = projectStyleLabel(styles, currentStyle);
   const styleLocked = isProjectStyleLocked(snapshot);
+  const styleTemporarilyBusy = isProjectRunning(snapshot) && !styleLocked;
   const styleEditable = canEditProjectStyle({ activeProject, busy, projectSettings, snapshot });
   const canSaveStyle = canSubmitProjectStyle({ activeProject, busy, currentStyle, projectSettings, snapshot });
   const selectedSimulationMode = normalizeSimulationMode(projectSettings.selectedSimulationMode);
@@ -5978,6 +5979,9 @@ function ProjectSettingsPanel({
 
             {styleLocked ? (
               <div className="settings-note warning">正式开始创作后文风不可变更</div>
+            ) : null}
+            {styleTemporarilyBusy ? (
+              <div className="settings-note">当前任务运行中，完成或暂停后可修改文风</div>
             ) : null}
             {projectSettings.loadStatus === 'error' ? (
               <div className="error-banner compact">{projectSettings.error}</div>
@@ -12384,13 +12388,14 @@ export function snapshotHasStartedWritingContent(snapshot) {
 }
 
 export function isProjectStyleLocked(snapshot) {
-  return isProjectRunning(snapshot) || snapshotHasStartedWritingContent(snapshot);
+  return snapshotHasStartedWritingContent(snapshot);
 }
 
 export function canEditProjectStyle({ activeProject, busy = false, projectSettings = {}, snapshot = null } = {}) {
   return Boolean(activeProject?.id) &&
     Boolean(snapshot) &&
     !busy &&
+    !isProjectRunning(snapshot) &&
     !isProjectStyleLocked(snapshot) &&
     projectSettings.loadStatus !== 'running' &&
     projectSettings.saveStatus !== 'running' &&

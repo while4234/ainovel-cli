@@ -5,6 +5,7 @@ import {
   buildProjectStyleSaveRequest,
   canSubmitProjectSimulationMode,
   canSubmitProjectStyle,
+  isProjectStyleLocked,
   normalizeProjectStyleCatalog,
   normalizeSimulationMode,
   projectStyleLabel,
@@ -174,6 +175,32 @@ describe('project settings panel', () => {
       projectSettings,
       snapshot
     })).toBe(false);
+  });
+
+  it('treats a non-writing background task as temporary busy instead of a permanent style lock', () => {
+    const projectSettings = {
+      styles: [{ id: 'default', label: '通用写作风格' }, { id: 'romance', label: '言情风格' }],
+      selectedStyle: 'romance',
+      loadStatus: 'done',
+      saveStatus: 'idle'
+    };
+    const snapshot = {
+      CompletedCount: 0,
+      TotalWordCount: 0,
+      RuntimeState: 'running',
+      IsRunning: true,
+      Agents: [{ Name: 'web', State: 'running', TaskKind: 'simulation_import' }]
+    };
+
+    expect(isProjectStyleLocked(snapshot)).toBe(false);
+    expect(canSubmitProjectStyle({
+      activeProject: { id: 'project-1' },
+      busy: false,
+      currentStyle: 'default',
+      projectSettings,
+      snapshot
+    })).toBe(false);
+    expect(appSource).toContain('当前任务运行中，完成或暂停后可修改文风');
   });
 
   it('does not disable simulation mode saves because chapters are completed', () => {
