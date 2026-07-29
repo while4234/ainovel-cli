@@ -46,6 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `4e201b1` `test: classify consistency model calls`:
+  adds the existing `internal/tools/check_consistency.go` direct model boundary
+  to the explicit production-call inventory. Full `internal/modeldiag` and
+  `internal/host/reminder` package tests pass.
+- 2026-07-29 `05de16a` `fix: make cloned projects rollback-ready`:
+  strips copied process-local normal-flow leases before installing a clone,
+  preserves co-create checkpoints while rollback can still reach the draft
+  boundary, and removes them after prose writing makes that boundary obsolete.
+  The full Web package passes in 157.9 seconds, the full Store package passes,
+  and focused clone/rollback/checkpoint regressions pass.
 - 2026-07-29 `this commit` `test: add offline simulation regression baseline`:
   adds a repository-original synthetic corpus, identity-driven fake-LLM
   analyze-to-gate evaluator, stable JSON/human reports, explicit payload and
