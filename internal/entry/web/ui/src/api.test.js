@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   addGlobalProviderModel,
+  analyzeAdaptationSource,
   analyzeSimulation,
   buildAdaptationProposal,
   cancelSemanticAdaptationAudit,
@@ -233,6 +234,17 @@ describe('web API helpers', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/projects/project-1/simulate/search/download', expect.objectContaining({
       method: 'POST',
       body: JSON.stringify({ result_id: 'result-1' })
+    }));
+  });
+
+  it('requests an incremental adaptation source upgrade explicitly', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(mockJSONResponse({ accepted: true }));
+
+    await analyzeAdaptationSource('project-1', 'source.txt', { force: true });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/adapt/analyze', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ source_file: 'source.txt', force: true })
     }));
   });
 

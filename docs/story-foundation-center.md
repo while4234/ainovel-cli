@@ -33,6 +33,10 @@
 
 `SourceFoundation` 是来源证据，不是目标设定编辑器。设定中心只能修改 target `StoryFoundation`；任何携带 `source_foundation`、`source`、`mode` 或客户端 impact 的写请求都会被拒绝。Character Agent 只读取按章节切片、摘要与签名组成的有界证据包，不回填或改写 SourceFoundation。改编的 target Foundation 未确认前，不能生成 skeleton/proposal。
 
+从小说仓库加载来源时，服务端会验证 SourceFoundation 的版本、来源签名、报告签名、prompt 版本、批处理配置和章节覆盖。缺少版本化绑定的旧资料包会自动进入增量升级：仍然有效的逐章报告按内容签名复用，只重新生成过期的 Foundation、dossier 或其批次，并在成功后同步回小说仓库。原文分析区在已完成状态下提供“增量重新分析并升级”，用于主动复查当前来源包；它不会无条件重复调用模型。
+
+共创区的“重新生成共创简报”只根据当前改编方向重建 briefing，不重新分析原文章节或 SourceFoundation。该操作要求已有改编共创会话、输入了新的整理要求、当前没有运行任务，并且所有前置决策都已处理；按钮悬停提示会说明具体禁用原因。
+
 ## 范围和关系语义
 
 - premise：目标故事的总前提。

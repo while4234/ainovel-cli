@@ -578,10 +578,10 @@ export function uploadAdaptationSource(projectId, file) {
   });
 }
 
-export function analyzeAdaptationSource(projectId, sourceFile) {
+export function analyzeAdaptationSource(projectId, sourceFile, { force = false } = {}) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/analyze`, {
     method: 'POST',
-    body: JSON.stringify({ source_file: sourceFile })
+    body: JSON.stringify({ source_file: sourceFile, force })
   });
 }
 

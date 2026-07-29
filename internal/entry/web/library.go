@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	adaptengine "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -308,7 +309,13 @@ func (s *Server) startLoadedNovelAnalysisIfNeeded(session *ProjectSession, manif
 		return status, false, err
 	}
 	if status.AnalysisStatus == "done" {
-		return status, false, nil
+		current, err := loadedNovelSourceFoundationCurrent(manifest)
+		if err != nil {
+			return status, false, err
+		}
+		if current {
+			return status, false, nil
+		}
 	}
 	sourcePath, err := adaptationSourcePathFromName(sourceFile.RelativePath, manifest, false)
 	if err != nil {
@@ -341,6 +348,19 @@ func (s *Server) startLoadedNovelAnalysisIfNeeded(session *ProjectSession, manif
 		return status, false, err
 	}
 	return status, true, nil
+}
+
+func loadedNovelSourceFoundationCurrent(manifest ProjectManifest) (bool, error) {
+	st := storepkg.NewStore(manifest.OutputDir)
+	sourceManifest, err := st.Adaptation.LoadSourceManifest()
+	if err != nil {
+		return false, fmt.Errorf("load novel source manifest: %w", err)
+	}
+	foundation, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return false, fmt.Errorf("load novel source foundation: %w", err)
+	}
+	return adaptengine.SourceFoundationHasVersionedMetadata(foundation, sourceManifest), nil
 }
 
 func (s *Server) trySaveImportedSimulationProfile(profile pendingUpload) (apiLibraryItem, bool, string) {

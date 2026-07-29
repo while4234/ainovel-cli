@@ -450,6 +450,49 @@ func TestProjectAdaptAnalyzeSkipsCompletedPreparedSource(t *testing.T) {
 	}
 }
 
+func TestProjectAdaptAnalyzeForceRechecksCompletedPreparedSource(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Forced Incremental Analyze")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	writePreparedAdaptationFixture(t, manifest, "source.txt")
+	fake := installFakeSession(t, server, manifest)
+	started := make(chan struct{})
+	fake.adaptAnalyzeStarted = started
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+manifest.ID+"/adapt/analyze",
+		bytes.NewBufferString(`{"source_file":"source.txt","force":true}`),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("forced analyze status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("forced analyze did not start incremental source preparation")
+	}
+	if fake.adaptAnalyzeCalls != 1 {
+		t.Fatalf("forced analyze calls = %d, want 1", fake.adaptAnalyzeCalls)
+	}
+	var response struct {
+		Accepted bool `json:"accepted"`
+		Running  bool `json:"running"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode forced analyze response: %v", err)
+	}
+	if !response.Accepted || !response.Running {
+		t.Fatalf("forced analyze response = accepted:%v running:%v, want true/true", response.Accepted, response.Running)
+	}
+}
+
 func TestProjectAdaptAnalyzeAutoSavesCompletedBackgroundAnalysis(t *testing.T) {
 	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)

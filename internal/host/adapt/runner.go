@@ -519,20 +519,32 @@ func sourceFoundationCurrent(
 	if !sourceFoundationUsable(foundation) || manifest == nil {
 		return false
 	}
-	hasMetadata := foundation.Version > 0 ||
-		strings.TrimSpace(foundation.SourceSignature) != "" ||
-		strings.TrimSpace(foundation.ReportSignature) != "" ||
-		strings.TrimSpace(foundation.PromptVersion) != "" ||
-		foundation.BatchRuneLimit > 0
-	if !hasMetadata {
-		return len(domain.FlattenOutline(foundation.Volumes)) == manifest.ChapterCount
-	}
 	return foundation.Version == adaptationSourceFoundationVersion &&
 		foundation.SourceChapterCount == manifest.ChapterCount &&
 		strings.TrimSpace(foundation.SourceSignature) == store.AdaptationSourceSignature(*manifest) &&
 		strings.TrimSpace(foundation.ReportSignature) == strings.TrimSpace(reportSignature) &&
 		strings.TrimSpace(foundation.PromptVersion) == strings.TrimSpace(promptSignature) &&
 		foundation.BatchRuneLimit == batchRuneLimit
+}
+
+// SourceFoundationHasVersionedMetadata reports whether a loaded source
+// foundation can prove which source and analysis process produced it. Legacy
+// foundations without these bindings must be incrementally rebuilt before
+// they are reused by a new adaptation project.
+func SourceFoundationHasVersionedMetadata(
+	foundation *domain.AdaptationSourceFoundation,
+	manifest *domain.AdaptationSourceManifest,
+) bool {
+	if !sourceFoundationUsable(foundation) || manifest == nil {
+		return false
+	}
+	return foundation.Version == adaptationSourceFoundationVersion &&
+		foundation.SourceChapterCount == manifest.ChapterCount &&
+		strings.TrimSpace(foundation.SourceSignature) == store.AdaptationSourceSignature(*manifest) &&
+		strings.TrimSpace(foundation.ReportSignature) != "" &&
+		strings.HasPrefix(strings.TrimSpace(foundation.PromptVersion), adaptationSourceFoundationPromptVersion+":") &&
+		foundation.BatchRuneLimit > 0 &&
+		len(domain.FlattenOutline(foundation.Volumes)) == manifest.ChapterCount
 }
 
 func sourceFoundationBatchCurrent(

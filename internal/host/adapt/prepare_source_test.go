@@ -651,6 +651,42 @@ Ari follows the source causal chain.
 `
 }
 
+func TestSourceFoundationHasVersionedMetadataRejectsLegacyFoundation(t *testing.T) {
+	manifest := domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 1,
+		Chapters: []domain.AdaptationSource{{
+			Chapter: 1,
+			Title:   "One",
+			SHA256:  "chapter-signature",
+		}},
+	}
+	foundation := domain.AdaptationSourceFoundation{
+		Premise:    "premise",
+		Characters: []domain.Character{{Name: "Ari", Role: "lead"}},
+		Volumes: []domain.VolumeOutline{{
+			Index: 1,
+			Arcs: []domain.ArcOutline{{
+				Index:    1,
+				Chapters: []domain.OutlineEntry{{Chapter: 1, Title: "One"}},
+			}},
+		}},
+	}
+	if SourceFoundationHasVersionedMetadata(&foundation, &manifest) {
+		t.Fatal("legacy source foundation without versioned bindings must require upgrade")
+	}
+
+	foundation.Version = adaptationSourceFoundationVersion
+	foundation.SourceChapterCount = manifest.ChapterCount
+	foundation.SourceSignature = store.AdaptationSourceSignature(manifest)
+	foundation.ReportSignature = "report-signature"
+	foundation.PromptVersion = adaptationSourceFoundationPromptVersion + ":prompt-signature"
+	foundation.BatchRuneLimit = 70_000
+	if !SourceFoundationHasVersionedMetadata(&foundation, &manifest) {
+		t.Fatal("fully bound source foundation should be reusable")
+	}
+}
+
 func adaptDossierBatchEnvelope() string {
 	return `{
 		"plot_phase": "Ari follows the source case.",

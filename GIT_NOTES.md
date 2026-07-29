@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 pending `fix: upgrade legacy adaptation source packages`:
+  rejects unversioned SourceFoundation reuse, incrementally upgrades legacy
+  novel-library packages, exposes forced source reanalysis for completed
+  sources, distinguishes source analysis from co-create briefing regeneration,
+  and deploys the rebuilt Web service on port 9898. Focused/full changed-package
+  Go tests, 370 Web tests, production build, and live HTTP/bundle checks passed.
+  The project-environment full suite remains red only in the existing Windows
+  legacy-migration temp-directory rename access-denied test, reproduced twice.
 - 2026-07-29 `5a1cea5d` `fix: activate reinforced simulation contracts`:
   fast-forwarded local `main` to the latest `origin/main`, rebuilt the
   production Web UI plus all three Go executables through `restart-web.cmd`,

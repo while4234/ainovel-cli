@@ -112,7 +112,7 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		writeProjectSessionError(w, err)
 		return
 	}
-	sourcePath, err := adaptationSourcePathFromRequest(r, manifest)
+	sourcePath, force, err := adaptationAnalyzeRequest(r, manifest)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -123,7 +123,7 @@ func (s *Server) handleProjectAdaptAnalyze(w http.ResponseWriter, r *http.Reques
 		writeAdaptationActionError(w, err, nil)
 		return
 	}
-	if status.AnalysisStatus == "done" {
+	if status.AnalysisStatus == "done" && !force {
 		matches, err := preparedAdaptationSourceMatches(manifest, sourcePath)
 		if err != nil {
 			writeAdaptationActionError(w, err, status.AnalysisEvents)
@@ -572,21 +572,24 @@ func ensureAdaptationCoCreateBriefingReady(ctx context.Context, session *Project
 	return nil
 }
 
-func adaptationSourcePathFromRequest(r *http.Request, manifest ProjectManifest) (string, error) {
+func adaptationAnalyzeRequest(r *http.Request, manifest ProjectManifest) (string, bool, error) {
 	var req struct {
 		SourceFile string `json:"source_file"`
+		Force      bool   `json:"force,omitempty"`
 	}
 	if r.Body != nil {
 		defer r.Body.Close()
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			return "", fmt.Errorf("invalid adaptation analyze request: %w", err)
+			return "", false, fmt.Errorf("invalid adaptation analyze request: %w", err)
 		}
 	}
 	sourceDir := projectAdaptationUploadDir(manifest)
 	if strings.TrimSpace(req.SourceFile) == "" {
-		return onlyAdaptationSourcePath(sourceDir)
+		sourcePath, err := onlyAdaptationSourcePath(sourceDir)
+		return sourcePath, req.Force, err
 	}
-	return adaptationSourcePathFromName(req.SourceFile, manifest, true)
+	sourcePath, err := adaptationSourcePathFromName(req.SourceFile, manifest, true)
+	return sourcePath, req.Force, err
 }
 
 func adaptationSourcePathFromName(sourceFile string, manifest ProjectManifest, allowInfer bool) (string, error) {

@@ -373,6 +373,67 @@ func TestNovelLibraryLoadLegacyEntryStartsDossierBackfill(t *testing.T) {
 	}
 }
 
+func TestNovelLibraryLoadLegacyFoundationStartsIncrementalUpgrade(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+
+	sourceProject, err := server.store.CreateProject("Legacy Foundation Source")
+	if err != nil {
+		t.Fatalf("CreateProject source: %v", err)
+	}
+	writePreparedAdaptationFixture(t, sourceProject, "source.txt")
+	if _, err := server.libraries.SaveNovelFromProject(sourceProject, "Legacy Foundation", "source.txt"); err != nil {
+		t.Fatalf("SaveNovelFromProject: %v", err)
+	}
+	libraryFoundationPath := filepath.Join(
+		server.libraries.NovelDir(),
+		"Legacy Foundation",
+		"meta",
+		"adaptation",
+		"source_foundation.json",
+	)
+	var legacy domain.AdaptationSourceFoundation
+	if err := readJSONFile(libraryFoundationPath, &legacy); err != nil {
+		t.Fatalf("read library source foundation: %v", err)
+	}
+	legacy.Version = 0
+	legacy.SourceChapterCount = 0
+	legacy.SourceSignature = ""
+	legacy.ReportSignature = ""
+	legacy.PromptVersion = ""
+	legacy.BatchRuneLimit = 0
+	if err := writeJSONFile(libraryFoundationPath, legacy); err != nil {
+		t.Fatalf("write legacy library source foundation: %v", err)
+	}
+
+	targetProject, err := server.store.CreateProject("Legacy Foundation Target")
+	if err != nil {
+		t.Fatalf("CreateProject target: %v", err)
+	}
+	fake := installFakeSession(t, server, targetProject)
+	started := make(chan struct{})
+	fake.adaptAnalyzeStarted = started
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+targetProject.ID+"/adapt/library/load",
+		bytes.NewBufferString(`{"name":"Legacy Foundation"}`),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("load status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("legacy source foundation did not start incremental upgrade")
+	}
+	if fake.adaptAnalyzeCalls != 1 {
+		t.Fatalf("adapt analyze calls = %d, want 1", fake.adaptAnalyzeCalls)
+	}
+}
+
 func TestNovelLibraryLoadLegacyEntrySyncsBackfillToLibrary(t *testing.T) {
 	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
 	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
@@ -568,7 +629,14 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
 	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{
-		Premise: "source premise",
+		Version:            1,
+		SourcePath:         sourcePath,
+		SourceChapterCount: sourceManifest.ChapterCount,
+		SourceSignature:    store.AdaptationSourceSignature(sourceManifest),
+		ReportSignature:    "fixture-report-signature",
+		PromptVersion:      "source-foundation-merge-v1:fixture",
+		BatchRuneLimit:     70_000,
+		Premise:            "source premise",
 		Characters: []domain.Character{{
 			Name:        "Ari",
 			Role:        "lead",
@@ -591,6 +659,12 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 					CoreEvent: "event one",
 					Hook:      "hook one",
 					Scenes:    []string{"scene one"},
+				}, {
+					Chapter:   2,
+					Title:     "转折",
+					CoreEvent: "event two",
+					Hook:      "hook two",
+					Scenes:    []string{"scene two"},
 				}},
 			}},
 		}},

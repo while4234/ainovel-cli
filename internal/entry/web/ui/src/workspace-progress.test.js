@@ -14,6 +14,7 @@ import {
   buildOutlineRevisionPayload,
   buildVolumeReviewRevisionPayload,
   canCancelCoCreateFlow,
+  adaptationRebriefDisabledReason,
   canRunAdaptationAnalysis,
   canSaveAnalyzedNovelToLibrary,
   canRunSimulationAnalysis,
@@ -596,7 +597,23 @@ describe('workspace progress state', () => {
       activeProject,
       busy: false,
       adaptation: { ...adaptation, analysisStatus: 'done' }
-    })).toBe(false);
+    })).toBe(true);
+  });
+
+  it('explains why adaptation co-create briefing regeneration is unavailable', () => {
+    const base = {
+      activeProject: { id: 'project-1' },
+      busy: false,
+      coCreate: { kind: 'adapt', input: '重新整理方向' },
+      hasBackendSession: true,
+      hasPendingDecisions: false
+    };
+
+    expect(adaptationRebriefDisabledReason(base)).toBe('');
+    expect(adaptationRebriefDisabledReason({ ...base, hasPendingDecisions: true }))
+      .toBe('请先处理全部共创前置决策');
+    expect(adaptationRebriefDisabledReason({ ...base, coCreate: { ...base.coCreate, input: '' } }))
+      .toBe('请输入希望重新整理的方向');
   });
 
   it('lets analyzed adaptation sources accept a new novel library name before saving', () => {

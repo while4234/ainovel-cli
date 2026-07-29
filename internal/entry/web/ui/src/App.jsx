@@ -3177,7 +3177,7 @@ export default function App() {
     }
   };
 
-  const runAdaptationAnalysis = async () => {
+  const runAdaptationAnalysis = async ({ force = false } = {}) => {
     const projectId = activeProject?.id;
     const sourcePath = adaptation.sourceFile?.relative_path;
     if (!projectId || !sourcePath) {
@@ -3192,7 +3192,7 @@ export default function App() {
       error: ''
     }));
     try {
-      const data = await analyzeAdaptationSource(projectId, sourcePath);
+      const data = await analyzeAdaptationSource(projectId, sourcePath, { force });
       if (!isCurrentProject(projectId)) {
         return;
       }
@@ -6496,6 +6496,13 @@ function CoCreatePanel({
   );
   const canSend = Boolean(activeProject && !busy && hasBackendSession && coCreate.input.trim() && !hasPendingDecisions);
   const canRebrief = Boolean(canSend && coCreate.kind === 'adapt');
+  const rebriefDisabledReason = adaptationRebriefDisabledReason({
+    activeProject,
+    busy,
+    coCreate,
+    hasBackendSession,
+    hasPendingDecisions
+  });
   const canResume = Boolean(activeProject && !busy && hasBackendSession && coCreate.failed && !hasPendingDecisions);
   const canConfirmIntake = Boolean(activeProject && !busy && showIntakeControls && targetTotalWords > 0);
   const hasDraftPrompt = Boolean(coCreate.draftPrompt.trim());
@@ -6878,9 +6885,9 @@ function CoCreatePanel({
           {hasBackendSession ? '发送' : showIntakeControls ? '确认并开始共创' : '开始普通共创'}
         </button>
         {hasBackendSession && coCreate.kind === 'adapt' ? (
-          <button className="tool-button" disabled={!canRebrief} onClick={onRebrief} type="button">
+          <button className="tool-button" disabled={!canRebrief} onClick={onRebrief} title={rebriefDisabledReason} type="button">
             <RefreshCw size={16} />
-            重新分析资料包
+            重新生成共创简报
           </button>
         ) : null}
         </div>
@@ -7806,6 +7813,7 @@ function AdaptationPanel({
   const workflowBusy = busy || simulationProfileBusy;
   const uploadBusy = adaptation.uploadStatus === 'running';
   const canAnalyze = canRunAdaptationAnalysis({ activeProject, busy, adaptation });
+  const analysisDisabledReason = adaptationAnalysisDisabledReason({ activeProject, busy, adaptation });
   const canCoCreate = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy);
   const canStart = Boolean(activeProject && adaptation.sourceFile?.relative_path && analyzed && !workflowBusy && adaptation.brief.trim());
   const canConfirm = Boolean(activeProject && !workflowBusy && proposal.proposalReady && isAdaptationProposalCurrent(adaptation));
@@ -7938,9 +7946,15 @@ function AdaptationPanel({
           <WandSparkles size={17} />
           <span>原文分析</span>
         </div>
-        <button className="tool-button accent full-width" disabled={!canAnalyze} onClick={onAnalyze} type="button">
+        <button
+          className="tool-button accent full-width"
+          disabled={!canAnalyze}
+          onClick={() => onAnalyze({ force: analyzed })}
+          title={analysisDisabledReason}
+          type="button"
+        >
           <WandSparkles size={16} />
-          分析
+          {analyzed ? '增量重新分析并升级' : '分析'}
         </button>
         <div className={`workflow-status ${adaptation.analysisStatus}`}>
           <strong>{workflowStatusText(adaptation.analysisStatus)}</strong>
@@ -11369,7 +11383,31 @@ export function simulationAnalysisNextStep({ analysisStatus, fileCount, profileL
 }
 
 export function canRunAdaptationAnalysis({ activeProject, busy, adaptation } = {}) {
-  return Boolean(activeProject && adaptation?.sourceFile && !['running', 'done'].includes(adaptation.analysisStatus) && adaptation.uploadStatus !== 'running');
+  return Boolean(activeProject && adaptation?.sourceFile?.relative_path && adaptation.analysisStatus !== 'running' && adaptation.uploadStatus !== 'running');
+}
+
+export function adaptationAnalysisDisabledReason({ activeProject, busy, adaptation } = {}) {
+  if (!activeProject) return '请先选择项目';
+  if (!adaptation?.sourceFile?.relative_path) return '请先上传或从小说仓库加载原文';
+  if (adaptation.uploadStatus === 'running') return '原文仍在上传';
+  if (adaptation.analysisStatus === 'running') return '原文分析正在进行';
+  return '';
+}
+
+export function adaptationRebriefDisabledReason({
+  activeProject,
+  busy,
+  coCreate,
+  hasBackendSession,
+  hasPendingDecisions
+} = {}) {
+  if (!activeProject) return '请先选择项目';
+  if (coCreate?.kind !== 'adapt') return '仅改编共创可以重新生成简报';
+  if (!hasBackendSession) return '请先开始改编共创';
+  if (busy) return 'AI 正在处理当前任务';
+  if (hasPendingDecisions) return '请先处理全部共创前置决策';
+  if (!coCreate?.input?.trim()) return '请输入希望重新整理的方向';
+  return '';
 }
 
 export function canSaveAnalyzedNovelToLibrary({ activeProject, busy, adaptation } = {}) {

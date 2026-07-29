@@ -872,4 +872,6 @@ MIT
 
 Web 设定中心以 canonical `StoryFoundation` 管理原创与改编目标故事的 premise、稳定 ID 角色、计划关系和世界规则。普通与改编的新流程都由 Character Agent 生成候选、独立审查并经用户显式确认；确认时才原子发布角色卡及兼容 `CoreCastContract`，之后 Architect 只负责 premise、world rules 和 outline。旧五段共创/CoreCast checkpoint 仍可读取与恢复，但不会让新流程重新生成 `<cast>`。改编的 `SourceFoundation` 永久只读，正文开始后 target Foundation 也只读。
 
+小说仓库加载会校验版本化 SourceFoundation 绑定，并对旧资料包自动执行增量升级；有效的逐章报告会按签名复用。原文分析区的“增量重新分析并升级”可主动复查来源资料，而共创区的“重新生成共创简报”只刷新 briefing，两者不再混用同一“重新分析”名称。
+
 计划关系图谱基于 `@xyflow/react`，只映射 `StoryFoundation.relationships`，不读取正文 runtime `relationship_state`。图上的 connect/删除只进入本地 dirty draft，正式写入仍必须经过服务端 signed preview，再以 `preview_id + idempotency_key` apply。角色新旧流程与迁移矩阵见 [Character Agent 迁移说明](docs/character-agent-migration.md)，使用说明、恢复语义、隐私边界和故障排查见 [设定中心文档](docs/story-foundation-center.md)，发布验收见 [StoryFoundation 发布检查清单](docs/story-foundation-release-checklist.md)，依赖许可证见 [第三方许可证](THIRD_PARTY_LICENSES.md)。
