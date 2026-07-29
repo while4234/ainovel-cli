@@ -460,7 +460,9 @@ func TestProjectSimulationRescanAnalyzesStaleSourcesAndAutoSyncsLibrary(t *testi
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		data, readErr := os.ReadFile(filepath.Join(runtimeRoot, simulationLibraryDirName, manifest.Name+".json"))
-		if readErr == nil && bytes.Contains(data, []byte("new-profile")) {
+		if readErr == nil &&
+			bytes.Contains(data, []byte(`"relative_path":"source.txt"`)) &&
+			!bytes.Contains(data, []byte(`"relative_path":"stale.txt"`)) {
 			synced = true
 			break
 		}

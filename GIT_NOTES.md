@@ -46,6 +46,10 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `this commit` `test: verify simulation library replacement`:
+  strengthens the automatic library-sync regression to assert that the
+  project-named portable profile contains the refreshed source identity and no
+  longer contains the stale source identity.
 - 2026-07-29 `d218362` `fix: clarify simulation analysis actions`:
   makes first-time analysis and incremental rescans explicit, disables the
   primary action when all local corpus files have current reports, preserves
