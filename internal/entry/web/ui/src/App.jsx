@@ -8078,6 +8078,7 @@ function SimulationPanel({
     scanAvailable: canStartAnalysis
   });
   const analysisNextStep = simulationAnalysisNextStep({
+    analysisStatus: simulation.analysisStatus,
     fileCount: simulation.files.length,
     profileLoaded: profile.loaded,
     scanAvailable: canStartAnalysis
@@ -11348,8 +11349,11 @@ export function simulationAnalysisActionLabel({ analysisStatus, fileCount, profi
   return profileLoaded ? '重新扫描并入库' : '开始分析并入库';
 }
 
-export function simulationAnalysisNextStep({ fileCount, profileLoaded, scanAvailable = true } = {}) {
+export function simulationAnalysisNextStep({ analysisStatus, fileCount, profileLoaded, scanAvailable = true } = {}) {
   const sourceCount = Number.isFinite(Number(fileCount)) ? Math.max(0, Number(fileCount)) : 0;
+  if (String(analysisStatus || '').toLowerCase() === 'running') {
+    return `正在分析 ${sourceCount} 份语料并更新画像库，请等待完成。`;
+  }
   if (sourceCount === 0) {
     return profileLoaded
       ? '当前画像没有绑定本地语料；请先上传旧语料，再点击“重新扫描并入库”。'

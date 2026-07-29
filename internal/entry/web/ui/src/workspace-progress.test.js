@@ -475,6 +475,12 @@ describe('workspace progress state', () => {
       profileLoaded: false
     })).toBe('开始分析并入库');
     expect(simulationAnalysisNextStep({
+      analysisStatus: 'running',
+      fileCount: 8,
+      profileLoaded: true,
+      scanAvailable: false
+    })).toBe('正在分析 8 份语料并更新画像库，请等待完成。');
+    expect(simulationAnalysisNextStep({
       fileCount: 56,
       profileLoaded: false
     })).toBe('已准备 56 份语料，请点击“开始分析并入库”生成画像并自动保存到画像库。');
