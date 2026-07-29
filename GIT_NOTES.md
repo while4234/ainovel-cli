@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-29 pending `fix: upgrade legacy adaptation source packages`:
+- 2026-07-29 `a22a273` `fix: upgrade legacy adaptation source packages`:
   rejects unversioned SourceFoundation reuse, incrementally upgrades legacy
   novel-library packages, exposes forced source reanalysis for completed
   sources, distinguishes source analysis from co-create briefing regeneration,
