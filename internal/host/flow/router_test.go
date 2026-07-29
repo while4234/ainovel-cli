@@ -168,6 +168,44 @@ func TestRoute_PendingPolishingVerb(t *testing.T) {
 	}
 }
 
+func TestRouteResume_PendingPolishWithChangedDraftResumesPersistedGates(t *testing.T) {
+	p := writingProgress([]int{1, 2}, domain.FlowPolishing)
+	p.PendingRewrites = []int{2}
+	p.InProgressChapter = 2
+	got := RouteResume(State{
+		Progress:                    p,
+		InProgressDraftExists:       true,
+		InProgressDraftDiffersFinal: true,
+		InProgressConsistencyValid:  true,
+		InProgressDeAIState:         writerDeAIStatePassed,
+		InProgressWordCount:         3200,
+	})
+	if got == nil || !got.ResumeRecovery {
+		t.Fatalf("expected changed polish draft to resume persisted gates, got %+v", got)
+	}
+	if !strings.Contains(got.Task, "check_simulation") || strings.Contains(got.Task, "edit_chapter") {
+		t.Fatalf("unexpected polish recovery task: %s", got.Task)
+	}
+}
+
+func TestRouteResume_PendingPolishWithoutChangedDraftRequiresPolishEdit(t *testing.T) {
+	p := writingProgress([]int{1, 2}, domain.FlowPolishing)
+	p.PendingRewrites = []int{2}
+	p.InProgressChapter = 2
+	got := RouteResume(State{
+		Progress:                   p,
+		InProgressDraftExists:      true,
+		InProgressConsistencyValid: true,
+		InProgressDeAIState:        writerDeAIStatePassed,
+	})
+	if got == nil || got.ResumeRecovery {
+		t.Fatalf("expected unchanged polish draft to keep full polish route, got %+v", got)
+	}
+	if !strings.Contains(got.Task, "edit_chapter") {
+		t.Fatalf("unchanged polish draft must still require a durable edit: %s", got.Task)
+	}
+}
+
 func TestRoute_ReviewingDelegatesToLLM(t *testing.T) {
 	p := writingProgress([]int{1, 2}, domain.FlowReviewing)
 	if got := Route(State{Progress: p}); got != nil {

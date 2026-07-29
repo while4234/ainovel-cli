@@ -83,18 +83,19 @@ type State struct {
 	// Writer recovery facts. Normal routing uses only the word-budget subset so
 	// a newly persisted oversized draft also enters bounded segment repair; a
 	// Resume recovery lease additionally uses the validation facts below.
-	InProgressDraftExists      bool
-	InProgressCheckpoint       string
-	InProgressBudgetCheckpoint string
-	InProgressDeAIState        string
-	InProgressConsistencyValid bool
-	InProgressWordCount        int
-	InProgressRecommendedMin   int
-	InProgressRecommendedMax   int
-	InProgressWordMin          int
-	InProgressWordMax          int
-	InProgressWordBudgetValid  bool
-	InProgressLineCount        int
+	InProgressDraftExists       bool
+	InProgressDraftDiffersFinal bool
+	InProgressCheckpoint        string
+	InProgressBudgetCheckpoint  string
+	InProgressDeAIState         string
+	InProgressConsistencyValid  bool
+	InProgressWordCount         int
+	InProgressRecommendedMin    int
+	InProgressRecommendedMax    int
+	InProgressWordMin           int
+	InProgressWordMax           int
+	InProgressWordBudgetValid   bool
+	InProgressLineCount         int
 }
 
 const (
@@ -544,8 +545,17 @@ func writerBudgetCompletedSegment(checkpoint string) (int, bool) {
 
 func writerResumeRouteApplicable(s State, instruction *Instruction) bool {
 	progress := s.Progress
+	resumableFlow := progress != nil &&
+		progress.Flow != domain.FlowPolishing && len(progress.PendingRewrites) == 0
+	if progress != nil && len(progress.PendingRewrites) > 0 {
+		// A queued rewrite/polish must make a durable prose change before
+		// recovery may skip its full instruction. Once the draft differs from
+		// the committed chapter, resume from persisted gates after provider
+		// failures instead of restarting the entire rewrite on every retry.
+		resumableFlow = s.InProgressDraftDiffersFinal
+	}
 	return instruction != nil && progress != nil && instruction.Agent == "writer" &&
-		progress.Flow != domain.FlowPolishing && len(progress.PendingRewrites) == 0 &&
+		resumableFlow &&
 		progress.InProgressChapter > 0 && instruction.Chapter == progress.InProgressChapter &&
 		s.InProgressDraftExists
 }

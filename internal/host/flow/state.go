@@ -156,6 +156,9 @@ func loadWriterResumeState(s *State, st *storepkg.Store, progress *domain.Progre
 		return
 	}
 	s.InProgressDraftExists = true
+	if final, finalErr := st.Drafts.LoadChapterText(chapter); finalErr == nil {
+		s.InProgressDraftDiffersFinal = draft != final
+	}
 	s.InProgressWordCount = len([]rune(draft))
 	s.InProgressLineCount = len(strings.Split(draft, "\n"))
 	draftSHA := storepkg.TextSHA256(draft)
