@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `1dac3b5` `fix: clarify manuscript chapter selector`:
+  replaces the always-editable manuscript chapter combobox field with a
+  button-based select trigger and chevron, moves chapter search into the opened
+  dropdown, preserves keyboard and filtered selection, updates component and
+  browser regressions, and rebuilds embedded Web assets. Four focused Vitest
+  cases, the production build, and an installed-Chrome fixture check pass.
 - 2026-07-29 `1504126` `fix: distinguish temporary style edit busy state`:
   separates permanent post-writing style locks from temporary non-writing
   background activity, adds backend/frontend regressions, rebuilds the embedded

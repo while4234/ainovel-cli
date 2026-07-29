@@ -25,7 +25,7 @@ afterEach(async () => {
 
 async function render(onSelect = vi.fn()) {
   await act(async () => root.render(<ChapterCombobox chapters={chapters} selectedId="c1" onSelect={onSelect} />));
-  return { input: container.querySelector('[role="combobox"]'), onSelect };
+  return { trigger: container.querySelector('[role="combobox"]'), onSelect };
 }
 
 function setInputValue(input, value) {
@@ -34,24 +34,36 @@ function setInputValue(input, value) {
 }
 
 describe('ChapterCombobox', () => {
-  it('opens all chapters and supports Arrow, Home/End, Enter, and Escape without losing focus', async () => {
-    const { input, onSelect } = await render();
-    await act(async () => input.focus());
-    expect(input.getAttribute('aria-expanded')).toBe('true');
+  it('renders a select-like trigger instead of an editable text field', async () => {
+    const { trigger } = await render();
+    expect(trigger.tagName).toBe('BUTTON');
+    expect(trigger.textContent).toContain('第 1 章');
+    expect(container.querySelector('[aria-label="搜索章节"]')).toBeNull();
+  });
+
+  it('opens all chapters and supports Arrow, Home/End, Enter, and Escape', async () => {
+    const { trigger, onSelect } = await render();
+    await act(async () => trigger.click());
+    const input = container.querySelector('[aria-label="搜索章节"]');
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelectorAll('[role="option"]')).toHaveLength(3);
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })));
     expect(input.getAttribute('aria-activedescendant')).toContain('option-2');
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSelect).toHaveBeenCalledWith('c3');
-    expect(document.activeElement).toBe(input);
-    await act(async () => { input.focus(); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-    expect(input.getAttribute('aria-expanded')).toBe('false');
-    expect(document.activeElement).toBe(input);
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => trigger.click());
+    const reopenedInput = container.querySelector('[aria-label="搜索章节"]');
+    await act(async () => reopenedInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
   });
 
   it('filters duplicate titles in formal order and never switches on no match or out-of-range input', async () => {
-    const { input, onSelect } = await render();
-    await act(async () => { input.focus(); setInputValue(input, '雨夜'); });
+    const { trigger, onSelect } = await render();
+    await act(async () => trigger.click());
+    const input = container.querySelector('[aria-label="搜索章节"]');
+    await act(async () => setInputValue(input, '雨夜'));
     expect([...container.querySelectorAll('[role="option"]')].map((option) => option.textContent)).toEqual(expect.arrayContaining([expect.stringContaining('第 2 章'), expect.stringContaining('第 3 章')]));
     await act(async () => { setInputValue(input, '999'); });
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
@@ -60,8 +72,10 @@ describe('ChapterCombobox', () => {
   });
 
   it('supports mouse selection after Chinese-number input', async () => {
-    const { input, onSelect } = await render();
-    await act(async () => { input.focus(); setInputValue(input, '第二章'); });
+    const { trigger, onSelect } = await render();
+    await act(async () => trigger.click());
+    const input = container.querySelector('[aria-label="搜索章节"]');
+    await act(async () => setInputValue(input, '第二章'));
     const option = container.querySelector('[role="option"]');
     expect(option.textContent).toContain('第 2 章');
     await act(async () => option.click());

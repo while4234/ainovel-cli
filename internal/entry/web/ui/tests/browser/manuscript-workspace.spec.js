@@ -83,14 +83,18 @@ test('桌面正文约 920px，章节组合框支持三种章号格式并在稿�
 
   const combobox = page.getByRole('combobox', { name: '选择章节' });
   for (const value of ['2', '第2章', '第二章']) {
-    await combobox.fill(value);
+    await combobox.click();
+    const search = page.getByRole('searchbox', { name: '搜索章节' });
+    await search.fill(value);
     await expect(page.getByRole('option', { name: /第 2 章/ })).toBeVisible();
-    await combobox.press('Enter');
+    await search.press('Enter');
     await expect(page.getByRole('heading', { name: /第 2 章/ })).toBeVisible();
   }
-  await combobox.fill('999');
+  await combobox.click();
+  const search = page.getByRole('searchbox', { name: '搜索章节' });
+  await search.fill('999');
   await expect(page.getByText('未找到匹配章节')).toBeVisible();
-  await combobox.press('Enter');
+  await search.press('Enter');
   await expect(page.getByRole('heading', { name: /第 2 章/ })).toBeVisible();
 
   await page.getByRole('tab', { name: '润色' }).click();

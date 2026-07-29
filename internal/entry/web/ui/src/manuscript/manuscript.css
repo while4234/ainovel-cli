@@ -258,7 +258,6 @@
   font-weight: 650;
 }
 
-.chapter-combobox input,
 .expansion-form textarea,
 .expansion-form select,
 .manuscript-revision-controls textarea,
@@ -273,7 +272,6 @@
   outline: none;
 }
 
-.chapter-combobox input:focus,
 .expansion-form textarea:focus,
 .expansion-form select:focus,
 .manuscript-revision-controls textarea:focus,
@@ -315,6 +313,49 @@
   font-weight: 650;
 }
 
+.chapter-combobox-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 42px;
+  gap: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px 8px 12px;
+  background: linear-gradient(180deg, var(--surface-solid), var(--surface-subtle));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+  color: var(--text);
+  font-weight: 650;
+  text-align: left;
+}
+
+.chapter-combobox-trigger:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-solid);
+}
+
+.chapter-combobox-trigger:focus-visible,
+.chapter-combobox-trigger[aria-expanded="true"] {
+  border-color: var(--accent);
+  box-shadow: var(--focus);
+}
+
+.chapter-combobox-trigger .placeholder {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.chapter-combobox-trigger svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 160ms ease;
+}
+
+.chapter-combobox-trigger[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
 .chapter-combobox-popover {
   position: absolute;
   z-index: 20;
@@ -326,6 +367,37 @@
   border-radius: 9px;
   background: var(--surface-solid);
   box-shadow: var(--shadow-md);
+}
+
+.chapter-combobox-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: 8px;
+}
+
+.chapter-combobox-search svg {
+  position: absolute;
+  left: 18px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.chapter-combobox-search input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface-solid);
+  color: var(--text);
+  padding: 7px 10px 7px 32px;
+  outline: none;
+}
+
+.chapter-combobox-search input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus);
 }
 
 .chapter-combobox [role="listbox"] {

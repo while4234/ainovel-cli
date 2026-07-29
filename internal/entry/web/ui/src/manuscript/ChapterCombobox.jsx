@@ -1,46 +1,53 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ChevronDown, Search } from 'lucide-react';
 import { chapterOptionLabel, filterChapters } from './chapter-search.js';
 
 export function ChapterCombobox({ chapters = [], selectedId = '', disabled = false, onSelect }) {
   const selected = chapters.find((chapter) => chapter.stable_id === selectedId) || null;
   const selectedLabel = chapterOptionLabel(selected);
-  const [inputValue, setInputValue] = useState(selectedLabel);
+  const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
-  const [dirty, setDirty] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  const inputRef = useRef(null);
+  const triggerRef = useRef(null);
+  const searchRef = useRef(null);
   const listboxId = useId();
+  const triggerId = `${listboxId}-trigger`;
   const optionId = (index) => `${listboxId}-option-${index}`;
-  const matches = useMemo(() => filterChapters(chapters, dirty ? inputValue : ''), [chapters, dirty, inputValue]);
+  const matches = useMemo(() => filterChapters(chapters, query), [chapters, query]);
 
   useEffect(() => {
-    if (!open) setInputValue(selectedLabel);
-  }, [open, selectedLabel]);
+    if (!open) return;
+    searchRef.current?.focus();
+  }, [open]);
 
   useEffect(() => {
     if (!open || !matches.length) return;
     const selectedIndex = matches.findIndex((chapter) => chapter.stable_id === selectedId);
     setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
-  }, [open, dirty, selectedId]);
+  }, [open, query, selectedId]);
 
-  function close() {
+  function close({ restoreFocus = false } = {}) {
     setOpen(false);
-    setDirty(false);
-    setInputValue(selectedLabel);
+    setQuery('');
+    if (restoreFocus) queueMicrotask(() => triggerRef.current?.focus());
+  }
+
+  function openList() {
+    if (disabled) return;
+    setQuery('');
+    setOpen(true);
   }
 
   function choose(chapter) {
     if (!chapter) return;
     onSelect?.(chapter.stable_id);
-    setOpen(false);
-    setDirty(false);
-    setInputValue(chapterOptionLabel(chapter));
+    close({ restoreFocus: true });
   }
 
-  function keyDown(event) {
+  function searchKeyDown(event) {
     if (event.key === 'Escape') {
       if (open) event.preventDefault();
-      close();
+      close({ restoreFocus: true });
       return;
     }
     if (event.key === 'Enter') {
@@ -56,32 +63,49 @@ export function ChapterCombobox({ chapters = [], selectedId = '', disabled = fal
     else if (event.key === 'End') next = matches.length - 1;
     else return;
     event.preventDefault();
-    if (!open) setOpen(true);
     setActiveIndex(Math.max(0, next));
     queueMicrotask(() => document.getElementById(optionId(Math.max(0, next)))?.scrollIntoView({ block: 'nearest' }));
   }
 
   return <div className="chapter-combobox">
-    <label htmlFor={`${listboxId}-input`}>选择章节</label>
-    <input
-      ref={inputRef}
-      id={`${listboxId}-input`}
-      type="text"
+    <label htmlFor={triggerId}>选择章节</label>
+    <button
+      ref={triggerRef}
+      id={triggerId}
+      className="chapter-combobox-trigger"
+      type="button"
       role="combobox"
-      aria-autocomplete="list"
+      aria-haspopup="listbox"
       aria-controls={listboxId}
       aria-expanded={open}
-      aria-activedescendant={open && matches.length ? optionId(activeIndex) : undefined}
-      autoComplete="off"
       disabled={disabled}
-      placeholder="输入 1、第一章或标题"
-      value={inputValue}
+      onClick={() => open ? close() : openList()}
       onBlur={() => globalThis.setTimeout(() => { if (!document.activeElement?.closest?.('.chapter-combobox')) close(); }, 0)}
-      onChange={(event) => { setInputValue(event.target.value); setDirty(true); setOpen(true); setActiveIndex(0); }}
-      onFocus={(event) => { setDirty(false); setOpen(true); event.currentTarget.select(); }}
-      onKeyDown={keyDown}
-    />
+      onKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        openList();
+      }}
+    >
+      <span className={selectedLabel ? '' : 'placeholder'}>{selectedLabel || '请选择章节'}</span>
+      <ChevronDown size={16} aria-hidden="true" />
+    </button>
     {open ? <div className="chapter-combobox-popover">
+      <div className="chapter-combobox-search">
+        <Search size={15} aria-hidden="true" />
+        <input
+          ref={searchRef}
+          type="search"
+          aria-label="搜索章节"
+          aria-controls={listboxId}
+          aria-activedescendant={matches.length ? optionId(activeIndex) : undefined}
+          autoComplete="off"
+          placeholder="输入章号或标题搜索"
+          value={query}
+          onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }}
+          onKeyDown={searchKeyDown}
+        />
+      </div>
       <div id={listboxId} role="listbox" aria-label="章节选择结果">
         {matches.length ? matches.map((chapter, index) => <button
           id={optionId(index)}
