@@ -46,6 +46,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `1504126` `fix: distinguish temporary style edit busy state`:
+  separates permanent post-writing style locks from temporary non-writing
+  background activity, adds backend/frontend regressions, rebuilds the embedded
+  UI, restarts port 9898, and verifies `插翅难飞v2` can be changed to
+  `romance` after rollback.
 - 2026-07-29 `4e201b1` `test: classify consistency model calls`:
   adds the existing `internal/tools/check_consistency.go` direct model boundary
   to the explicit production-call inventory. Full `internal/modeldiag` and
