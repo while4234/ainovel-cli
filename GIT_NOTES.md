@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `pending` `fix: streamline chapter de-ai recovery`:
+  keeps the first and final consistency gates while allowing digest-bound
+  `de_ai_batch_repair` checkpoints to re-run only `check_de_ai` inside the
+  bounded repair loop. Transient gateway `Invalid Argument` retries increase
+  from two to five attempts before Host redispatch. Affected bootstrap, agents,
+  host-flow, and tools tests pass, including the full tools package.
 - 2026-07-29 `f9280dc` `fix: clarify manuscript chapter selector`:
   replaces the always-editable manuscript chapter combobox field with a
   button-based select trigger and chevron, moves chapter search into the opened

@@ -392,14 +392,16 @@ func TestRuntimeAutoSwitchNetworkRetriesBeforeSwitching(t *testing.T) {
 	}
 }
 
-func TestRuntimeAutoSwitchRetriesGenericGatewayInvalidArgumentOnce(t *testing.T) {
+func TestRuntimeAutoSwitchRetriesGenericGatewayInvalidArgumentWithinBound(t *testing.T) {
 	restoreRuntimeFallbackWait(t)
+	errs := make([]error, transientInvalidArgumentMaxAttempts-1)
+	for index := range errs {
+		errs[index] = litellm.NewHTTPError("openai", 400, `{"error":{"message":"Invalid Argument"}}`)
+	}
 	first := &scriptedRuntimeModel{
 		provider: "deepseek-proxy",
 		model:    "deepseek-v4-pro",
-		errs: []error{
-			litellm.NewHTTPError("openai", 400, `{"error":{"message":"Invalid Argument"}}`),
-		},
+		errs:     errs,
 	}
 	primary := NewSwappableModel("deepseek-proxy", "deepseek-v4-pro", first)
 	controller := &runtimeFallbackControllerStub{}

@@ -478,7 +478,7 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		LastCompleted:              4,
 		InProgressDraftExists:      true,
 		InProgressCheckpoint:       "plan",
-		InProgressDeAIState:        writerDeAIStateFailed,
+		InProgressDeAIState:        writerDeAIStateStale,
 		InProgressConsistencyValid: false,
 		InProgressWordCount:        3300,
 		InProgressWordMin:          2550,
@@ -499,7 +499,7 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 	for _, want := range []string{
 		"恢复第 5 章现有草稿",
 		"checkpoint=plan",
-		"de_ai=failed",
+		"de_ai=stale",
 		"word_count=3300",
 		"word_budget=2550-3703",
 		"禁止调用 plan_chapter 或 draft_chapter",
@@ -524,7 +524,7 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 	}
 }
 
-func TestRouteResume_UsesPersistedDeAIRepairWithoutRepeatingCurrentConsistency(t *testing.T) {
+func TestRouteResume_UsesPersistedDeAIRepairWithoutRepeatingConsistency(t *testing.T) {
 	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
 	p.TotalChapters = 20
 	p.InProgressChapter = 5
@@ -548,21 +548,71 @@ func TestRouteResume_UsesPersistedDeAIRepairWithoutRepeatingCurrentConsistency(t
 	for _, want := range []string{
 		"去AI化修订",
 		"consistency_current=true",
-		"不要在首次修订前重复调用 check_consistency",
-		`novel_context(chapter=5)`,
 		`read_chapter(chapter=5, source="draft")`,
 		"pending_de_ai_repair",
-		"如果 pending_de_ai_repair 缺失",
-		"禁止调用 repair_de_ai_batch",
-		"必须立即依次调用 check_consistency、check_de_ai",
+		"若 pending_de_ai_repair 缺失",
+		"只调用一次 check_de_ai(chapter=5)",
 		"repair_de_ai_batch",
-		"持久化报告",
-		"禁止 plan_chapter、draft_chapter",
-		"为了总字数预算删减有效内容",
+		"每批修订后只复检 check_de_ai",
+		"去AI通过后再统一运行一次最终 check_consistency",
+		"不要调用 novel_context、check_consistency、plan_chapter、draft_chapter",
 	} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("de-AI recovery task missing %q: %s", want, got.Task)
 		}
+	}
+}
+
+func TestRouteResume_RechecksOnlyDeAIAfterBoundedRepairBatch(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	got := RouteResume(State{
+		Progress:                   p,
+		LastCompleted:              4,
+		InProgressDraftExists:      true,
+		InProgressCheckpoint:       "de_ai_batch_repair",
+		InProgressDeAIState:        writerDeAIStateStale,
+		InProgressConsistencyValid: false,
+		InProgressWordCount:        3982,
+		InProgressWordMin:          2000,
+		InProgressWordMax:          6250,
+		InProgressWordBudgetValid:  true,
+	})
+	if got == nil || got.Agent != "writer" || got.Chapter != 5 || !got.ResumeRecovery {
+		t.Fatalf("expected bounded de-AI recheck, got %+v", got)
+	}
+	if !strings.Contains(got.Task, "check_de_ai(chapter=5) exactly once") {
+		t.Fatalf("de-AI recheck task missing exact gate: %s", got.Task)
+	}
+	for _, forbidden := range []string{"Run check_consistency", "Call novel_context", "Call read_chapter"} {
+		if strings.Contains(got.Task, forbidden) {
+			t.Fatalf("de-AI recheck mixed forbidden work %q: %s", forbidden, got.Task)
+		}
+	}
+}
+
+func TestRouteResume_RunsFinalConsistencyOnceAfterDeAIPasses(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	got := RouteResume(State{
+		Progress:                   p,
+		LastCompleted:              4,
+		InProgressDraftExists:      true,
+		InProgressCheckpoint:       "de_ai_check",
+		InProgressDeAIState:        writerDeAIStatePassed,
+		InProgressConsistencyValid: false,
+		InProgressWordCount:        3982,
+		InProgressWordMin:          2000,
+		InProgressWordMax:          6250,
+		InProgressWordBudgetValid:  true,
+	})
+	if got == nil || got.Agent != "writer" || got.Chapter != 5 || !got.ResumeRecovery {
+		t.Fatalf("expected final consistency recovery, got %+v", got)
+	}
+	if !strings.Contains(got.Task, "Run check_consistency(chapter=5) once") {
+		t.Fatalf("final consistency task missing exact gate: %s", got.Task)
 	}
 }
 

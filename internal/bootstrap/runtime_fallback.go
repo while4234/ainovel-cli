@@ -13,7 +13,7 @@ import (
 )
 
 const RuntimeFallbackPoolReasonPrefix = "runtime_fallback_pool"
-const transientInvalidArgumentMaxAttempts = 2
+const transientInvalidArgumentMaxAttempts = 5
 
 type RuntimeFallbackTarget struct {
 	Provider string

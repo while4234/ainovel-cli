@@ -1143,9 +1143,7 @@ func attachPendingDeAIRepair(st *store.Store, chapter int, result json.RawMessag
 		return result, nil
 	}
 	checkpoint := st.Checkpoints.LatestByStep(domain.ChapterScope(chapter), "consistency_check")
-	if checkpoint == nil || checkpoint.Digest != "sha256:"+audit.DraftSHA256 {
-		return result, nil
-	}
+	consistencyCurrent := checkpoint != nil && checkpoint.Digest == "sha256:"+audit.DraftSHA256
 	plan := audit.Report.RepairPlan()
 	if len(plan.Batches) == 0 {
 		return result, nil
@@ -1170,11 +1168,11 @@ func attachPendingDeAIRepair(st *store.Store, chapter int, result json.RawMessag
 	}
 	payload["pending_de_ai_repair"] = map[string]any{
 		"draft_sha256":                          audit.DraftSHA256,
-		"consistency_current":                   true,
+		"consistency_current":                   consistencyCurrent,
 		"do_not_repeat_consistency_before_edit": true,
 		"batch":                                 batch,
 		"findings":                              findings,
-		"next_action":                           "Use the exact examples above to call repair_de_ai_batch now. After the edit, rerun check_consistency and check_de_ai on the changed draft.",
+		"next_action":                           "Use the exact examples above to call repair_de_ai_batch now. After the edit, rerun only check_de_ai. Run check_consistency once after de-AI passes.",
 	}
 	return json.Marshal(payload)
 }

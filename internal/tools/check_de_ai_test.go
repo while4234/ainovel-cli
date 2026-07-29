@@ -85,6 +85,32 @@ func TestCheckDeAIRequiresCurrentConsistencyReceipt(t *testing.T) {
 	}
 }
 
+func TestCheckDeAIAllowsDirectRecheckAfterBoundedRepairBatch(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	const original = "# 第一章\n\n林逸飞没有回答——门外有人敲了一下。\n\n林逸飞没有回答——桌上的杯子晃了晃。\n\n林逸飞没有回答——吴宇申把文件推过来。\n\n林逸飞没有回答——窗帘动了一下。"
+	if err := s.Drafts.SaveDraft(1, original); err != nil {
+		t.Fatal(err)
+	}
+	recordCurrentConsistency(t, s, 1)
+	if _, err := NewCheckDeAITool(s).Execute(t.Context(), json.RawMessage(`{"chapter":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRepairDeAIBatchTool(s).Execute(t.Context(), json.RawMessage(`{
+		"chapter":1,
+		"repairs":[
+			{"old_string":"林逸飞没有回答——门外有人敲了一下。","new_string":"门外传来两下轻敲，林逸飞把视线移向门缝。"}
+		]
+	}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewCheckDeAITool(s).Execute(t.Context(), json.RawMessage(`{"chapter":1}`)); err != nil {
+		t.Fatalf("bounded de-AI repair should permit direct de-AI recheck: %v", err)
+	}
+}
+
 func TestCheckDeAIReturnsCanonicalCommitContext(t *testing.T) {
 	characters := []domain.Character{
 		{ID: "lin_shuran", Name: "林舒然"},

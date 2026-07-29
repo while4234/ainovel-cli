@@ -40,7 +40,7 @@ func NewCheckDeAITool(store *store.Store) *CheckDeAITool { return &CheckDeAITool
 
 func (t *CheckDeAITool) Name() string { return "check_de_ai" }
 func (t *CheckDeAITool) Description() string {
-	return "独立去AI化审校：仅在当前草稿已通过 check_consistency 后运行；除标题泄漏、破折号、排比、模板反应、比喻和缓冲词外，还检查相邻肯否矛盾、同句首连发、连续主语段首、说明书式参数堆砌、房号等数字锚点过度复述和严重碎段；返回可直接定位的原文 examples，修改后必须重新调用。"
+	return "独立去AI化审校：初次运行前当前草稿必须已通过 check_consistency；由 repair_de_ai_batch 产生的受约束精确修订可直接复检，去AI通过后再统一运行一次最终 check_consistency。除标题泄漏、破折号、排比、模板反应、比喻和缓冲词外，还检查相邻肯否矛盾、同句首连发、连续主语段首、说明书式参数堆砌、房号等数字锚点过度复述和严重碎段；返回可直接定位的原文 examples，修改后必须重新调用。"
 }
 func (t *CheckDeAITool) Label() string                          { return "去AI化审校" }
 func (t *CheckDeAITool) ReadOnly(_ json.RawMessage) bool        { return false }
@@ -72,10 +72,13 @@ func (t *CheckDeAITool) Execute(_ context.Context, args json.RawMessage) (json.R
 	if content == "" {
 		return nil, fmt.Errorf("no content found for chapter %d: %w", request.Chapter, errs.ErrToolPrecondition)
 	}
-	if checkpoint := t.store.Checkpoints.LatestByStep(domain.ChapterScope(request.Chapter), "consistency_check"); checkpoint == nil ||
-		checkpoint.Digest != "sha256:"+store.TextSHA256(content) {
+	draftDigest := "sha256:" + store.TextSHA256(content)
+	consistency := t.store.Checkpoints.LatestByStep(domain.ChapterScope(request.Chapter), "consistency_check")
+	latest := t.store.Checkpoints.Latest(domain.ChapterScope(request.Chapter))
+	boundedDeAIRecheck := latest != nil && latest.Step == "de_ai_batch_repair" && latest.Digest == draftDigest
+	if (consistency == nil || consistency.Digest != draftDigest) && !boundedDeAIRecheck {
 		return nil, fmt.Errorf(
-			"第 %d 章当前草稿尚未通过一致性审核。先调用 novel_context(chapter=%d)，逐场景核对章节契约中的时间、地点、视角、人物、事件顺序与不可逆结果，再 read_chapter 并调用 check_consistency；修正全部 critical/error finding 后才能 check_de_ai: %w",
+			"第 %d 章当前草稿尚未通过一致性审核，也不是刚由 repair_de_ai_batch 产生的受约束去AI修订。先调用 novel_context(chapter=%d)，逐场景核对章节契约中的时间、地点、视角、人物、事件顺序与不可逆结果，再 read_chapter 并调用 check_consistency；修正全部 critical/error finding 后才能首次 check_de_ai: %w",
 			request.Chapter, request.Chapter, errs.ErrToolPrecondition,
 		)
 	}

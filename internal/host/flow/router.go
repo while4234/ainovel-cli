@@ -376,14 +376,39 @@ func RouteResume(s State) *Instruction {
 		}
 		return routeWriterBudgetSegment(s, chapter)
 	}
-	if s.InProgressDeAIState == writerDeAIStateFailed && s.InProgressConsistencyValid {
+	if s.InProgressCheckpoint == "de_ai_batch_repair" &&
+		(s.InProgressDeAIState == writerDeAIStateMissing || s.InProgressDeAIState == writerDeAIStateStale) {
 		return &Instruction{
 			Agent: "writer",
 			Task: fmt.Sprintf(
-				"恢复第 %d 章现有草稿的去AI化修订（de_ai=failed，consistency_current=true，word_count=%d，word_budget=%d-%d）。当前草稿已在未改动状态下通过一致性检查，不要在首次修订前重复调用 check_consistency。先调用 novel_context(chapter=%d) 一次，再且只调用一次 read_chapter(chapter=%d, source=\"draft\")。只有 read_chapter 明确返回 pending_de_ai_repair 时，才能依据其中当前首批问题的精确原文 examples 调用一次 repair_de_ai_batch 做 1-8 处有语义判断的精确修订；如果 pending_de_ai_repair 缺失，说明恢复任务已过期或草稿已变化，禁止调用 repair_de_ai_batch，必须立即依次调用 check_consistency、check_de_ai 建立当前草稿的新报告。不要机械替换同义词，不要整章重写。改稿落盘后依次调用 check_consistency、check_de_ai；若 check_de_ai 仍有 repair finding，本轮会在保存审校报告后结束，由 Host 用新的持久化报告派发下一小批，禁止在同一轮重复回读或堆叠旧报告。只有同一版草稿全部通过后，才从最新 check_de_ai.commit_context 复制元数据并 commit_chapter。禁止 plan_chapter、draft_chapter、读取其他章节或为了总字数预算删减有效内容。",
-				chapter, s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax, chapter, chapter,
+				"Resume chapter %d immediately after one persisted repair_de_ai_batch. The draft changed only through a bounded de-AI exact-replacement batch. Do not call novel_context, read_chapter, check_consistency, plan_chapter, draft_chapter, edit_chapter, or commit_chapter in this turn. Call check_de_ai(chapter=%d) exactly once and end this turn. If it still fails, the Host will dispatch the next persisted repair batch. If it passes, the Host will run one final consistency check before commit.",
+				chapter, chapter,
+			),
+			Reason:         fmt.Sprintf("recheck chapter %d de-AI gate after a bounded repair batch", chapter),
+			Chapter:        chapter,
+			ResumeRecovery: true,
+		}
+	}
+	if s.InProgressDeAIState == writerDeAIStateFailed {
+		return &Instruction{
+			Agent: "writer",
+			Task: fmt.Sprintf(
+				"恢复第 %d 章现有草稿的去AI化修订（de_ai=failed，consistency_current=%t，word_count=%d，word_budget=%d-%d）。本轮是受约束的去AI精确修订，不重复运行完整一致性检查。只调用一次 read_chapter(chapter=%d, source=\"draft\")；依据 pending_de_ai_repair 当前首批问题的精确 examples，调用一次 repair_de_ai_batch 做 1-8 处有语义判断的精确修订，然后立即结束本轮。若 pending_de_ai_repair 缺失，禁止修订，只调用一次 check_de_ai(chapter=%d) 刷新当前报告并结束。不要调用 novel_context、check_consistency、plan_chapter、draft_chapter、edit_chapter、commit_chapter，不要读取其他章节，不要机械替换同义词或整章重写。Host 会在每批修订后只复检 check_de_ai；去AI通过后再统一运行一次最终 check_consistency，只有最终提交版本同时通过两项检查才能 commit_chapter。",
+				chapter, s.InProgressConsistencyValid, s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax, chapter, chapter,
 			),
 			Reason:         fmt.Sprintf("恢复第 %d 章持久化去AI化修订批次", chapter),
+			Chapter:        chapter,
+			ResumeRecovery: true,
+		}
+	}
+	if s.InProgressDeAIState == writerDeAIStatePassed && !s.InProgressConsistencyValid {
+		return &Instruction{
+			Agent: "writer",
+			Task: fmt.Sprintf(
+				"Chapter %d has passed check_de_ai on the current draft, but its consistency receipt is stale. Do not modify prose and do not call novel_context, read_chapter, check_de_ai, plan_chapter, draft_chapter, edit_chapter, repair_de_ai_batch, or commit_chapter. Run check_consistency(chapter=%d) once against the contracted scenes. If it passes, end this turn so the Host can perform simulation and commit recovery. If it reports an actionable error, persist that report and end; the Host will dispatch one bounded consistency repair, after which both gates will be rerun.",
+				chapter, chapter,
+			),
+			Reason:         fmt.Sprintf("run one final consistency gate for chapter %d after de-AI passes", chapter),
 			Chapter:        chapter,
 			ResumeRecovery: true,
 		}
