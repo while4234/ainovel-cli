@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-29 `1dac3b5` `fix: clarify manuscript chapter selector`:
+- 2026-07-29 `f9280dc` `fix: clarify manuscript chapter selector`:
   replaces the always-editable manuscript chapter combobox field with a
   button-based select trigger and chevron, moves chapter search into the opened
   dropdown, preserves keyboard and filtered selection, updates component and
