@@ -453,6 +453,57 @@ func (s *LibraryService) SaveSimulationProfileFromProject(manifest ProjectManife
 	return s.SaveSimulationProfile(name, data)
 }
 
+func (s *LibraryService) SyncSimulationProfileFromProject(manifest ProjectManifest) (apiLibraryItem, error) {
+	sourcePath, err := findProjectSimulationProfile(manifest)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return apiLibraryItem{}, fmt.Errorf("read simulation profile: %w", err)
+	}
+	name := strings.TrimSpace(manifest.Name)
+	if name == "" {
+		name = manifest.ID
+	}
+	return s.upsertSimulationProfile(name, data)
+}
+
+func (s *LibraryService) upsertSimulationProfile(name string, data []byte) (apiLibraryItem, error) {
+	displayName, fileName, err := libraryJSONFilename(name)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	portableData, sourceCount, err := portableSimulationProfileData(data)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	if err := os.MkdirAll(s.SimulationDir(), 0o755); err != nil {
+		return apiLibraryItem{}, fmt.Errorf("create simulation library: %w", err)
+	}
+	target, err := safeLibraryTarget(s.SimulationDir(), fileName)
+	if err != nil {
+		return apiLibraryItem{}, err
+	}
+	if err := writeFileReplacing(target, bytes.TrimSpace(portableData)); err != nil {
+		return apiLibraryItem{}, fmt.Errorf("sync simulation profile %s: %w", displayName, err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return apiLibraryItem{}, fmt.Errorf("stat simulation profile %s: %w", displayName, err)
+	}
+	return apiLibraryItem{
+		Name:           displayName,
+		FileName:       fileName,
+		Size:           info.Size(),
+		UpdatedAt:      info.ModTime(),
+		SourceCount:    sourceCount,
+		ProfileVersion: domain.SimulationPortableProfileVersion,
+		HealthState:    simulationPortableHealth(portableData),
+		Migrated:       simulationPortableMigrated(portableData),
+	}, nil
+}
+
 func (s *LibraryService) LoadSimulationProfileIntoProject(manifest ProjectManifest, name string) (apiLibraryItem, string, error) {
 	displayName, fileName, err := libraryJSONFilename(name)
 	if err != nil {
@@ -1253,6 +1304,56 @@ func writeNewFile(path string, data []byte) error {
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("write library file %s: %w", path, err)
+	}
+	return nil
+}
+
+func writeFileReplacing(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Chmod(0o644); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+
+	backupPath := path + ".replace-backup"
+	_ = os.Remove(backupPath)
+	hadExisting := false
+	if _, err := os.Stat(path); err == nil {
+		if err := os.Rename(path, backupPath); err != nil {
+			return err
+		}
+		hadExisting = true
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		if hadExisting {
+			_ = os.Rename(backupPath, path)
+		}
+		return err
+	}
+	if hadExisting {
+		_ = os.Remove(backupPath)
 	}
 	return nil
 }

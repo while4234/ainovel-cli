@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `this commit` `fix: clarify simulation analysis actions`:
+  makes first-time analysis and incremental rescans explicit, disables the
+  primary action when all local corpus files have current reports, preserves
+  signature/content-based zero-call rescans, and automatically creates or
+  replaces the project-named portable library profile only after analysis or
+  synthesis actually changes the image. Focused simulation, full Web, frontend
+  helper, production build, and visual layout checks pass. The running Web
+  service was intentionally not restarted because Chapter 29 was actively
+  generating.
 - 2026-07-29 `4198c3d` `fix: repair co-create drafts after rollback`:
   clears deleted Foundation authority when rolling back to a co-create draft,
   safely repairs the same stale binding in already-rolled-back projects, and

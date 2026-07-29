@@ -192,7 +192,33 @@ func (s *Server) handleProjectSimulateAnalyze(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	if err := session.startSimulateFromDirOwnedAction(projectSimulateDir(manifest), action, finishAction); err != nil {
+	onComplete := func(events []apiSimulationEvent, runErr error) {
+		if runErr != nil || !simulationAnalysisChangedProfile(events) {
+			return
+		}
+		item, syncErr := s.libraries.SyncSimulationProfileFromProject(manifest)
+		if syncErr != nil {
+			session.appendLibraryEvent(
+				"simulation_auto_sync",
+				"仿写画像分析完成，但自动入库失败",
+				syncErr.Error(),
+				"warn",
+			)
+			return
+		}
+		session.appendLibraryEvent(
+			"simulation_auto_sync",
+			fmt.Sprintf("已自动同步仿写画像库：%s", item.Name),
+			fmt.Sprintf("source_count=%d", item.SourceCount),
+			"success",
+		)
+	}
+	if err := session.startSimulateFromDirOwnedActionWithCompletion(
+		projectSimulateDir(manifest),
+		action,
+		finishAction,
+		onComplete,
+	); err != nil {
 		writeSimulationActionError(w, err, nil)
 		return
 	}
@@ -214,6 +240,15 @@ func (s *Server) handleProjectSimulateAnalyze(w http.ResponseWriter, r *http.Req
 		"running":    true,
 		"accepted":   true,
 	})
+}
+
+func simulationAnalysisChangedProfile(events []apiSimulationEvent) bool {
+	for _, event := range events {
+		if event.Stage == string(sim.StageAnalyze) || event.Stage == string(sim.StageMerge) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleProjectSimulateImport(w http.ResponseWriter, r *http.Request, id string) {

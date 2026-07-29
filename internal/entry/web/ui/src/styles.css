@@ -2166,9 +2166,40 @@ h2 {
 
 .simulation-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   min-width: 0;
   gap: 8px;
+}
+
+.simulation-next-step {
+  margin: 0;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.simulation-next-step.ready {
+  border-color: rgba(0, 120, 120, 0.32);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.simulation-next-step strong {
+  color: var(--text-strong);
+}
+
+.simulation-running-note {
+  margin: 0;
+  border-left: 3px solid var(--accent);
+  padding: 7px 9px;
+  background: var(--accent-soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .side-content .tool-button,

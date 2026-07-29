@@ -15,6 +15,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/host/sim"
 )
 
 type testMultipartFile struct {
@@ -403,6 +404,111 @@ func TestProjectSimulateAnalyzeUsesProjectSimulateDir(t *testing.T) {
 	}
 	if strings.Contains(filepath.Clean(fake.simulateDir), filepath.Clean("D:\\ainovel\\simulate")) {
 		t.Fatalf("simulate dir should not point at repository simulate: %q", fake.simulateDir)
+	}
+}
+
+func TestProjectSimulationRescanAnalyzesStaleSourcesAndAutoSyncsLibrary(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+	manifest, err := server.store.CreateProject("旧语料画像")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.simulateEvents = []sim.Event{
+		{Stage: sim.StageAnalyze, Current: 1, Total: 1, Message: "reanalyzed stale source"},
+		{Stage: sim.StageDone, Message: "simulation complete"},
+	}
+	if err := os.WriteFile(filepath.Join(manifest.RootDir, "simulate", "source.txt"), []byte("old corpus"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	profileDir := filepath.Join(manifest.OutputDir, "meta")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	profileData, err := domain.MarshalSimulationProfile(testWebSimulationProfile("source.txt", "new-profile"))
+	if err != nil {
+		t.Fatalf("MarshalSimulationProfile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "simulation_profile.json"), profileData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldLibraryData, err := domain.MarshalSimulationProfile(testWebSimulationProfile("stale.txt", "old-profile"))
+	if err != nil {
+		t.Fatalf("MarshalSimulationProfile old: %v", err)
+	}
+	if _, err := server.libraries.SaveSimulationProfile(manifest.Name, oldLibraryData); err != nil {
+		t.Fatalf("seed simulation library: %v", err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+manifest.ID+"/simulate/analyze",
+		strings.NewReader(`{"action":"scan"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rescan status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	synced := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(filepath.Join(runtimeRoot, simulationLibraryDirName, manifest.Name+".json"))
+		if readErr == nil && bytes.Contains(data, []byte("new-profile")) {
+			synced = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !synced {
+		session, _, openErr := server.sessions.Open(manifest.ID)
+		if openErr != nil {
+			t.Fatalf("open session after auto sync timeout: %v", openErr)
+		}
+		session.mu.Lock()
+		history := append([]WebEvent(nil), session.history...)
+		session.mu.Unlock()
+		eventDetails := make([]string, 0, len(history))
+		for _, event := range history {
+			if event.Event != nil {
+				eventDetails = append(eventDetails, fmt.Sprintf(
+					"%s/%s: %s (%s)",
+					event.Event.Category,
+					event.Event.Kind,
+					event.Event.Summary,
+					event.Event.Detail,
+				))
+			}
+		}
+		t.Fatalf("simulation profile was not auto-synced; events=%v", eventDetails)
+	}
+	fake.mu.Lock()
+	action := fake.simulateAction
+	fake.mu.Unlock()
+	if action != sim.ActionScan {
+		t.Fatalf("simulation action = %q, want %q", action, sim.ActionScan)
+	}
+}
+
+func TestSimulationAnalysisChangedProfileIgnoresUpToDateScan(t *testing.T) {
+	upToDate := []apiSimulationEvent{
+		{Stage: string(sim.StageScan), Message: "scanned sources"},
+		{Stage: string(sim.StageDone), Message: "画像已是最新，语料与分析签名均未变化"},
+	}
+	if simulationAnalysisChangedProfile(upToDate) {
+		t.Fatal("up-to-date scan should not trigger a library rewrite")
+	}
+	if !simulationAnalysisChangedProfile([]apiSimulationEvent{{Stage: string(sim.StageAnalyze)}}) {
+		t.Fatal("source analysis should trigger a library sync")
+	}
+	if !simulationAnalysisChangedProfile([]apiSimulationEvent{{Stage: string(sim.StageMerge)}}) {
+		t.Fatal("profile resynthesis should trigger a library sync")
 	}
 }
 

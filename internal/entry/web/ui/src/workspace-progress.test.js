@@ -17,6 +17,7 @@ import {
   canRunAdaptationAnalysis,
   canSaveAnalyzedNovelToLibrary,
   canRunSimulationAnalysis,
+  canRunSimulationPrimaryAnalysis,
   clampCoCreateDecisionPageIndex,
   coCreateDecisionOptionLetter,
   coCreateDecisionRecommendedLetter,
@@ -53,6 +54,9 @@ import {
   resolveVisibleDefaultModel,
   restoreSimulationProjectState,
   restoreProjectWorkbenchSnapshot,
+  simulationAnalysisActionLabel,
+  simulationAnalysisNextStep,
+  simulationProfileDisplayState,
   simulationFilesFromResponse,
   simulationCheckStateLabel,
   simulationContractStatusLabel,
@@ -456,6 +460,115 @@ describe('workspace progress state', () => {
       busy: true,
       simulation: { analysisStatus: 'idle', importStatus: 'idle' }
     })).toBe(true);
+  });
+
+  it('makes the first simulation analysis action explicit after corpus upload', () => {
+    const activeProject = { id: 'project-1' };
+    expect(canRunSimulationPrimaryAnalysis({
+      activeProject,
+      profile: { loaded: false },
+      simulation: { files: [{ name: 'new.txt' }] }
+    })).toBe(true);
+    expect(simulationAnalysisActionLabel({
+      analysisStatus: 'idle',
+      fileCount: 1,
+      profileLoaded: false
+    })).toBe('开始分析并入库');
+    expect(simulationAnalysisNextStep({
+      fileCount: 56,
+      profileLoaded: false
+    })).toBe('已准备 56 份语料，请点击“开始分析并入库”生成画像并自动保存到画像库。');
+
+    expect(simulationAnalysisActionLabel({
+      analysisStatus: 'done',
+      fileCount: 56,
+      profileLoaded: true,
+      scanAvailable: true
+    })).toBe('重新扫描并入库');
+    expect(simulationAnalysisNextStep({
+      fileCount: 56,
+      profileLoaded: true,
+      scanAvailable: true
+    })).toBe('已准备 56 份语料；点击“重新扫描并入库”只分析旧版本、新增或变化的语料，并自动更新画像库。');
+    expect(simulationAnalysisActionLabel({
+      analysisStatus: 'running',
+      fileCount: 56,
+      profileLoaded: false
+    })).toBe('正在分析并入库…');
+  });
+
+  it('disables repeat simulation scans after the current corpus is fully analyzed', () => {
+    const activeProject = { id: 'project-1' };
+    const currentProfile = {
+      loaded: true,
+      healthState: 'fresh',
+      sourceCount: 2,
+      reportCount: 2
+    };
+    expect(canRunSimulationPrimaryAnalysis({
+      activeProject,
+      profile: currentProfile,
+      simulation: { files: [{ name: 'a.txt' }, { name: 'b.txt' }] }
+    })).toBe(false);
+    expect(simulationAnalysisActionLabel({
+      fileCount: 2,
+      profileLoaded: true,
+      scanAvailable: false
+    })).toBe('画像已是最新');
+    expect(simulationAnalysisNextStep({
+      fileCount: 2,
+      profileLoaded: true,
+      scanAvailable: false
+    })).toBe('全部 2 份语料已按当前流程完成分析，无需重复扫描。');
+
+    expect(canRunSimulationPrimaryAnalysis({
+      activeProject,
+      profile: currentProfile,
+      simulation: { files: [{ name: 'a.txt' }, { name: 'b.txt' }, { name: 'new.txt' }] }
+    })).toBe(true);
+    expect(canRunSimulationPrimaryAnalysis({
+      activeProject,
+      profile: { ...currentProfile, healthState: 'stale' },
+      simulation: { files: [{ name: 'a.txt' }, { name: 'b.txt' }] }
+    })).toBe(true);
+  });
+
+  it('shows active reanalysis instead of the stale previous profile', () => {
+    expect(simulationProfileDisplayState({
+      analysisStatus: 'running',
+      profile: {
+        loaded: true,
+        healthState: 'stale',
+        healthReasons: ['synthesis_pending'],
+        sourceCount: 10,
+        reportCount: 10
+      },
+      latestAnalysis: {
+        stage: 'analyze',
+        current: 11,
+        total: 56,
+        message: '分析仿写语料 11/56'
+      }
+    })).toEqual({
+      running: true,
+      tone: 'running',
+      label: '正在重新分析',
+      summary: '分析仿写语料 11/56'
+    });
+    expect(simulationProfileDisplayState({
+      analysisStatus: 'done',
+      profile: {
+        loaded: true,
+        healthState: 'fresh',
+        sourceCount: 56,
+        reportCount: 56
+      }
+    })).toEqual({
+      running: false,
+      tone: 'done',
+      label: '新鲜可用',
+      summary: '新鲜可用 · 56/56 篇报告'
+    });
   });
 
   it('keeps adaptation analysis available while simulation preparation is running', () => {

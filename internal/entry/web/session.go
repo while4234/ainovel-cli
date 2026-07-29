@@ -1585,10 +1585,24 @@ func (s *ProjectSession) startSimulateFromDirOwned(dir string, unlock func()) er
 }
 
 func (s *ProjectSession) startSimulateFromDirOwnedAction(dir, action string, unlock func()) error {
+	return s.startSimulateFromDirOwnedActionWithCompletion(dir, action, unlock, nil)
+}
+
+func (s *ProjectSession) startSimulateFromDirOwnedActionWithCompletion(
+	dir string,
+	action string,
+	unlock func(),
+	onComplete func([]apiSimulationEvent, error),
+) error {
 	s.AppendSnapshot()
 	go func() {
+		var completionEvents []apiSimulationEvent
+		var completionErr error
 		defer func() {
 			unlock()
+			if onComplete != nil {
+				onComplete(completionEvents, completionErr)
+			}
 			s.AppendSnapshot()
 		}()
 		var events <-chan sim.Event
@@ -1599,17 +1613,20 @@ func (s *ProjectSession) startSimulateFromDirOwnedAction(dir, action string, unl
 			events, err = s.host.SimulateFromDir(context.Background(), dir)
 		}
 		if err != nil {
+			completionErr = err
 			s.appendSimulationActionError(sim.StageError, "仿写画像分析启动失败", err)
 			return
 		}
 		if events == nil {
-			s.appendSimulationActionError(sim.StageError, "仿写画像分析失败", fmt.Errorf("simulation event stream is nil"))
+			completionErr = fmt.Errorf("simulation event stream is nil")
+			s.appendSimulationActionError(sim.StageError, "仿写画像分析失败", completionErr)
 			return
 		}
-		if _, err := s.consumeSimulationEvents(context.Background(), events); err != nil {
+		completionEvents, completionErr = s.consumeSimulationEvents(context.Background(), events)
+		if completionErr != nil {
 			var runErr simulationRunError
-			if !errors.As(err, &runErr) {
-				s.appendSimulationActionError(sim.StageError, "仿写画像分析失败", err)
+			if !errors.As(completionErr, &runErr) {
+				s.appendSimulationActionError(sim.StageError, "仿写画像分析失败", completionErr)
 			}
 		}
 	}()

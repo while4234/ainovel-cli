@@ -1785,6 +1785,8 @@ type fakeProjectHost struct {
 	continueCalls                          int
 	steerCalls                             int
 	simulateCalls                          int
+	simulateAction                         string
+	simulateEvents                         []sim.Event
 	importCalls                            int
 	importNovelCalls                       int
 	adaptAnalyzeCalls                      int
@@ -2425,13 +2427,23 @@ func (f *fakeProjectHost) ImportFrom(_ context.Context, opts imp.Options) (<-cha
 }
 
 func (f *fakeProjectHost) SimulateFromDir(_ context.Context, dir string) (<-chan sim.Event, error) {
+	return f.simulateFromDir(dir, sim.ActionScan)
+}
+
+func (f *fakeProjectHost) SimulateFromDirWithAction(_ context.Context, dir, action string) (<-chan sim.Event, error) {
+	return f.simulateFromDir(dir, action)
+}
+
+func (f *fakeProjectHost) simulateFromDir(dir, action string) (<-chan sim.Event, error) {
 	f.mu.Lock()
 	f.simulateCalls++
 	f.simulateDir = dir
+	f.simulateAction = action
 	err := f.simulateErr
 	started := f.simulateStarted
 	block := f.blockSimulate
 	release := f.releaseSimulate
+	configuredEvents := append([]sim.Event(nil), f.simulateEvents...)
 	if started != nil {
 		f.simulateStarted = nil
 	}
@@ -2449,8 +2461,13 @@ func (f *fakeProjectHost) SimulateFromDir(_ context.Context, dir string) (<-chan
 			return make(chan sim.Event), nil
 		}
 	}
-	events := make(chan sim.Event, 2)
-	events <- sim.Event{Stage: sim.StageDone, Message: "simulation complete"}
+	if len(configuredEvents) == 0 {
+		configuredEvents = []sim.Event{{Stage: sim.StageDone, Message: "simulation complete"}}
+	}
+	events := make(chan sim.Event, len(configuredEvents))
+	for _, event := range configuredEvents {
+		events <- event
+	}
 	close(events)
 	return events, nil
 }

@@ -1733,6 +1733,24 @@ export default function App() {
             }
           });
         }
+        if (String(hostEvent.category || '').toUpperCase() === 'LIBRARY' &&
+            String(hostEvent.kind || '').toLowerCase() === 'simulation_auto_sync') {
+          listSimulationLibrary('').then((data) => {
+            if (!disposed && isCurrentProject(projectId)) {
+              setSimulation((previous) => ({
+                ...previous,
+                libraryStatus: 'done',
+                libraryItems: libraryItemsFromResponse(data),
+                libraryMessage: hostEvent.summary || previous.libraryMessage,
+                libraryError: ''
+              }));
+            }
+          }).catch((err) => {
+            if (!disposed && isCurrentProject(projectId)) {
+              setSimulation((previous) => ({ ...previous, libraryStatus: 'error', libraryError: err.message }));
+            }
+          });
+        }
       }
       setConnection('live');
       reconnectAttempt = 0;
@@ -7987,12 +8005,32 @@ function SimulationPanel({
   const latestAnalysis = latestSimulationEvent(simulation.analysisEvents);
   const latestImport = latestSimulationEvent(simulation.importEvents);
   const profile = getSimulationProfileStatus(snapshot);
-  const profileStatusText = simulationProfileSummaryText(profile);
+  const profileDisplay = simulationProfileDisplayState({
+    profile,
+    analysisStatus: simulation.analysisStatus,
+    latestAnalysis
+  });
   const libraryBusy = simulation.libraryStatus === 'running';
   const simulationProfileBusy = isSimulationProfileActionBusy(simulation);
   const simulationActionDisabled = simulationProfileBusy;
   const canSaveCurrentProfile = Boolean(activeProject && profile.loaded && !busy && !libraryBusy && !simulationProfileBusy);
   const canAnalyze = canRunSimulationAnalysis({ activeProject, busy, simulation });
+  const canStartAnalysis = canRunSimulationPrimaryAnalysis({
+    activeProject,
+    profile,
+    simulation
+  });
+  const analysisActionLabel = simulationAnalysisActionLabel({
+    analysisStatus: simulation.analysisStatus,
+    fileCount: simulation.files.length,
+    profileLoaded: profile.loaded,
+    scanAvailable: canStartAnalysis
+  });
+  const analysisNextStep = simulationAnalysisNextStep({
+    fileCount: simulation.files.length,
+    profileLoaded: profile.loaded,
+    scanAvailable: canStartAnalysis
+  });
   return (
     <>
       <div className="side-content">
@@ -8003,11 +8041,16 @@ function SimulationPanel({
           <FileJson size={17} />
           <span>当前画像</span>
         </div>
-        <div className={`workflow-status profile-status ${simulationHealthTone(profile.healthState)}`}>
-          <strong>{profile.loaded ? simulationHealthLabel(profile.healthState) : '未加载'}</strong>
-          <span title={profileStatusText}>{profileStatusText}</span>
+        <div className={`workflow-status profile-status ${profileDisplay.tone}`}>
+          <strong>{profileDisplay.label}</strong>
+          <span title={profileDisplay.summary}>{profileDisplay.summary}</span>
         </div>
-        {profile.loaded ? <SimulationDiagnostics profile={profile} disabled={!canAnalyze} onAnalyze={onAnalyze} /> : null}
+        {profileDisplay.running && profile.loaded ? (
+          <p className="simulation-running-note">正在生成新画像；为避免误判，分析完成前不展示上一版过期诊断。</p>
+        ) : null}
+        {profile.loaded && !profileDisplay.running ? (
+          <SimulationDiagnostics profile={profile} disabled={!canAnalyze} onAnalyze={onAnalyze} />
+        ) : null}
       </section>
 
       <section className="simulation-section">
@@ -8137,12 +8180,15 @@ function SimulationPanel({
               type="file"
             />
           </label>
-          <button className="tool-button accent" disabled={!canAnalyze} onClick={() => onAnalyze('scan')} type="button">
+          <button className="tool-button accent" disabled={!canStartAnalysis} onClick={() => onAnalyze('scan')} type="button">
             <WandSparkles size={16} />
-            重新扫描
+            {analysisActionLabel}
           </button>
         </div>
         {simulation.uploadMessage ? <div className="success-note">{simulation.uploadMessage}</div> : null}
+        <p className={`simulation-next-step ${simulation.files.length ? 'ready' : ''}`}>
+          <strong>下一步：</strong>{analysisNextStep}
+        </p>
         <div className="file-list">
           {simulation.files.length === 0 ? (
             <div className="empty-state">暂无上传语料</div>
@@ -11048,6 +11094,31 @@ export function simulationProfileSummaryText(profile) {
   return `${simulationHealthLabel(profile.healthState)} · ${coverage}`;
 }
 
+export function simulationProfileDisplayState({ profile = {}, analysisStatus, latestAnalysis } = {}) {
+  const running = String(analysisStatus || '').toLowerCase() === 'running';
+  if (running) {
+    const progress = latestAnalysis && Number(latestAnalysis.total) > 0
+      ? `${Number(latestAnalysis.current) || 0}/${Number(latestAnalysis.total)}`
+      : '';
+    const message = String(latestAnalysis?.message || '').trim();
+    const summary = message || (progress
+      ? `正在分析语料 ${progress}；完成后将自动刷新画像`
+      : '正在分析语料；完成后将自动刷新画像');
+    return {
+      running: true,
+      tone: 'running',
+      label: profile.loaded ? '正在重新分析' : '正在生成画像',
+      summary
+    };
+  }
+  return {
+    running: false,
+    tone: simulationHealthTone(profile.healthState),
+    label: profile.loaded ? simulationHealthLabel(profile.healthState) : '未加载',
+    summary: simulationProfileSummaryText(profile)
+  };
+}
+
 function normalizeSimulationCapability(capability) {
   if (!capability) return null;
   return {
@@ -11195,6 +11266,51 @@ export function canCancelCoCreateFlow({ activeProject, busy = false, coCreate = 
 
 export function canRunSimulationAnalysis({ activeProject, busy, simulation } = {}) {
   return Boolean(activeProject && !isSimulationProfileActionBusy(simulation));
+}
+
+export function canRunSimulationPrimaryAnalysis({ activeProject, profile = {}, simulation = {} } = {}) {
+  if (!canRunSimulationAnalysis({ activeProject, simulation })) {
+    return false;
+  }
+  const fileCount = Array.isArray(simulation.files) ? simulation.files.length : 0;
+  if (fileCount === 0) {
+    return false;
+  }
+  if (!profile.loaded) {
+    return true;
+  }
+  const sourceCount = Number(profile.sourceCount) || 0;
+  const reportCount = Number(profile.reportCount) || 0;
+  return profile.healthState !== 'fresh' || sourceCount !== fileCount || reportCount !== sourceCount;
+}
+
+export function simulationAnalysisActionLabel({ analysisStatus, fileCount, profileLoaded, scanAvailable = true } = {}) {
+  if (String(analysisStatus || '').toLowerCase() === 'running') {
+    return '正在分析并入库…';
+  }
+  if ((Number(fileCount) || 0) === 0) {
+    return '请先上传语料';
+  }
+  if (profileLoaded && !scanAvailable) {
+    return '画像已是最新';
+  }
+  return profileLoaded ? '重新扫描并入库' : '开始分析并入库';
+}
+
+export function simulationAnalysisNextStep({ fileCount, profileLoaded, scanAvailable = true } = {}) {
+  const sourceCount = Number.isFinite(Number(fileCount)) ? Math.max(0, Number(fileCount)) : 0;
+  if (sourceCount === 0) {
+    return profileLoaded
+      ? '当前画像没有绑定本地语料；请先上传旧语料，再点击“重新扫描并入库”。'
+      : '先上传 TXT 或 Markdown 语料，再点击“开始分析并入库”。';
+  }
+  if (profileLoaded && !scanAvailable) {
+    return `全部 ${sourceCount} 份语料已按当前流程完成分析，无需重复扫描。`;
+  }
+  if (profileLoaded) {
+    return `已准备 ${sourceCount} 份语料；点击“重新扫描并入库”只分析旧版本、新增或变化的语料，并自动更新画像库。`;
+  }
+  return `已准备 ${sourceCount} 份语料，请点击“开始分析并入库”生成画像并自动保存到画像库。`;
 }
 
 export function canRunAdaptationAnalysis({ activeProject, busy, adaptation } = {}) {
