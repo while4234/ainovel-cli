@@ -76,6 +76,8 @@ type Host struct {
 	autoResumeAttempts              int
 	autoResumeCompleted             int
 	autoResumeInFlight              bool
+	resumeInFlight                  int
+	pauseEpoch                      uint64
 	normalFlowLease                 *storepkg.NormalFlowLease
 	normalFlowActionRefs            int
 	normalFlowScopedRefs            int
@@ -1056,7 +1058,10 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 		h.mu.Unlock()
 		return "", fmt.Errorf("阶段共创进行中，请先结束共创")
 	}
+	resumeEpoch := h.pauseEpoch
+	h.resumeInFlight++
 	h.mu.Unlock()
+	defer h.finishResumeAttempt()
 	if err := h.ensureContinuationWritingAllowed(); err != nil {
 		return "", err
 	}
@@ -1147,10 +1152,10 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	// 主动派发一次首条指令，避免 Coordinator 对恢复 prompt 只回文字而 StopGuard 反复拦截。
 	h.router.DispatchFollowUp()
 
-	if !h.publishResumedLifecycle(keepNormalFlowLease) {
+	if !h.publishResumedLifecycle(resumeEpoch) {
 		h.observer.setAborting(true)
 		h.coordinator.Abort()
-		return "", fmt.Errorf("automatic resume canceled by manual pause")
+		return "", fmt.Errorf("resume canceled by manual pause")
 	}
 	ownership.TransferToRun()
 	go h.waitDone()
@@ -1523,10 +1528,18 @@ func (h *Host) Abort() bool {
 	return h.abortWithEvent("用户手动暂停当前创作", "warn")
 }
 
-func (h *Host) publishResumedLifecycle(automatic bool) bool {
+func (h *Host) finishResumeAttempt() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if automatic && h.lifecycle == lifecyclePaused {
+	if h.resumeInFlight > 0 {
+		h.resumeInFlight--
+	}
+}
+
+func (h *Host) publishResumedLifecycle(expectedPauseEpoch uint64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.pauseEpoch != expectedPauseEpoch {
 		return false
 	}
 	h.lifecycle = lifecycleRunning
@@ -1536,10 +1549,11 @@ func (h *Host) publishResumedLifecycle(automatic bool) bool {
 func (h *Host) pauseActiveRun() (*hostStartingRun, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	active := h.lifecycle == lifecycleRunning || h.autoResumeInFlight
+	active := h.lifecycle == lifecycleRunning || h.autoResumeInFlight || h.resumeInFlight > 0
 	if !active {
 		return nil, false
 	}
+	h.pauseEpoch++
 	h.lifecycle = lifecyclePaused
 	if h.startingRun != nil {
 		h.startingRun.aborted = true

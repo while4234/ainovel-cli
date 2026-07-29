@@ -46,6 +46,10 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `pending` `fix: cancel resumes that race with pause`:
+  adds a pause epoch across both automatic and externally initiated resume
+  preparation, so any resume started before the latest pause cannot publish a
+  new running lifecycle. Focused Host resume and Web pause tests pass.
 - 2026-07-29 `705a515` `fix: align model probe with runtime streaming`:
   changes the provider connection test from non-streaming `Generate` to the
   same `GenerateStream` protocol used by real creation work. The probe still
