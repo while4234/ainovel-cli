@@ -1040,6 +1040,10 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 		h.mu.Unlock()
 		return "", fmt.Errorf("host is closed")
 	}
+	if keepNormalFlowLease && h.lifecycle == lifecyclePaused {
+		h.mu.Unlock()
+		return "", fmt.Errorf("automatic resume canceled by manual pause")
+	}
 	if !h.autoResumeInFlight {
 		h.autoResumeAttempts = 0
 		h.autoResumeCompleted = 0
@@ -1143,9 +1147,11 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	// 主动派发一次首条指令，避免 Coordinator 对恢复 prompt 只回文字而 StopGuard 反复拦截。
 	h.router.DispatchFollowUp()
 
-	h.mu.Lock()
-	h.lifecycle = lifecycleRunning
-	h.mu.Unlock()
+	if !h.publishResumedLifecycle(keepNormalFlowLease) {
+		h.observer.setAborting(true)
+		h.coordinator.Abort()
+		return "", fmt.Errorf("automatic resume canceled by manual pause")
+	}
 	ownership.TransferToRun()
 	go h.waitDone()
 	return label, nil
@@ -1517,20 +1523,35 @@ func (h *Host) Abort() bool {
 	return h.abortWithEvent("用户手动暂停当前创作", "warn")
 }
 
+func (h *Host) publishResumedLifecycle(automatic bool) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if automatic && h.lifecycle == lifecyclePaused {
+		return false
+	}
+	h.lifecycle = lifecycleRunning
+	return true
+}
+
+func (h *Host) pauseActiveRun() (*hostStartingRun, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	active := h.lifecycle == lifecycleRunning || h.autoResumeInFlight
+	if !active {
+		return nil, false
+	}
+	h.lifecycle = lifecyclePaused
+	if h.startingRun != nil {
+		h.startingRun.aborted = true
+	}
+	return h.startingRun, true
+}
+
 // abortWithEvent 以指定原因事件执行暂停。预算停机与手动暂停共用同一停机机制，
 // 仅事件文案不同（预算停机=用户预先签署的 Abort 指令，语义等同手动暂停）。
 func (h *Host) abortWithEvent(summary, level string) bool {
-	h.mu.Lock()
-	running := h.lifecycle == lifecycleRunning
-	startup := h.startingRun
-	if running {
-		h.lifecycle = lifecyclePaused
-		if startup != nil {
-			startup.aborted = true
-		}
-	}
-	h.mu.Unlock()
-	if !running {
+	startup, active := h.pauseActiveRun()
+	if !active {
 		return false
 	}
 	// 置位必须在 coordinator.Abort 之前：cancel 传播会立刻引发 stream init / subagent
