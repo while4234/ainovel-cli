@@ -5954,12 +5954,11 @@ function ProjectSettingsPanel({
   const selectedSimulationMode = normalizeSimulationMode(projectSettings.selectedSimulationMode);
   const currentSimulationModeLabel = simulationModeLabel(currentSimulationMode);
   const simulationProfile = getSimulationProfileStatus(snapshot);
-  const reinforcedEffective = simulationProfile.loaded &&
-    simulationProfile.selectedMode === 'reinforced' &&
-    simulationProfile.effectiveMode === 'reinforced' &&
-    simulationProfile.contract?.current &&
-    simulationProfile.contract?.status !== 'inactive';
-  const showReinforcedProfileWarning = selectedSimulationMode === 'reinforced' && !reinforcedEffective;
+  const simulationModeNotice = projectSimulationModeNotice({
+    currentMode: currentSimulationMode,
+    profile: simulationProfile,
+    selectedMode: selectedSimulationMode
+  });
   const canSaveSimulationMode = canSubmitProjectSimulationMode({
     activeProject,
     busy: globalBusy,
@@ -6112,9 +6111,9 @@ function ProjectSettingsPanel({
               ))}
             </fieldset>
 
-            {showReinforcedProfileWarning ? (
-              <div className="settings-note warning">
-                强化仿写尚未生效：{simulationProfile.effectiveReason || simulationProfile.contract?.staleReason || '需要可用画像与当前共享契约'}。
+            {simulationModeNotice ? (
+              <div className={`settings-note ${simulationModeNotice.tone}`}>
+                {simulationModeNotice.message}
               </div>
             ) : null}
             {projectSettings.simulationModeSaveStatus === 'error' && projectSettings.simulationModeError ? (
@@ -11288,6 +11287,41 @@ export function simulationContractStatusLabel(status) {
   return ({ active: '已生效', degraded: '降级生效', inactive: '未生效' })[String(status || '').toLowerCase()] || '状态未知';
 }
 
+export function projectSimulationModeNotice({ currentMode, profile = {}, selectedMode } = {}) {
+  if (normalizeSimulationMode(selectedMode) !== 'reinforced') {
+    return null;
+  }
+  const contractStatus = String(profile.contract?.status || '').toLowerCase();
+  const reason = profile.effectiveReason || profile.contract?.staleReason || '需要可用画像与当前共享契约';
+  const portable = profile.healthState === 'portable_only' || !profile.localEvidence;
+  if (normalizeSimulationMode(currentMode) !== 'reinforced') {
+    return {
+      tone: 'warning',
+      message: profile.loaded && portable
+        ? '保存后将以降级强化模式生效：portable 画像会使用更高的角色建议预算；从含原语料的画像库重新加载并分析后，才会恢复本地证据与完整安全检查。'
+        : '强化仿写尚未保存；保存后系统会重新生成当前共享契约。'
+    };
+  }
+  const effective = profile.loaded &&
+    profile.selectedMode === 'reinforced' &&
+    profile.effectiveMode === 'reinforced' &&
+    profile.contract?.current &&
+    contractStatus !== 'inactive';
+  if (!effective) {
+    return {
+      tone: 'warning',
+      message: `强化仿写尚未生效：${reason}。`
+    };
+  }
+  if (contractStatus === 'degraded') {
+    return {
+      tone: 'warning',
+      message: `强化仿写已降级生效：${reason}。当前仍使用强化预算，但缺失的本地证据能力不会被冒充为可用。`
+    };
+  }
+  return null;
+}
+
 export function simulationCheckStateLabel(state) {
   return ({
     pass: '检测通过',
@@ -12780,7 +12814,7 @@ function libraryEntryName(entry) {
     textValue(sourceFile, 'name', 'Name', 'relative_path', 'RelativePath');
 }
 
-function libraryEntryMeta(entry) {
+export function libraryEntryMeta(entry) {
   if (!entry || typeof entry === 'string') {
     return '';
   }
@@ -12788,8 +12822,15 @@ function libraryEntryMeta(entry) {
   const profileVersion = textValue(entry, 'profile_version', 'profileVersion', 'ProfileVersion');
   const profileHealth = textValue(entry, 'health_state', 'healthState', 'HealthState');
   const migrated = Boolean(valueByKey(entry, 'migrated', 'Migrated'));
+  const sourceArchived = Boolean(valueByKey(entry, 'source_archived', 'sourceArchived', 'SourceArchived'));
+  const archivedSourceCount = numberValue(
+    entry,
+    'archived_source_count',
+    'archivedSourceCount',
+    'ArchivedSourceCount'
+  );
   const profileMeta = profileVersion
-    ? `${profileVersion} · ${simulationHealthLabel(profileHealth)}${migrated ? ' · v1 已迁移' : ''}`
+    ? `${profileVersion} · ${sourceArchived ? `含原语料 ${archivedSourceCount || ''} 篇`.trim() : simulationHealthLabel(profileHealth)}${migrated ? ' · v1 已迁移' : ''}`
     : '';
   const parts = [
     profileMeta,

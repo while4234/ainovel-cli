@@ -43,6 +43,7 @@ import {
   isProjectScopedResponseCurrent,
   isSimulationProfileActionBusy,
   isProjectRunning,
+  libraryEntryMeta,
   normalizeCoCreateDecisionAnswers,
   outlineRevisionSuccessMessage,
   prepareProjectOpenSnapshot,
@@ -70,6 +71,22 @@ const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 describe('project opening', () => {
   it('allows cold project restoration to finish before reporting a timeout', () => {
     expect(PROJECT_OPEN_TIMEOUT_MS).toBe(90_000);
+  });
+});
+
+describe('simulation library metadata', () => {
+  it('shows whether original corpus files are archived with the profile', () => {
+    expect(libraryEntryMeta({
+      profile_version: 'simulation_profile.v2',
+      health_state: 'portable_only',
+      source_archived: true,
+      archived_source_count: 17
+    })).toContain('含原语料 17 篇');
+    expect(libraryEntryMeta({
+      profile_version: 'simulation_profile.v2',
+      health_state: 'portable_only',
+      source_archived: false
+    })).toContain('仅 portable');
   });
 });
 

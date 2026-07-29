@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: archive simulation corpus with profiles`:
+  project saves and automatic simulation-profile sync now persist a verified
+  sidecar copy of the original corpus beside the portable profile. Loading a
+  bundled profile restores its corpus without overwriting different local
+  files, which keeps rescan and full reanalysis available after profile/schema
+  upgrades. The live “梦中的女孩” library entry was migrated with all 17 source
+  files and loaded into “梦中的女孩改”; both reanalysis actions are enabled.
 - 2026-07-30 `this commit` `fix: bound adaptation foundation merge requests`:
   changed SourceFoundation report and recursive-summary batching to enforce the
   structured-call 60 KiB limit against exact compiled request bytes, not only

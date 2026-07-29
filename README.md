@@ -448,7 +448,7 @@ output/novel/meta/simulation_evidence.local.json # 本项目专用逐篇证据�
 output/novel/meta/simulation_checks/NNN.json     # 绑定当前草稿/画像/契约/checker 的章节检查报告
 ```
 
-`simulation_profile.json` 默认使用 `simulation_profile.v2`，只保存脱敏 feature、support/coverage/confidence、阶段/冲突、能力/健康状态和分析签名，不包含绝对语料目录、逐篇报告、专名或标志短语，可安全用于画像库和跨项目导入。`simulation_evidence.local.json` 保留当前分析流程仍需的来源路径、结构化逐篇报告和本地 safety index，只在本项目内读取，不进入画像库或 Agent 上下文。旧 `simulation_profile.v1` 仍可直接加载；首次成功写入时会确定性投影为 v2，并把旧 reports 分流到 local evidence。缺少分析签名的旧画像明确标记为 `legacy` / `analysis_signature_unknown`，不会冒充 fresh。
+`simulation_profile.json` 默认使用 `simulation_profile.v2`，只保存脱敏 feature、support/coverage/confidence、阶段/冲突、能力/健康状态和分析签名，不包含绝对语料目录、逐篇报告、专名或标志短语，可安全用于画像库和跨项目导入。`simulation_evidence.local.json` 保留当前分析流程仍需的来源路径、结构化逐篇报告和本地 safety index，只在本项目内读取，不进入画像库或 Agent 上下文。画像库从项目保存或自动同步画像时，会在独立的本地语料归档目录中同时保存原语料副本和完整性清单；portable JSON 本身仍不嵌入原文。旧 `simulation_profile.v1` 仍可直接加载；首次成功写入时会确定性投影为 v2，并把旧 reports 分流到 local evidence。缺少分析签名的旧画像明确标记为 `legacy` / `analysis_signature_unknown`，不会冒充 fresh。
 
 再次分析时，会同时比较 `relative_path + sha256` 和 source-analysis signature。内容、source prompt/schema、窗口算法或分析模型变化时只重分析受影响文章；只有 merge/reducer/selection signature 变化时复用有效 reports，只做重合成。新增、修改和删除都会更新 corpus digest；删除来源会立即使旧画像和 checkpoint 失效，空语料目录会清除画像、本地证据和 checkpoint。相同 reports 的输入顺序不影响 feature ID、support、coverage、classification 或 evidence refs。
 
@@ -480,9 +480,9 @@ Web 画像面板只读取后端 canonical diagnostics summary，不下载完整�
 
 重新扫描、仅重合成和全量重分析是三个不同操作。重新扫描让后端根据内容与签名选择最小工作量；仅重合成只在所有本地逐篇报告仍有效时可用；全量重分析只在项目仍有本地语料时可用。按钮可用性和禁用原因来自后端 summary，前端不自行推断。
 
-画像库保存、上传和加载默认且仅写入 `simulation_profile.v2` portable JSON。库 metadata 直接读取 portable version/health/source count；v1 上传会先迁移、脱敏并标记 migrated/legacy 能力，不会把 `source_dir`、来源文件名、`source_reports`、raw 文本或 safety index 写入库文件。本版本不提供 local audit bundle 导出。
+画像库中的画像文件始终是 `simulation_profile.v2` portable JSON。通过“保存当前画像到库”或分析完成后的自动同步写入时，系统还会把当前项目 `simulate/` 中的原语料复制到 `simulation_corpus_library/<画像名>/sources/`，并写入绑定画像 digest、文件名、大小和 SHA-256 的 `bundle.json`；加载该条目时会校验完整性并把语料恢复到目标项目，因此流程或画像版本升级后可以重新分析。直接上传的单个 JSON 无法携带原语料，会继续作为兼容的“仅画像”条目显示。v1 上传仍会先迁移、脱敏并标记 migrated/legacy 能力；portable JSON 不写入 `source_dir`、`source_reports`、raw 文本或 safety index。
 
-Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目录，把导入的画像 JSON 保存到当前项目的 `profiles/imported/` 目录；小说改编上传的原文保存在当前项目的 `uploads/adaptation/` 目录。这些文件不会被写入仓库，也不会混到其他 Web 项目里。点击“分析”后，语料内容会按所选模型/provider 的正常调用路径发送给模型生成画像；不要上传没有授权处理的私人文本。
+Web UI 的上传入口会把仿写语料保存到当前项目的 `simulate/` 目录，把导入的画像 JSON 保存到当前项目的 `profiles/imported/` 目录；小说改编上传的原文保存在当前项目的 `uploads/adaptation/` 目录。画像库的语料归档只存在本机 runtime，不会写入仓库；加载到已有不同语料的项目会拒绝覆盖，避免静默丢失文件。点击“分析”后，语料内容会按所选模型/provider 的正常调用路径发送给模型生成画像；不要上传或归档没有授权处理的私人文本。
 
 ### 离线仿写回归基线
 

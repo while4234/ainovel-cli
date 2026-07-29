@@ -8,6 +8,7 @@ import {
   isProjectStyleLocked,
   normalizeProjectStyleCatalog,
   normalizeSimulationMode,
+  projectSimulationModeNotice,
   projectStyleLabel,
   resolveProjectSimulationMode,
   simulationModeLabel,
@@ -71,9 +72,34 @@ describe('project settings panel', () => {
     expect(simulationModeLabel('reinforced')).toBe('强化仿写');
     expect(appSource).toContain('仿写画像');
     expect(appSource).toContain('仿写模式');
-    expect(appSource).toContain('强化仿写尚未生效');
+    expect(appSource).toContain('强化仿写已降级生效');
     expect(appSource).toContain('使用更高预算的 Architect、Writer、Editor 共享契约');
     expect(appSource).toContain('不复制来源内容，也不承诺法律结论');
+  });
+
+  it('distinguishes pending and degraded reinforced activation for portable profiles', () => {
+    const pending = projectSimulationModeNotice({
+      currentMode: 'normal',
+      selectedMode: 'reinforced',
+      profile: { loaded: true, healthState: 'portable_only', localEvidence: false }
+    });
+    expect(pending.message).toContain('保存后将以降级强化模式生效');
+
+    const degraded = projectSimulationModeNotice({
+      currentMode: 'reinforced',
+      selectedMode: 'reinforced',
+      profile: {
+        loaded: true,
+        healthState: 'portable_only',
+        localEvidence: false,
+        selectedMode: 'reinforced',
+        effectiveMode: 'reinforced',
+        effectiveReason: 'portable_only',
+        contract: { current: true, status: 'degraded' }
+      }
+    });
+    expect(degraded.message).toContain('强化仿写已降级生效');
+    expect(degraded.message).toContain('强化预算');
   });
 
   it('resolves current style from snapshot before runtime defaults', () => {

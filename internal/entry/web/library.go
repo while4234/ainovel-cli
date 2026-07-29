@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	simulationLibraryDirName = "simulation_library"
-	novelLibraryDirName      = "novel_library"
-	novelLibrarySourceName   = "source.txt"
-	novelLibraryManifestName = "library.json"
+	simulationLibraryDirName       = "simulation_library"
+	simulationCorpusLibraryDirName = "simulation_corpus_library"
+	novelLibraryDirName            = "novel_library"
+	novelLibrarySourceName         = "source.txt"
+	novelLibraryManifestName       = "library.json"
 )
 
 type LibraryService struct {
@@ -31,17 +32,19 @@ type LibraryService struct {
 }
 
 type apiLibraryItem struct {
-	Name           string    `json:"name"`
-	FileName       string    `json:"file_name,omitempty"`
-	Size           int64     `json:"size,omitempty"`
-	UpdatedAt      time.Time `json:"updated_at,omitempty"`
-	SourceCount    int       `json:"source_count,omitempty"`
-	ProfileVersion string    `json:"profile_version,omitempty"`
-	HealthState    string    `json:"health_state,omitempty"`
-	Migrated       bool      `json:"migrated,omitempty"`
-	LocalEvidence  bool      `json:"local_evidence"`
-	ChapterCount   int       `json:"chapter_count,omitempty"`
-	SourceFile     string    `json:"source_file,omitempty"`
+	Name                string    `json:"name"`
+	FileName            string    `json:"file_name,omitempty"`
+	Size                int64     `json:"size,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at,omitempty"`
+	SourceCount         int       `json:"source_count,omitempty"`
+	ProfileVersion      string    `json:"profile_version,omitempty"`
+	HealthState         string    `json:"health_state,omitempty"`
+	Migrated            bool      `json:"migrated,omitempty"`
+	LocalEvidence       bool      `json:"local_evidence"`
+	SourceArchived      bool      `json:"source_archived"`
+	ArchivedSourceCount int       `json:"archived_source_count,omitempty"`
+	ChapterCount        int       `json:"chapter_count,omitempty"`
+	SourceFile          string    `json:"source_file,omitempty"`
 }
 
 type novelLibraryManifest struct {
@@ -135,7 +138,8 @@ func (s *Server) handleProjectSimulationLibrarySave(w http.ResponseWriter, r *ht
 		return
 	}
 	var req struct {
-		Name string `json:"name"`
+		Name    string `json:"name"`
+		Replace bool   `json:"replace"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid simulation library save request: "+err.Error())
@@ -146,14 +150,20 @@ func (s *Server) handleProjectSimulationLibrarySave(w http.ResponseWriter, r *ht
 		writeProjectSessionError(w, fmt.Errorf("%w: %v", ErrProjectNotFound, err))
 		return
 	}
-	item, err := s.libraries.SaveSimulationProfileFromProject(manifest, req.Name)
+	var item apiLibraryItem
+	if req.Replace {
+		item, err = s.libraries.ReplaceSimulationProfileFromProject(manifest, req.Name)
+	} else {
+		item, err = s.libraries.SaveSimulationProfileFromProject(manifest, req.Name)
+	}
 	if err != nil {
 		writeLibraryActionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"project": manifest,
-		"item":    item,
+		"project":  manifest,
+		"item":     item,
+		"replaced": req.Replace,
 	})
 }
 
@@ -380,6 +390,10 @@ func (s *LibraryService) SimulationDir() string {
 	return filepath.Join(s.runtimeRoot, simulationLibraryDirName)
 }
 
+func (s *LibraryService) SimulationCorpusDir() string {
+	return filepath.Join(s.runtimeRoot, simulationCorpusLibraryDirName)
+}
+
 func (s *LibraryService) NovelDir() string {
 	return filepath.Join(s.runtimeRoot, novelLibraryDirName)
 }
@@ -418,6 +432,7 @@ func (s *LibraryService) ListSimulationProfiles(query string) ([]apiLibraryItem,
 				item.ProfileVersion = domain.SimulationPortableProfileVersion
 				item.HealthState = simulationPortableHealth(data)
 				item.Migrated = simulationPortableMigrated(data)
+				item.SourceArchived, item.ArchivedSourceCount = s.simulationCorpusArchiveStatus(name, data)
 			}
 		}
 		items = append(items, item)
@@ -462,31 +477,19 @@ func (s *LibraryService) SaveSimulationProfile(name string, data []byte) (apiLib
 }
 
 func (s *LibraryService) SaveSimulationProfileFromProject(manifest ProjectManifest, name string) (apiLibraryItem, error) {
-	sourcePath, err := findProjectSimulationProfile(manifest)
-	if err != nil {
-		return apiLibraryItem{}, err
-	}
-	data, err := os.ReadFile(sourcePath)
-	if err != nil {
-		return apiLibraryItem{}, fmt.Errorf("read simulation profile: %w", err)
-	}
-	return s.SaveSimulationProfile(name, data)
+	return s.saveSimulationProfileBundleFromProject(manifest, name, false)
 }
 
 func (s *LibraryService) SyncSimulationProfileFromProject(manifest ProjectManifest) (apiLibraryItem, error) {
-	sourcePath, err := findProjectSimulationProfile(manifest)
-	if err != nil {
-		return apiLibraryItem{}, err
-	}
-	data, err := os.ReadFile(sourcePath)
-	if err != nil {
-		return apiLibraryItem{}, fmt.Errorf("read simulation profile: %w", err)
-	}
 	name := strings.TrimSpace(manifest.Name)
 	if name == "" {
 		name = manifest.ID
 	}
-	return s.upsertSimulationProfile(name, data)
+	return s.saveSimulationProfileBundleFromProject(manifest, name, true)
+}
+
+func (s *LibraryService) ReplaceSimulationProfileFromProject(manifest ProjectManifest, name string) (apiLibraryItem, error) {
+	return s.saveSimulationProfileBundleFromProject(manifest, name, true)
 }
 
 func (s *LibraryService) upsertSimulationProfile(name string, data []byte) (apiLibraryItem, error) {
@@ -545,6 +548,10 @@ func (s *LibraryService) LoadSimulationProfileIntoProject(manifest ProjectManife
 	if err != nil {
 		return apiLibraryItem{}, "", err
 	}
+	sourceArchived, archivedSourceCount, err := s.restoreSimulationCorpusIntoProject(manifest, displayName, source)
+	if err != nil {
+		return apiLibraryItem{}, "", err
+	}
 	if err := copyFileOverwrite(source, target); err != nil {
 		return apiLibraryItem{}, "", err
 	}
@@ -553,11 +560,13 @@ func (s *LibraryService) LoadSimulationProfileIntoProject(manifest ProjectManife
 		return apiLibraryItem{}, "", fmt.Errorf("stat simulation library item %s: %w", displayName, err)
 	}
 	return apiLibraryItem{
-		Name:        displayName,
-		FileName:    fileName,
-		Size:        info.Size(),
-		UpdatedAt:   info.ModTime(),
-		SourceCount: simulationCompatibilitySourceCount(profile, source),
+		Name:                displayName,
+		FileName:            fileName,
+		Size:                info.Size(),
+		UpdatedAt:           info.ModTime(),
+		SourceCount:         simulationCompatibilitySourceCount(profile, source),
+		SourceArchived:      sourceArchived,
+		ArchivedSourceCount: archivedSourceCount,
 	}, target, nil
 }
 

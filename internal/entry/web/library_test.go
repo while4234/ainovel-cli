@@ -75,7 +75,7 @@ func TestSimulationLibraryUploadSearchAndLoad(t *testing.T) {
 		t.Fatalf("search items = %+v, want voice", list.Items)
 	}
 	if item := list.Items[0]; item.ProfileVersion != domain.SimulationPortableProfileVersion ||
-		item.HealthState != "legacy" || !item.Migrated || item.LocalEvidence {
+		item.HealthState != "legacy" || !item.Migrated || item.LocalEvidence || item.SourceArchived {
 		t.Fatalf("portable simulation metadata = %+v", item)
 	}
 
@@ -143,6 +143,117 @@ func TestSimulationLibraryUploadSearchAndLoad(t *testing.T) {
 	}
 	if !strings.Contains(snapshot.Simulation.Message, "voice") {
 		t.Fatalf("simulation message = %q, want profile name", snapshot.Simulation.Message)
+	}
+}
+
+func TestSimulationLibraryProjectSaveArchivesAndLoadRestoresCorpus(t *testing.T) {
+	runtimeRoot := filepath.Join(testTempDir(t), "runtime")
+	server := NewServer(testWebConfig(t), assets.Load("default"), runtimeRoot)
+	defer server.Close()
+
+	sourceProject, err := server.store.CreateProject("Corpus Bundle Source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceDir := projectSimulateDir(sourceProject)
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sourceText = "repository-original synthetic simulation corpus"
+	if err := os.WriteFile(filepath.Join(sourceDir, "voice.txt"), []byte(sourceText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profileData, err := json.Marshal(testWebSimulationProfile("voice.txt", "bundle-sha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileDir := filepath.Join(sourceProject.OutputDir, "meta")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "simulation_profile.json"), profileData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+sourceProject.ID+"/simulate/library/save",
+		bytes.NewBufferString(`{"name":"Corpus Bundle"}`),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var saveResponse struct {
+		Item apiLibraryItem `json:"item"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&saveResponse); err != nil {
+		t.Fatal(err)
+	}
+	if !saveResponse.Item.SourceArchived || saveResponse.Item.ArchivedSourceCount != 1 {
+		t.Fatalf("saved bundle metadata = %+v", saveResponse.Item)
+	}
+	bundleSource := filepath.Join(
+		runtimeRoot,
+		simulationCorpusLibraryDirName,
+		"Corpus Bundle",
+		simulationLibraryBundleSourcesDir,
+		"voice.txt",
+	)
+	if data, err := os.ReadFile(bundleSource); err != nil || string(data) != sourceText {
+		t.Fatalf("archived source data=%q err=%v", data, err)
+	}
+
+	items, err := server.libraries.ListSimulationProfiles("Corpus Bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || !items[0].SourceArchived || items[0].ArchivedSourceCount != 1 {
+		t.Fatalf("listed bundle metadata = %+v", items)
+	}
+
+	req = httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+sourceProject.ID+"/simulate/library/save",
+		bytes.NewBufferString(`{"name":"Corpus Bundle","replace":true}`),
+	)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replace status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var replaceResponse struct {
+		Replaced bool `json:"replaced"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&replaceResponse); err != nil {
+		t.Fatal(err)
+	}
+	if !replaceResponse.Replaced {
+		t.Fatal("replace response did not mark replaced=true")
+	}
+
+	targetProject, err := server.store.CreateProject("Corpus Bundle Target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, targetProject)
+	req = httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+targetProject.ID+"/simulate/library/load",
+		bytes.NewBufferString(`{"name":"Corpus Bundle"}`),
+	)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("load status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.importCalls != 1 {
+		t.Fatalf("import calls = %d, want 1", fake.importCalls)
+	}
+	restored, err := os.ReadFile(filepath.Join(projectSimulateDir(targetProject), "voice.txt"))
+	if err != nil || string(restored) != sourceText {
+		t.Fatalf("restored source data=%q err=%v", restored, err)
 	}
 }
 

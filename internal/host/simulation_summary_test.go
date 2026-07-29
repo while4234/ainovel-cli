@@ -1,6 +1,9 @@
 package host
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
@@ -39,5 +42,44 @@ func TestSimulationSummaryEnsuresReinforcedContractBeforeCoCreate(t *testing.T) 
 	}
 	if persisted == nil || persisted.RequestedMode != domain.SimulationModeReinforced {
 		t.Fatalf("reinforced contract was not persisted: %+v", persisted)
+	}
+}
+
+func TestSimulationActionsAllowReanalysisAfterPortableCorpusRestore(t *testing.T) {
+	st := newSimulationPromptTestStore(t, true)
+	profile, err := st.Simulation.LoadPortable()
+	if err != nil || profile == nil {
+		t.Fatalf("load portable profile: profile=%v err=%v", profile, err)
+	}
+	simulateDir := filepath.Join(filepath.Dir(st.Dir()), "simulate")
+	if err := os.MkdirAll(simulateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(simulateDir, "restored.txt"), []byte("synthetic corpus"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	actions := simulationActions(st, profile, nil)
+	if !actions.Rescan.Enabled || !actions.Reanalyze.Enabled {
+		t.Fatalf("restored local corpus should enable analysis: %+v", actions)
+	}
+	if actions.Resynthesize.Enabled {
+		t.Fatalf("missing local reports should keep resynthesis disabled: %+v", actions)
+	}
+}
+
+func TestSimulationActionsExplainMissingPortableCorpus(t *testing.T) {
+	st := newSimulationPromptTestStore(t, true)
+	profile, err := st.Simulation.LoadPortable()
+	if err != nil || profile == nil {
+		t.Fatalf("load portable profile: profile=%v err=%v", profile, err)
+	}
+
+	actions := simulationActions(st, profile, nil)
+	if actions.Rescan.Enabled || actions.Reanalyze.Enabled {
+		t.Fatalf("missing corpus unexpectedly enabled analysis: %+v", actions)
+	}
+	if !strings.Contains(actions.Rescan.Reason, "重新上传原语料") {
+		t.Fatalf("missing corpus reason is not actionable: %+v", actions)
 	}
 }

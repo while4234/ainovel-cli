@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -96,7 +97,7 @@ func buildSimulationProfileSummary(st *storepkg.Store, selectedMode string, chap
 		}
 	}
 
-	summary.Actions = simulationActions(profile, evidence)
+	summary.Actions = simulationActions(st, profile, evidence)
 	summary.ModePreviews = simulationModePreviews(profile, foundationRevision, foundationDigest, briefDigest)
 	if !contractCurrent {
 		contract = nil
@@ -232,14 +233,24 @@ func simulationModePreviews(
 	return previews
 }
 
-func simulationActions(profile *domain.SimulationProfileV2, evidence *domain.SimulationLocalEvidence) SimulationActionSummary {
+func simulationActions(
+	st *storepkg.Store,
+	profile *domain.SimulationProfileV2,
+	evidence *domain.SimulationLocalEvidence,
+) SimulationActionSummary {
 	actions := SimulationActionSummary{
 		Rescan:       SimulationActionCapability{Reason: "需要当前项目的本地语料"},
 		Resynthesize: SimulationActionCapability{Reason: "需要完整且签名有效的本地逐篇报告"},
 		Reanalyze:    SimulationActionCapability{Reason: "需要当前项目的本地语料"},
 	}
+	if projectSimulationSourcesAvailable(st) {
+		actions.Rescan = SimulationActionCapability{Enabled: true}
+		actions.Reanalyze = SimulationActionCapability{Enabled: true}
+	}
 	if evidence == nil || evidence.ProfileDigest != profile.ProfileDigest {
-		actions.Rescan.Reason = "portable 画像没有绑定本地语料"
+		if !actions.Rescan.Enabled {
+			actions.Rescan.Reason = "portable 画像没有绑定本地语料；请重新上传原语料"
+		}
 		return actions
 	}
 	sourceDirAvailable := false
@@ -254,6 +265,26 @@ func simulationActions(profile *domain.SimulationProfileV2, evidence *domain.Sim
 		actions.Resynthesize = SimulationActionCapability{Enabled: true}
 	}
 	return actions
+}
+
+func projectSimulationSourcesAvailable(st *storepkg.Store) bool {
+	if st == nil {
+		return false
+	}
+	files, err := os.ReadDir(filepath.Join(filepath.Dir(st.Dir()), "simulate"))
+	if err != nil {
+		return false
+	}
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(file.Name())) {
+		case ".txt", ".md", ".markdown":
+			return true
+		}
+	}
+	return false
 }
 
 func simulationReportsReusable(profile *domain.SimulationProfileV2, evidence *domain.SimulationLocalEvidence) bool {
