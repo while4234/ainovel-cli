@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -65,6 +66,7 @@ const (
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
 	webEventSeqRelPath                  = "meta/runtime/web-event-seq.json"
 	rollbackActionWaitTimeout           = 30 * time.Second
+	sseHeartbeatInterval                = 15 * time.Second
 )
 
 type webResumeActionKind string
@@ -4516,6 +4518,17 @@ func (s *ProjectSession) AppendSnapshot() WebEvent {
 }
 
 func (s *ProjectSession) ServeEvents(ctx context.Context, w http.ResponseWriter, after int64) error {
+	heartbeat := time.NewTicker(sseHeartbeatInterval)
+	defer heartbeat.Stop()
+	return s.serveEvents(ctx, w, after, heartbeat.C)
+}
+
+func (s *ProjectSession) serveEvents(
+	ctx context.Context,
+	w http.ResponseWriter,
+	after int64,
+	heartbeat <-chan time.Time,
+) error {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return fmt.Errorf("response writer does not support streaming")
@@ -4546,6 +4559,14 @@ func (s *ProjectSession) ServeEvents(ctx context.Context, w http.ResponseWriter,
 				return nil
 			}
 			if err := writeSSEEvent(w, ev); err != nil {
+				return err
+			}
+			flusher.Flush()
+		case heartbeatTime, ok := <-heartbeat:
+			if !ok {
+				return nil
+			}
+			if err := writeSSEHeartbeat(w, heartbeatTime); err != nil {
 				return err
 			}
 			flusher.Flush()
@@ -5549,4 +5570,15 @@ func writeSSEEvent(w http.ResponseWriter, ev WebEvent) error {
 		return err
 	}
 	return nil
+}
+
+func writeSSEHeartbeat(w io.Writer, heartbeatTime time.Time) error {
+	data, err := json.Marshal(struct {
+		Time time.Time `json:"time"`
+	}{Time: heartbeatTime})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "event: heartbeat\ndata: %s\n\n", data)
+	return err
 }

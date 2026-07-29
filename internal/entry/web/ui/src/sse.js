@@ -1,5 +1,6 @@
 const DEFAULT_BASE_DELAY_MS = 1000;
 const DEFAULT_MAX_DELAY_MS = 15000;
+export const SSE_STALE_TIMEOUT_MS = 45_000;
 
 export function parseSSEMessage(message) {
   if (!message || typeof message.data !== 'string') {
@@ -24,6 +25,20 @@ export function nextSSEReconnectDelay(attempt, random = Math.random, options = {
   const capped = Math.min(maximum, uncapped);
   const jitter = 0.8 + (Math.max(0, Math.min(1, Number(random()) || 0)) * 0.4);
   return Math.round(capped * jitter);
+}
+
+export function isSSEConnectionStale(
+  lastActivityAt,
+  now = Date.now(),
+  timeoutMs = SSE_STALE_TIMEOUT_MS
+) {
+  const lastActivity = Number(lastActivityAt || 0);
+  const currentTime = Number(now || 0);
+  const timeout = Number(timeoutMs || 0);
+  if (!lastActivity || !currentTime || timeout <= 0 || currentTime < lastActivity) {
+    return false;
+  }
+  return currentTime - lastActivity >= timeout;
 }
 
 export function shouldRefreshSSESnapshot(event, lastSeq, historyLimit = 0) {

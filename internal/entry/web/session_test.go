@@ -871,6 +871,33 @@ func TestProjectSessionServeEventsHonorsAfter(t *testing.T) {
 	}
 }
 
+func TestProjectSessionServeEventsWritesHeartbeat(t *testing.T) {
+	session, err := NewProjectSession(ProjectManifest{ID: "project-heartbeat"}, newFakeProjectHost())
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	heartbeatTime := time.Date(2026, time.July, 29, 3, 45, 0, 0, time.UTC)
+	heartbeat := make(chan time.Time, 1)
+	heartbeat <- heartbeatTime
+	close(heartbeat)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/project-heartbeat/events", nil)
+	rec := httptest.NewRecorder()
+	if err := session.serveEvents(req.Context(), rec, 0, heartbeat); err != nil {
+		t.Fatalf("serveEvents: %v", err)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: heartbeat") {
+		t.Fatalf("SSE stream missing heartbeat event: %s", body)
+	}
+	if !strings.Contains(body, `"time":"2026-07-29T03:45:00Z"`) {
+		t.Fatalf("SSE heartbeat missing timestamp: %s", body)
+	}
+}
+
 func TestProjectSessionEventHistoryHonorsAfterWithoutAppendingSnapshot(t *testing.T) {
 	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, newFakeProjectHost())
 	if err != nil {

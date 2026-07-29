@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { nextSSEReconnectDelay, parseSSEMessage, shouldRefreshSSESnapshot } from './sse.js';
+import {
+  isSSEConnectionStale,
+  nextSSEReconnectDelay,
+  parseSSEMessage,
+  shouldRefreshSSESnapshot
+} from './sse.js';
 
 describe('SSE reliability helpers', () => {
   it('parses valid events without throwing on malformed JSON', () => {
@@ -17,5 +22,11 @@ describe('SSE reliability helpers', () => {
   it('detects sequence gaps that require a snapshot refresh', () => {
     expect(shouldRefreshSSESnapshot({ seq: 11 }, 10)).toBe(false);
     expect(shouldRefreshSSESnapshot({ seq: 14 }, 10)).toBe(true);
+  });
+
+  it('detects an open connection that stopped receiving activity', () => {
+    expect(isSSEConnectionStale(10_000, 54_999, 45_000)).toBe(false);
+    expect(isSSEConnectionStale(10_000, 55_000, 45_000)).toBe(true);
+    expect(isSSEConnectionStale(0, 55_000, 45_000)).toBe(false);
   });
 });

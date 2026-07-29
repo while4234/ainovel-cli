@@ -189,13 +189,14 @@ import {
   withExpectedRevision
 } from './continuation.js';
 import { createWorkbenchState, eventStatus, mergeSnapshotUpdate, reduceWebEvent, reduceWebEvents, visibleStreamRounds } from './events.js';
-import { nextSSEReconnectDelay, parseSSEMessage } from './sse.js';
+import { isSSEConnectionStale, nextSSEReconnectDelay, parseSSEMessage } from './sse.js';
 import { cacheHitLabel, usageConfidence, usageCoverage } from './usage-ui.js';
 import { UsageObservabilityTable } from './usage-observability.jsx';
 import { CoreCastEditor } from './components/CoreCastEditor.jsx';
 import { FoundationCenter } from './foundation/FoundationCenter.jsx';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
+const SSE_WATCHDOG_INTERVAL_MS = 5_000;
 export const PROJECT_OPEN_TIMEOUT_MS = 90_000;
 
 const coCreateTargetWordChoices = [
@@ -1688,6 +1689,28 @@ export default function App() {
     let source = null;
     let retryTimer = null;
     let reconnectAttempt = 0;
+    let connectionGeneration = 0;
+    let lastActivityAt = Date.now();
+
+    const clearRetryTimer = () => {
+      if (!retryTimer) {
+        return;
+      }
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    };
+
+    const closeSource = () => {
+      if (!source) {
+        return;
+      }
+      source.close();
+      source = null;
+    };
+
+    const markActivity = () => {
+      lastActivityAt = Date.now();
+    };
 
     function applyEvent(event) {
       if (!event || activeProjectIdRef.current !== projectId ||
@@ -1756,19 +1779,11 @@ export default function App() {
       reconnectAttempt = 0;
     }
 
-    const apply = (message) => {
-      const parsed = parseSSEMessage(message);
-      if (!parsed.event) {
-        setConnection('degraded');
-        return;
-      }
-      applyEvent(parsed.event);
-    };
-
     const connect = async (reconcile = false) => {
       if (disposed) {
         return;
       }
+      const generation = ++connectionGeneration;
       if (reconcile) {
         // Reconcile only after a broken connection or an offline transition.
         // The project-open request has already supplied this same snapshot, so
@@ -1791,58 +1806,94 @@ export default function App() {
           // Continue with SSE even when the reconciliation snapshot is unavailable.
         }
       }
-      if (disposed) {
+      if (disposed || generation !== connectionGeneration) {
         return;
       }
       const after = lastSeqRef.current;
       const url = '/api/projects/' + encodeURIComponent(projectId) + '/events?after=' + after;
-      source = new EventSource(url);
+      const currentSource = new EventSource(url);
+      source = currentSource;
+      markActivity();
       setConnection(after > 0 ? 'reconnecting' : 'connecting');
-      source.onopen = () => {
-        if (disposed) {
+      currentSource.onopen = () => {
+        if (disposed || source !== currentSource) {
           return;
         }
+        markActivity();
         reconnectAttempt = 0;
         setConnection('live');
       };
-      for (const type of eventTypes) {
-        source.addEventListener(type, apply);
-      }
-      source.onerror = () => {
-        if (disposed) {
+      const apply = (message) => {
+        if (disposed || source !== currentSource) {
           return;
         }
+        markActivity();
+        const parsed = parseSSEMessage(message);
+        if (!parsed.event) {
+          setConnection('degraded');
+          return;
+        }
+        applyEvent(parsed.event);
+      };
+      for (const type of eventTypes) {
+        currentSource.addEventListener(type, apply);
+      }
+      currentSource.addEventListener('heartbeat', () => {
+        if (disposed || source !== currentSource) {
+          return;
+        }
+        markActivity();
+        reconnectAttempt = 0;
+        setConnection('live');
+      });
+      currentSource.onerror = () => {
+        if (disposed || source !== currentSource) {
+          return;
+        }
+        closeSource();
         setConnection('reconnecting');
-        source.close();
         const delay = nextSSEReconnectDelay(reconnectAttempt);
         reconnectAttempt += 1;
-        retryTimer = window.setTimeout(() => connect(true), delay);
+        clearRetryTimer();
+        retryTimer = window.setTimeout(() => {
+          retryTimer = null;
+          connect(true);
+        }, delay);
       };
     };
 
     const handleOffline = () => {
+      connectionGeneration += 1;
+      clearRetryTimer();
+      closeSource();
       setConnection('offline');
-      source?.close();
     };
     const handleOnline = () => {
       reconnectAttempt = 0;
-      if (retryTimer) {
-        window.clearTimeout(retryTimer);
-      }
+      clearRetryTimer();
+      closeSource();
       connect(true);
     };
 
     connect();
+    const watchdogTimer = window.setInterval(() => {
+      if (disposed || !source || source.readyState !== EventSource.OPEN ||
+          !isSSEConnectionStale(lastActivityAt)) {
+        return;
+      }
+      reconnectAttempt = 0;
+      closeSource();
+      setConnection('reconnecting');
+      connect(true);
+    }, SSE_WATCHDOG_INTERVAL_MS);
     window.addEventListener('offline', handleOffline);
     window.addEventListener('online', handleOnline);
     return () => {
       disposed = true;
-      if (retryTimer) {
-        window.clearTimeout(retryTimer);
-      }
-      if (source) {
-        source.close();
-      }
+      connectionGeneration += 1;
+      window.clearInterval(watchdogTimer);
+      clearRetryTimer();
+      closeSource();
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('online', handleOnline);
     };
