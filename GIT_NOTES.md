@@ -46,6 +46,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `4198c3d` `fix: repair co-create drafts after rollback`:
+  clears deleted Foundation authority when rolling back to a co-create draft,
+  safely repairs the same stale binding in already-rolled-back projects, and
+  routes draft confirmation back through Foundation generation. Focused
+  rollback, Foundation, and co-create planning regressions pass.
 - 2026-07-29 `873408a` `fix: cancel resumes that race with pause`:
   adds a pause epoch across both automatic and externally initiated resume
   preparation, so any resume started before the latest pause cannot publish a
