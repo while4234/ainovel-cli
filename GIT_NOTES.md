@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-29 `this commit` `fix: clarify simulation analysis actions`:
+- 2026-07-29 `d218362` `fix: clarify simulation analysis actions`:
   makes first-time analysis and incremental rescans explicit, disables the
   primary action when all local corpus files have current reports, preserves
   signature/content-based zero-call rescans, and automatically creates or
