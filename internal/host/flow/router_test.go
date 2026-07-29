@@ -837,6 +837,32 @@ func TestDispatcher_ResumeRecoverySurvivesSubagentBoundaries(t *testing.T) {
 	}
 }
 
+func TestDispatcher_DefaultRouteRecoversDurableDraft(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	state := State{
+		Progress:                   p,
+		LastCompleted:              4,
+		InProgressDraftExists:      true,
+		InProgressCheckpoint:       "de_ai",
+		InProgressDeAIState:        writerDeAIStatePassed,
+		InProgressConsistencyValid: true,
+		InProgressWordCount:        4093,
+		InProgressWordMin:          2000,
+		InProgressWordMax:          6250,
+		InProgressWordBudgetValid:  true,
+	}
+
+	got := NewDispatcher(nil, nil).route(state)
+	if got == nil || !got.ResumeRecovery || got.Chapter != 5 {
+		t.Fatalf("ordinary subagent boundary lost durable draft recovery: %+v", got)
+	}
+	if !strings.Contains(got.Task, "check_simulation") {
+		t.Fatalf("ordinary boundary returned fresh writing instead of final validation recovery: %s", got.Task)
+	}
+}
+
 func TestRoute_ContinuationStartsAtFirstNewChapterWithoutBaselinePostprocess(t *testing.T) {
 	p := writingProgress([]int{1, 2, 3}, domain.FlowWriting)
 	p.TotalChapters = 8

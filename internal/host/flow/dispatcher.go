@@ -119,11 +119,8 @@ func (d *Dispatcher) dispatch(asFollowUp bool) {
 }
 
 func (d *Dispatcher) route(state State) *Instruction {
-	if !d.resumeRecovery.Load() {
-		return Route(state)
-	}
 	inst := RouteResume(state)
-	if !writerResumeRouteApplicable(state, inst) {
+	if d.resumeRecovery.Load() && !writerResumeRouteApplicable(state, inst) {
 		d.resumeRecovery.Store(false)
 	}
 	return inst
