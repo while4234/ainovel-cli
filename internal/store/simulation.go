@@ -100,6 +100,19 @@ func (s *SimulationStore) LoadPortable() (*domain.SimulationProfileV2, error) {
 		}
 		return nil, err
 	}
+	var header struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return nil, err
+	}
+	if header.Version == domain.SimulationProfileVersion {
+		portable, _, err := projectLegacySimulationProfile(data)
+		if err != nil {
+			return nil, err
+		}
+		return &portable, nil
+	}
 	portable, err := domain.UnmarshalSimulationPortableProfile(data)
 	if err != nil {
 		return nil, err
@@ -119,7 +132,24 @@ func (s *SimulationStore) LoadLocalEvidence() (*domain.SimulationLocalEvidence, 
 	data, err := s.io.ReadFile(simulationEvidencePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			legacyData, legacyErr := s.io.ReadFile(simulationProfilePath)
+			if os.IsNotExist(legacyErr) {
+				return nil, nil
+			}
+			if legacyErr != nil {
+				return nil, legacyErr
+			}
+			var header struct {
+				Version string `json:"version"`
+			}
+			if json.Unmarshal(legacyData, &header) != nil || header.Version != domain.SimulationProfileVersion {
+				return nil, nil
+			}
+			_, evidence, projectErr := projectLegacySimulationProfile(legacyData)
+			if projectErr != nil {
+				return nil, projectErr
+			}
+			return &evidence, nil
 		}
 		return nil, err
 	}
@@ -128,6 +158,21 @@ func (s *SimulationStore) LoadLocalEvidence() (*domain.SimulationLocalEvidence, 
 		return nil, err
 	}
 	return &evidence, nil
+}
+
+func projectLegacySimulationProfile(data []byte) (
+	domain.SimulationProfileV2,
+	domain.SimulationLocalEvidence,
+	error,
+) {
+	var legacy domain.SimulationProfile
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return domain.SimulationProfileV2{}, domain.SimulationLocalEvidence{}, err
+	}
+	if err := domain.ValidateSimulationProfile(&legacy); err != nil {
+		return domain.SimulationProfileV2{}, domain.SimulationLocalEvidence{}, err
+	}
+	return domain.ProjectSimulationProfileV1(legacy)
 }
 
 // SaveAnalysis installs the bound local evidence before the portable profile.

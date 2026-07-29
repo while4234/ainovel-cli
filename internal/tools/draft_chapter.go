@@ -207,7 +207,7 @@ func (t *DraftChapterTool) validationNextStep() string {
 }
 
 func normalWordBudgetAllowsDraftNextStep(result map[string]any) bool {
-	passed, ok := result["word_budget_passed"].(bool)
+	passed, ok := result["runaway_safety_passed"].(bool)
 	return !ok || passed
 }
 
@@ -241,9 +241,9 @@ func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chap
 		return
 	}
 	result["word_budget"] = map[string]any{
-		"min_words":              policy.HardMinWords,
-		"max_words":              policy.HardMaxWords,
-		"range_policy":           "runaway_safety_fence",
+		"safety_min_words":       policy.HardMinWords,
+		"safety_max_words":       policy.HardMaxWords,
+		"range_policy":           "post_draft_runaway_review",
 		"recommended_min_words":  policy.RecommendedMinWords,
 		"recommended_max_words":  policy.RecommendedMaxWords,
 		"target_total_words":     runtime.Target.TargetTotalWords,
@@ -253,10 +253,10 @@ func (t *DraftChapterTool) addNormalWordBudgetStatus(result map[string]any, chap
 	}
 	result["word_budget_recommended"] = policy.WithinRecommendation(wordCount)
 	if policy.WithinHardRange(wordCount) {
-		result["word_budget_passed"] = true
+		result["runaway_safety_passed"] = true
 		return
 	}
-	result["word_budget_passed"] = false
+	result["runaway_safety_passed"] = false
 	result["deferred_to_host"] = true
 	direction := "低于"
 	if wordCount > policy.HardMaxWords {

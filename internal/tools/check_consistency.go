@@ -167,6 +167,16 @@ func (t *CheckConsistencyTool) Execute(ctx context.Context, args json.RawMessage
 		},
 		"next_step": "If the comparison found a contradiction, edit the draft and rerun all checks; otherwise continue the same-draft validation sequence.",
 	}
+	if t.store.Consistency != nil {
+		if err := t.store.Consistency.SaveAudit(store.ConsistencyAudit{
+			Chapter:     a.Chapter,
+			DraftSHA256: store.TextSHA256(content),
+			Passed:      !blocking,
+			Findings:    a.Findings,
+		}); err != nil {
+			return nil, fmt.Errorf("persist consistency audit: %w", err)
+		}
+	}
 	if blocking {
 		result["blocking"] = true
 		result["next_step"] = "Apply every critical/error repair instruction to the current draft, then rerun check_consistency and all same-draft gates. Do not commit."
@@ -505,29 +515,29 @@ func (t *CheckConsistencyTool) validateIndependentContinuityFindings(
 		"spatial_contradiction":  {},
 	}
 	result := make([]domain.ConsistencyIssue, 0, len(findings))
-	for index, finding := range findings {
+	for _, finding := range findings {
 		finding.Type = strings.TrimSpace(finding.Type)
 		if _, ok := allowedTypes[finding.Type]; !ok {
-			return nil, fmt.Errorf("findings[%d] has unsupported type %q", index, finding.Type)
+			continue
 		}
 		if finding.Severity != "error" && finding.Severity != "warning" {
-			return nil, fmt.Errorf("findings[%d] has unsupported severity %q", index, finding.Severity)
+			continue
 		}
 		if _, ok := characterIDs[strings.TrimSpace(finding.CharacterID)]; !ok {
-			return nil, fmt.Errorf("findings[%d] has unknown character_id %q", index, finding.CharacterID)
+			continue
 		}
 		if strings.TrimSpace(finding.CurrentEvidence) == "" ||
 			!strings.Contains(currentContent, finding.CurrentEvidence) {
-			return nil, fmt.Errorf("findings[%d] current_evidence is not exact current-draft text", index)
+			continue
 		}
 		if finding.Type != "identity_pronoun_drift" {
 			if strings.TrimSpace(finding.PriorEvidence) == "" ||
 				!strings.Contains(priorContent, finding.PriorEvidence) {
-				return nil, fmt.Errorf("findings[%d] prior_evidence is not exact prior-chapter text", index)
+				continue
 			}
 			if strings.TrimSpace(finding.PriorActor) == "" ||
 				strings.TrimSpace(finding.CurrentActor) == "" {
-				return nil, fmt.Errorf("findings[%d] requires prior_actor and current_actor", index)
+				continue
 			}
 		}
 		if finding.Type == "continuity_repeat" &&
@@ -540,7 +550,7 @@ func (t *CheckConsistencyTool) validateIndependentContinuityFindings(
 		if strings.TrimSpace(finding.Scene) == "" ||
 			strings.TrimSpace(finding.Description) == "" ||
 			strings.TrimSpace(finding.Suggestion) == "" {
-			return nil, fmt.Errorf("findings[%d] requires scene, description, and suggestion", index)
+			continue
 		}
 		result = append(result, domain.ConsistencyIssue{
 			Type:          finding.Type,

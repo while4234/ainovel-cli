@@ -83,7 +83,7 @@ func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	if state.InProgressWordCount != len([]rune(draft)) ||
 		state.InProgressLineCount != len(strings.Split(draft, "\n")) ||
 		state.InProgressRecommendedMin != 45 || state.InProgressRecommendedMax != 55 ||
-		state.InProgressWordMin != 30 || state.InProgressWordMax != 82 ||
+		state.InProgressWordMin != 30 || state.InProgressWordMax != 68 ||
 		state.InProgressWordBudgetValid {
 		t.Fatalf("in-progress word budget facts were not loaded: %+v", state)
 	}
@@ -158,7 +158,7 @@ func TestLoadStateKeepsModestDeclaredRangeOverrunOutOfTrimRecovery(t *testing.T)
 	}
 
 	state := LoadState(st)
-	if state.InProgressWordMin != 2000 || state.InProgressWordMax != 9000 || !state.InProgressWordBudgetValid {
+	if state.InProgressWordMin != 2000 || state.InProgressWordMax != 7500 || !state.InProgressWordBudgetValid {
 		t.Fatalf("soft recommendation incorrectly triggered recovery: %+v", state)
 	}
 	if got := Route(state); got == nil || got.Agent != "writer" || got.ResumeRecovery {

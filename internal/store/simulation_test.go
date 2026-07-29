@@ -72,6 +72,49 @@ func TestSimulationSaveWritesPortableProfileAndLocalEvidence(t *testing.T) {
 	}
 }
 
+func TestSimulationLegacyProfileFeedsPortableContractAndSafetyEvidence(t *testing.T) {
+	root := t.TempDir()
+	st := NewStore(root)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := domain.SimulationSourceFingerprint("part.txt", strings.Repeat("a", 64))
+	legacy := domain.SimulationProfile{
+		Version:   domain.SimulationProfileVersion,
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-02T00:00:00Z",
+		Corpus: domain.SimulationCorpusManifest{
+			Sources: []domain.SimulationSource{{
+				RelativePath: "part.txt",
+				SHA256:       strings.Repeat("a", 64),
+				Fingerprint:  fingerprint,
+			}},
+		},
+		SourceReports: []domain.SimulationSourceReport{{
+			RelativePath: "part.txt",
+			SHA256:       strings.Repeat("a", 64),
+			Fingerprint:  fingerprint,
+			Summary:      "legacy safety evidence",
+		}},
+		Synthesis: domain.SimulationSynthesis{
+			Style: domain.SimulationStyle{NarrativeVoice: []string{"Use close narrative distance."}},
+		},
+	}
+	if err := st.Simulation.io.WriteJSON(simulationProfilePath, legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	portable, err := st.Simulation.LoadPortable()
+	if err != nil || portable == nil || portable.Version != domain.SimulationPortableProfileVersion {
+		t.Fatalf("legacy portable projection failed: profile=%+v err=%v", portable, err)
+	}
+	evidence, err := st.Simulation.LoadLocalEvidence()
+	if err != nil || evidence == nil || len(evidence.SourceReports) != 1 ||
+		evidence.SourceReports[0].Summary != "legacy safety evidence" {
+		t.Fatalf("legacy evidence projection failed: evidence=%+v err=%v", evidence, err)
+	}
+}
+
 func TestSimulationFailedV1MigrationDoesNotReplaceLegacyProfile(t *testing.T) {
 	root := t.TempDir()
 	st := NewStore(root)

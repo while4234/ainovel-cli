@@ -44,6 +44,7 @@ type Store struct {
 	Simulation             *SimulationStore
 	SimulationContracts    *SimulationContractStore
 	SimulationChecks       *SimulationCheckStore
+	Consistency            *ConsistencyStore
 	DeAI                   *DeAIStore
 	Adaptation             *AdaptationStore
 	Continuation           *ContinuationStore
@@ -93,6 +94,7 @@ func NewStore(dir string) *Store {
 		Simulation:             NewSimulationStore(newIO(dir)),
 		SimulationContracts:    NewSimulationContractStore(newIO(dir)),
 		SimulationChecks:       NewSimulationCheckStore(newIO(dir)),
+		Consistency:            NewConsistencyStore(newIO(dir)),
 		DeAI:                   NewDeAIStore(newIO(dir)),
 		Adaptation:             adaptation,
 		Continuation:           NewContinuationStore(newIO(dir), migration),

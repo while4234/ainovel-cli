@@ -441,6 +441,61 @@ func TestWriterReadChapterToolAttachesCurrentPersistedDeAIRepair(t *testing.T) {
 	}
 }
 
+func TestWriterReadChapterToolAttachesCurrentPersistedConsistencyRepair(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Progress.Init("test", 2); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+	if err := st.Progress.StartChapter(1); err != nil {
+		t.Fatalf("StartChapter: %v", err)
+	}
+	const draft = "current draft with a misplaced scene"
+	if err := st.Drafts.SaveDraft(1, draft); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	if err := st.Consistency.SaveAudit(store.ConsistencyAudit{
+		Chapter:     1,
+		DraftSHA256: store.TextSHA256(draft),
+		Findings: []domain.ConsistencyIssue{{
+			Type:        "arc_beat_miss",
+			Severity:    "error",
+			Description: "scene occurs in the wrong room",
+			Evidence:    "misplaced scene",
+			Suggestion:  "move the event to the contracted room",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveAudit: %v", err)
+	}
+
+	raw, err := newWriterReadChapterTool(tools.NewReadChapterTool(st), st).Execute(
+		t.Context(),
+		json.RawMessage(`{"chapter":1,"source":"draft"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Pending *struct {
+			DraftSHA256 string                    `json:"draft_sha256"`
+			DoNotRepeat bool                      `json:"do_not_repeat_consistency_before_edit"`
+			Findings    []domain.ConsistencyIssue `json:"findings"`
+			NextAction  string                    `json:"next_action"`
+		} `json:"pending_consistency_repair"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Pending == nil || !payload.Pending.DoNotRepeat ||
+		payload.Pending.DraftSHA256 != store.TextSHA256(draft) ||
+		len(payload.Pending.Findings) != 1 ||
+		!strings.Contains(payload.Pending.NextAction, "edit_chapter") {
+		t.Fatalf("pending consistency repair is not actionable: %s", raw)
+	}
+}
+
 func TestWriterChapterInferenceToolAddsActiveChapter(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -607,7 +662,7 @@ func TestWriterDraftChapterToolDefersOverwriteOfActiveDraft(t *testing.T) {
 	}
 }
 
-func TestWriterDraftChapterToolAllowsHostAuthorizedOversizeRegeneration(t *testing.T) {
+func TestWriterDraftChapterToolInfersHostAuthorizedOversizeRegeneration(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -624,10 +679,9 @@ func TestWriterDraftChapterToolAllowsHostAuthorizedOversizeRegeneration(t *testi
 	}
 
 	raw, err := newWriterDraftChapterTool(st).Execute(t.Context(), writerDraftArgs(t, map[string]any{
-		"chapter":               1,
-		"content":               strings.Repeat("新", 100),
-		"mode":                  "write",
-		"replace_out_of_budget": true,
+		"chapter": 1,
+		"content": strings.Repeat("新", 100),
+		"mode":    "write",
 	}))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -638,7 +692,7 @@ func TestWriterDraftChapterToolAllowsHostAuthorizedOversizeRegeneration(t *testi
 		DraftSkipped        bool `json:"draft_skipped"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil || !result.Written || !result.ReplacedOutOfBudget || result.DraftSkipped {
-		t.Fatalf("host-authorized regeneration was blocked: %+v err=%v raw=%s", result, err, raw)
+		t.Fatalf("host-selected regeneration was blocked when the model omitted the control flag: %+v err=%v raw=%s", result, err, raw)
 	}
 }
 

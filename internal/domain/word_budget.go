@@ -54,8 +54,6 @@ type CurrentChapterWordBudget struct {
 	Chapter             int `json:"chapter"`
 	RecommendedMinWords int `json:"recommended_min_words"`
 	RecommendedMaxWords int `json:"recommended_max_words"`
-	HardMinWords        int `json:"hard_min_words,omitempty"`
-	HardMaxWords        int `json:"hard_max_words,omitempty"`
 }
 
 // ChapterWordBudgetPolicy separates the rolling recommendation from the
@@ -107,7 +105,7 @@ func ResolveChapterWordBudgetPolicy(runtime WordBudgetRuntime, declaredMin, decl
 		}
 	}
 	hardMin := softMin * 2 / 3
-	hardMax := softMax * 3 / 2
+	hardMax := softMax * 5 / 4
 	if hardMin <= 0 || hardMax < hardMin {
 		return ChapterWordBudgetPolicy{}, false
 	}

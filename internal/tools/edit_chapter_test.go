@@ -51,6 +51,43 @@ func TestEditChapterAppliesEdit(t *testing.T) {
 	}
 }
 
+func TestEditChapterRejectsRepairThatCreatesRunawayDraft(t *testing.T) {
+	s := store.NewStore(testStoreDir(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Progress.Save(&domain.Progress{
+		NovelName: "test", Phase: domain.PhaseWriting, Flow: domain.FlowWriting,
+		TotalChapters: 1, InProgressChapter: 1,
+	}); err != nil {
+		t.Fatalf("Progress.Save: %v", err)
+	}
+	budget := domain.NewWordBudget(100, "test").WithPlannedChapters(1)
+	if err := s.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	current := strings.Repeat("甲", 100)
+	if err := s.Drafts.SaveDraft(1, current); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	raw, err := NewEditChapterTool(s).Execute(context.Background(), mustJSON(t, map[string]any{
+		"chapter": 1, "old_string": "甲", "new_string": strings.Repeat("乙", 90),
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["runaway_edit_rejected"] != true || payload["changed"] != false {
+		t.Fatalf("runaway edit was not rejected: %+v", payload)
+	}
+	if got, loadErr := s.Drafts.LoadDraft(1); loadErr != nil || got != current {
+		t.Fatalf("rejected edit changed draft: err=%v got=%q", loadErr, got)
+	}
+}
+
 func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)
@@ -69,7 +106,7 @@ func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) 
 	}
 	first := " REMOVE-ONE-1234567890 "
 	second := " REMOVE-TWO-1234567890 "
-	content := strings.Repeat("a", 70) + first + strings.Repeat("b", 70) + second
+	content := strings.Repeat("a", 65) + first + strings.Repeat("b", 65) + second
 	if err := s.Drafts.SaveDraft(1, content); err != nil {
 		t.Fatalf("SaveDraft: %v", err)
 	}
@@ -86,19 +123,19 @@ func TestEditChapterBatchAppliesMultipleEditsAndReportsWordBudget(t *testing.T) 
 		t.Fatalf("Execute: %v", err)
 	}
 	var payload struct {
-		Changed          bool `json:"changed"`
-		EditCount        int  `json:"edit_count"`
-		WordCount        int  `json:"word_count"`
-		WordBudgetPassed bool `json:"word_budget_passed"`
+		Changed             bool `json:"changed"`
+		EditCount           int  `json:"edit_count"`
+		WordCount           int  `json:"word_count"`
+		RunawaySafetyPassed bool `json:"runaway_safety_passed"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if !payload.Changed || payload.EditCount != 2 || payload.WordCount != 142 || !payload.WordBudgetPassed {
+	if !payload.Changed || payload.EditCount != 2 || payload.WordCount != 132 || !payload.RunawaySafetyPassed {
 		t.Fatalf("unexpected batch result: %+v raw=%s", payload, raw)
 	}
 	got, err := s.Drafts.LoadDraft(1)
-	if err != nil || got != strings.Repeat("a", 70)+"x"+strings.Repeat("b", 70)+"y" {
+	if err != nil || got != strings.Repeat("a", 65)+"x"+strings.Repeat("b", 65)+"y" {
 		t.Fatalf("batch edit mismatch: got=%q err=%v", got, err)
 	}
 }
@@ -665,7 +702,7 @@ func TestEditChapterPendingPolishDoesNotReturnCreationBudgetRecovery(t *testing.
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if _, exists := payload["word_budget_passed"]; exists {
+	if _, exists := payload["runaway_safety_passed"]; exists {
 		t.Fatalf("pending polish returned creation budget status: %+v", payload)
 	}
 	next, _ := payload["next_step"].(string)

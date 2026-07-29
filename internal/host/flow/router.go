@@ -388,6 +388,36 @@ func RouteResume(s State) *Instruction {
 			ResumeRecovery: true,
 		}
 	}
+	if s.InProgressDeAIState == writerDeAIStatePassed && s.InProgressConsistencyValid {
+		adaptationStep := ""
+		if s.AdaptationActive {
+			adaptationStep = "若本书处于改编模式，再对同一版草稿调用 check_adaptation；"
+		}
+		return &Instruction{
+			Agent: "writer",
+			Task: fmt.Sprintf(
+				"恢复第 %d 章已通过一致性与去AI检查的当前草稿（word_count=%d，word_budget=%d-%d）。草稿未变化，禁止重复调用 novel_context、read_chapter、check_consistency、plan_chapter、draft_chapter 或修改正文。只调用一次 check_de_ai(chapter=%d) 取回绑定当前草稿的最新 commit_context；%s随后调用 check_simulation(chapter=%d)。仿写检查通过后，严格复制最新 commit_context 的人物与章节元数据并直接 commit_chapter；不得凭记忆生成摘要。",
+				chapter, s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax,
+				chapter, adaptationStep, chapter,
+			),
+			Reason:         fmt.Sprintf("恢复第 %d 章已通过正文门禁后的仿写检查与提交", chapter),
+			Chapter:        chapter,
+			ResumeRecovery: true,
+		}
+	}
+	if s.InProgressConsistencyValid &&
+		(s.InProgressDeAIState == writerDeAIStateMissing || s.InProgressDeAIState == writerDeAIStateStale) {
+		return &Instruction{
+			Agent: "writer",
+			Task: fmt.Sprintf(
+				"恢复第 %d 章已通过一致性检查、但去AI凭据%s的当前草稿。草稿未变化，禁止重复调用 novel_context、read_chapter、check_consistency、plan_chapter、draft_chapter 或修改正文。只调用 check_de_ai(chapter=%d)：若返回 repair finding，报告会持久化，本轮立即结束，由 Host 派发精确修订；若通过，则调用 check_simulation(chapter=%d)，再严格复制最新 commit_context 的元数据直接 commit_chapter。",
+				chapter, resumeFact(s.InProgressDeAIState), chapter, chapter,
+			),
+			Reason:         fmt.Sprintf("恢复第 %d 章已通过一致性后的去AI检查", chapter),
+			Chapter:        chapter,
+			ResumeRecovery: true,
+		}
+	}
 	adaptationStep := ""
 	if s.AdaptationActive {
 		adaptationStep = "；若本书处于改编模式，还必须在同一版草稿上通过 check_adaptation"
@@ -395,7 +425,7 @@ func RouteResume(s State) *Instruction {
 	return &Instruction{
 		Agent: "writer",
 		Task: fmt.Sprintf(
-			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t，word_count=%d，word_budget=%d-%d，word_budget_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节。先调用 novel_context(chapter=%d) 一次加载权威章节契约，再且只再调用一次 read_chapter(chapter=%d, source=\"draft\")，禁止传 from_line/to_line；随后立即按计划场景序号逐项调用 check_consistency%s。只有当前草稿的一致性检查通过后才能调用 check_de_ai。若 check_de_ai 有 repair finding，依据已回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换，过期 old_string 让工具跳过，不要重放旧批次；每次改稿后依次重新执行 check_consistency、check_de_ai，直到同一版草稿同时通过。不要重复调用 novel_context 或 read_chapter。最后从最新 check_de_ai.commit_context 复制人物与章节元数据并直接 commit_chapter，不要凭记忆生成摘要，不要重新规划或整章重写。",
+			"恢复第 %d 章现有草稿（checkpoint=%s，de_ai=%s，consistency_current=%t，word_count=%d，word_budget=%d-%d，word_budget_current=%t）。当前草稿是唯一工作版本：禁止调用 plan_chapter 或 draft_chapter，禁止读取其他章节。先调用 novel_context(chapter=%d) 一次加载权威章节契约，再且只再调用一次 read_chapter(chapter=%d, source=\"draft\")，禁止传 from_line/to_line。若 read_chapter 返回 pending_consistency_repair，必须先依据其中绑定当前 draft_sha256 的 critical/error findings 调用一次 edit_chapter 精确修复，禁止在修改前重复调用 check_consistency；若没有该字段，才直接按计划场景序号逐项调用 check_consistency%s。任何改稿后都要对新草稿重新调用 check_consistency。只有当前草稿的一致性检查通过后才能调用 check_de_ai。若 check_de_ai 有 repair finding，依据已回读的当前原文用 repair_de_ai_batch 做一小批唯一精确替换，过期 old_string 让工具跳过，不要重放旧批次；每次改稿后依次重新执行 check_consistency、check_de_ai，直到同一版草稿同时通过。不要重复调用 novel_context 或 read_chapter。最后从最新 check_de_ai.commit_context 复制人物与章节元数据并直接 commit_chapter，不要凭记忆生成摘要，不要重新规划或整章重写。",
 			chapter, resumeFact(s.InProgressCheckpoint), resumeFact(s.InProgressDeAIState), s.InProgressConsistencyValid,
 			s.InProgressWordCount, s.InProgressWordMin, s.InProgressWordMax, s.InProgressWordBudgetValid,
 			chapter, chapter, adaptationStep,

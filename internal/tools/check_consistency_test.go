@@ -298,6 +298,10 @@ func TestCheckConsistencyRecordsMissingPlannedSceneAsBlockingFinding(t *testing.
 	if st.Checkpoints.LatestByStep(domain.ChapterScope(1), "consistency_check") != nil {
 		t.Fatal("blocking missing scene must not create a passing checkpoint")
 	}
+	audit, err := st.Consistency.LoadAudit(1)
+	if err != nil || audit == nil || audit.Passed || len(audit.Findings) != 1 {
+		t.Fatalf("blocking audit was not persisted for recovery: audit=%+v err=%v", audit, err)
+	}
 }
 
 func TestCheckConsistencyMissingMarkerRequiresBlockingFinding(t *testing.T) {
@@ -398,6 +402,41 @@ func TestCheckConsistencyIndependentAuditDropsRoleSwappedQuestionFalsePositive(t
 	}
 	if !result.Passed || len(result.Findings) != 0 {
 		t.Fatalf("role-swapped question should not be a repeat: %s", raw)
+	}
+}
+
+func TestCheckConsistencyIndependentAuditDropsUngroundedFinding(t *testing.T) {
+	st := prepareIndependentContinuityTestStore(t)
+	model := &consistencyAuditModel{response: `{"findings":[{
+		"type":"continuity_repeat",
+		"severity":"error",
+		"character_id":"su",
+		"scene":"coffee counter",
+		"current_evidence":"苏瑾琛问：“你结婚了吗？”",
+		"prior_evidence":"模型改写的上一章证据",
+		"prior_actor":"苏瑾琛",
+		"prior_recipient":"刘子昊",
+		"current_actor":"苏瑾琛",
+		"current_recipient":"刘子昊",
+		"description":"未经原文支持的判断",
+		"suggestion":"删除当前问题"
+	}]}`}
+	raw, err := NewCheckConsistencyTool(st, model).Execute(
+		context.Background(),
+		json.RawMessage(`{"chapter":2,"scene_checks":[],"findings":[]}`),
+	)
+	if err != nil {
+		t.Fatalf("ungrounded independent finding should be ignored, got %v", err)
+	}
+	var result struct {
+		Passed   bool                      `json:"passed"`
+		Findings []domain.ConsistencyIssue `json:"findings"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Passed || len(result.Findings) != 0 {
+		t.Fatalf("ungrounded independent finding should not block Writer: %s", raw)
 	}
 }
 

@@ -78,7 +78,7 @@ func NewStopGuard(st *store.Store, onBlock func(reason string, consecutive int32
 
 func blockMessage(st *store.Store, progress *domain.Progress) string {
 	if progress != nil {
-		if instruction := flow.Route(flow.LoadState(st)); instruction != nil {
+		if instruction := flow.RouteResume(flow.LoadState(st)); instruction != nil {
 			return "禁止结束对话。Phase 尚未 Complete；重新下达当前权威路由，请立即执行，不要只回复等待：\n" + flow.FormatMessage(instruction)
 		}
 	}

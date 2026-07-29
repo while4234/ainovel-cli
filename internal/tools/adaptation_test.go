@@ -731,15 +731,15 @@ func TestAdaptationDraftPreservesRunMetaWordBudgetLocalRepairGuidance(t *testing
 		t.Fatalf("draft_chapter Execute: %v", err)
 	}
 	var payload struct {
-		WordBudgetPassed   bool     `json:"word_budget_passed"`
-		WordContractPassed bool     `json:"word_contract_passed"`
-		WordContractIssues []string `json:"word_contract_issues"`
-		Next               string   `json:"next_step"`
+		RunawaySafetyPassed bool     `json:"runaway_safety_passed"`
+		WordContractPassed  bool     `json:"word_contract_passed"`
+		WordContractIssues  []string `json:"word_contract_issues"`
+		Next                string   `json:"next_step"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal draft payload: %v", err)
 	}
-	if payload.WordBudgetPassed {
+	if payload.RunawaySafetyPassed {
 		t.Fatalf("normal word budget should fail, got %+v", payload)
 	}
 	if !payload.WordContractPassed || len(payload.WordContractIssues) > 0 {

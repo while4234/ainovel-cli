@@ -188,7 +188,7 @@ func TestDraftChapterReportsNormalWordBudget(t *testing.T) {
 	if err := json.Unmarshal(raw, &result); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if result["word_budget_passed"] != false {
+	if result["runaway_safety_passed"] != false {
 		t.Fatalf("expected word budget failure, got %+v", result)
 	}
 	if result["deferred_to_host"] != true {
@@ -228,14 +228,14 @@ func TestDraftChapterKeepsQualityDraftAboveSoftRecommendation(t *testing.T) {
 	result := map[string]any{}
 	NewDraftChapterTool(s).addNormalWordBudgetStatus(result, 1, 4165)
 
-	if result["word_budget_passed"] != true || result["word_budget_recommended"] != false {
+	if result["runaway_safety_passed"] != true || result["word_budget_recommended"] != false {
 		t.Fatalf("soft recommendation became a hard rejection: %+v", result)
 	}
 	if result["deferred_to_host"] == true {
 		t.Fatalf("quality draft within 3000-6000 must not enter trimming recovery: %+v", result)
 	}
 	budgetPayload := result["word_budget"].(map[string]any)
-	if budgetPayload["min_words"] != 2000 || budgetPayload["max_words"] != 9000 ||
+	if budgetPayload["safety_min_words"] != 2000 || budgetPayload["safety_max_words"] != 7500 ||
 		budgetPayload["recommended_min_words"] != 3273 || budgetPayload["recommended_max_words"] != 4000 {
 		t.Fatalf("unexpected hard/soft ranges: %+v", budgetPayload)
 	}

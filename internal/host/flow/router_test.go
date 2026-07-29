@@ -506,6 +506,8 @@ func TestRouteResume_UsesExistingDraftValidationStage(t *testing.T) {
 		"禁止读取其他章节",
 		`read_chapter(chapter=5, source="draft")`,
 		`novel_context(chapter=5)`,
+		"pending_consistency_repair",
+		"禁止在修改前重复调用 check_consistency",
 		"repair_de_ai_batch",
 		"check_consistency",
 		"只有当前草稿的一致性检查通过后才能调用 check_de_ai",
@@ -560,6 +562,67 @@ func TestRouteResume_UsesPersistedDeAIRepairWithoutRepeatingCurrentConsistency(t
 	} {
 		if !strings.Contains(got.Task, want) {
 			t.Fatalf("de-AI recovery task missing %q: %s", want, got.Task)
+		}
+	}
+}
+
+func TestRouteResume_UsesPassedReceiptsWithoutRepeatingExpensiveGates(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	got := RouteResume(State{
+		Progress:                   p,
+		LastCompleted:              4,
+		InProgressDraftExists:      true,
+		InProgressCheckpoint:       "de_ai_check",
+		InProgressDeAIState:        writerDeAIStatePassed,
+		InProgressConsistencyValid: true,
+		InProgressWordCount:        3982,
+		InProgressWordMin:          2000,
+		InProgressWordMax:          6250,
+		InProgressWordBudgetValid:  true,
+	})
+	if got == nil || got.Agent != "writer" || got.Chapter != 5 || !got.ResumeRecovery {
+		t.Fatalf("expected passed-gate recovery, got %+v", got)
+	}
+	for _, want := range []string{
+		"check_de_ai(chapter=5)",
+		"check_simulation(chapter=5)",
+		"commit_chapter",
+		"禁止重复调用 novel_context、read_chapter、check_consistency",
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("passed-gate recovery task missing %q: %s", want, got.Task)
+		}
+	}
+}
+
+func TestRouteResume_UsesCurrentConsistencyWithoutRepeatingItForStaleDeAI(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4}, domain.FlowWriting)
+	p.TotalChapters = 20
+	p.InProgressChapter = 5
+	got := RouteResume(State{
+		Progress:                   p,
+		LastCompleted:              4,
+		InProgressDraftExists:      true,
+		InProgressCheckpoint:       "consistency_check",
+		InProgressDeAIState:        writerDeAIStateStale,
+		InProgressConsistencyValid: true,
+		InProgressWordCount:        3982,
+		InProgressWordMin:          2000,
+		InProgressWordMax:          6250,
+		InProgressWordBudgetValid:  true,
+	})
+	if got == nil || got.Agent != "writer" || got.Chapter != 5 || !got.ResumeRecovery {
+		t.Fatalf("expected stale-deAI recovery, got %+v", got)
+	}
+	for _, want := range []string{
+		"check_de_ai(chapter=5)",
+		"check_simulation(chapter=5)",
+		"禁止重复调用 novel_context、read_chapter、check_consistency",
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("stale-deAI recovery task missing %q: %s", want, got.Task)
 		}
 	}
 }

@@ -424,7 +424,7 @@ func TestContextToolChapterModeIncludesWorkingAndReferenceFields(t *testing.T) {
 	}
 }
 
-func TestContextToolSeparatesSoftAndHardChapterWordRanges(t *testing.T) {
+func TestContextToolExposesOnlyDraftRecommendationBeforeWriting(t *testing.T) {
 	st := store.NewStore(testStoreDir(t))
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -442,20 +442,21 @@ func TestContextToolSeparatesSoftAndHardChapterWordRanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	var payload struct {
-		Working struct {
-			WordBudget struct {
-				Current domain.CurrentChapterWordBudget `json:"current_chapter"`
-			} `json:"word_budget"`
-		} `json:"working_memory"`
-	}
+	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	current := payload.Working.WordBudget.Current
-	if current.RecommendedMinWords != 3273 || current.RecommendedMaxWords != 4000 ||
-		current.HardMinWords != 2000 || current.HardMaxWords != 9000 {
+	working := payload["working_memory"].(map[string]any)
+	wordBudget := working["word_budget"].(map[string]any)
+	current := wordBudget["current_chapter"].(map[string]any)
+	if current["recommended_min_words"] != float64(3273) || current["recommended_max_words"] != float64(4000) {
 		t.Fatalf("unexpected context ranges: %+v", current)
+	}
+	if _, exists := current["hard_min_words"]; exists {
+		t.Fatalf("pre-draft context leaked hard_min_words: %+v", current)
+	}
+	if _, exists := current["hard_max_words"]; exists {
+		t.Fatalf("pre-draft context leaked hard_max_words: %+v", current)
 	}
 }
 

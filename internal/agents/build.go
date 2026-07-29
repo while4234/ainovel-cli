@@ -1044,6 +1044,10 @@ func (t *writerReadChapterTool) Execute(ctx context.Context, args json.RawMessag
 		return nil, err
 	}
 	if requestedChapter > 0 && requestedChapter == activeChapter {
+		result, err = attachPendingConsistencyRepair(t.store, requestedChapter, result)
+		if err != nil {
+			return nil, err
+		}
 		return attachPendingDeAIRepair(t.store, requestedChapter, result)
 	}
 	if requestedChapter <= 0 || activeChapter <= 0 || requestedChapter == activeChapter {
@@ -1090,6 +1094,40 @@ func (t *writerReadChapterTool) redirectPriorChapterRead(activeChapter, requeste
 		return nil, false
 	}
 	return raw, true
+}
+
+func attachPendingConsistencyRepair(st *store.Store, chapter int, result json.RawMessage) (json.RawMessage, error) {
+	if st == nil || st.Consistency == nil || chapter <= 0 {
+		return result, nil
+	}
+	audit, err := st.Consistency.LoadAudit(chapter)
+	if err != nil || audit == nil || audit.Passed {
+		return result, nil
+	}
+	content, _, err := st.Drafts.LoadChapterContent(chapter)
+	if err != nil || content == "" || audit.DraftSHA256 != store.TextSHA256(content) {
+		return result, nil
+	}
+	findings := make([]domain.ConsistencyIssue, 0, len(audit.Findings))
+	for _, finding := range audit.Findings {
+		if finding.Severity == "critical" || finding.Severity == "error" {
+			findings = append(findings, finding)
+		}
+	}
+	if len(findings) == 0 {
+		return result, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(result, &payload); err != nil {
+		return result, nil
+	}
+	payload["pending_consistency_repair"] = map[string]any{
+		"draft_sha256":                          audit.DraftSHA256,
+		"do_not_repeat_consistency_before_edit": true,
+		"findings":                              findings,
+		"next_action":                           "Apply the exact actionable repairs with edit_chapter now. After the edit, rerun check_consistency on the changed draft.",
+	}
+	return json.Marshal(payload)
 }
 
 func attachPendingDeAIRepair(st *store.Store, chapter int, result json.RawMessage) (json.RawMessage, error) {
@@ -1487,6 +1525,11 @@ func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessa
 	if chapter <= 0 {
 		return nil, fmt.Errorf("chapter is required and cannot be inferred from current writing state")
 	}
+	if writerShouldAuthorizeOutOfBudgetReplacement(t.store, chapter, raw["mode"]) {
+		// The Host selects this recovery path from durable word-budget state.
+		// Do not depend on the model faithfully echoing a control-only flag.
+		raw["replace_out_of_budget"] = json.RawMessage("true")
+	}
 	if writerDraftWouldOverwriteActiveDraft(t.store, chapter, raw["mode"], raw["replace_out_of_budget"]) {
 		existing, _ := t.store.Drafts.LoadDraft(chapter)
 		return json.Marshal(map[string]any{
@@ -1514,6 +1557,28 @@ func (t *writerDraftChapterTool) Execute(ctx context.Context, args json.RawMessa
 		return nil, fmt.Errorf("augment draft_chapter args: %w", err)
 	}
 	return t.inner.Execute(ctx, nextArgs)
+}
+
+func writerShouldAuthorizeOutOfBudgetReplacement(st *store.Store, chapter int, rawMode json.RawMessage) bool {
+	if st == nil || chapter <= 0 {
+		return false
+	}
+	var mode string
+	if json.Unmarshal(rawMode, &mode) != nil || mode != "write" {
+		return false
+	}
+	existing, err := st.Drafts.LoadDraft(chapter)
+	if err != nil || strings.TrimSpace(existing) == "" {
+		return false
+	}
+	progress, progressErr := st.Progress.Load()
+	_, policy, policyOK, policyErr := st.ChapterWordBudgetPolicy(progress, chapter)
+	if progressErr != nil || progress == nil || policyErr != nil || !policyOK || policy.HardMaxWords <= 0 {
+		return false
+	}
+	existingCount := utf8.RuneCountInString(existing)
+	return existingCount > policy.HardMaxWords &&
+		(existingCount-policy.HardMaxWords)*10 > policy.HardMaxWords
 }
 
 func writerDraftWouldOverwriteActiveDraft(st *store.Store, chapter int, rawMode, rawReplaceOutOfBudget json.RawMessage) bool {

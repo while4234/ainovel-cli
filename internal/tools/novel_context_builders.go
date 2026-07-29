@@ -196,12 +196,6 @@ func (t *ContextTool) buildWordBudget(result map[string]any, chapter int) {
 	if !ok {
 		return
 	}
-	if chapter > 0 {
-		if _, policy, policyOK, policyErr := t.store.ChapterWordBudgetPolicy(progress, chapter); policyErr == nil && policyOK {
-			payload.CurrentChapter.HardMinWords = policy.HardMinWords
-			payload.CurrentChapter.HardMaxWords = policy.HardMaxWords
-		}
-	}
 	working, ok := result["working_memory"].(map[string]any)
 	if !ok {
 		working = map[string]any{}

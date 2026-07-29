@@ -213,6 +213,13 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 		t.addDraftStatus(payload, a.Chapter)
 		return json.Marshal(payload)
 	}
+	replacementCount := 1
+	if a.ReplaceAll {
+		replacementCount = -1
+	}
+	if rejected := t.rejectRunawayEdit(a.Chapter, current, strings.Replace(current, a.OldString, a.NewString, replacementCount)); rejected != nil {
+		return json.Marshal(rejected)
+	}
 	// 委托 agentcore.EditTool 完成找-换
 	subArgs, _ := json.Marshal(map[string]any{
 		"path":        fmt.Sprintf("drafts/%02d.draft.md", a.Chapter),
@@ -268,6 +275,11 @@ func (t *EditChapterTool) executeBatch(
 				"deferred_to_host": true, "expected_budget_segment": window.Segment,
 				"next_step": "本段修改没有缩小与字数预算的距离，未执行任何落盘。立即结束本轮，由 Host 重新派发当前行段。",
 			})
+		}
+	}
+	if budgetSegment == nil {
+		if rejected := t.rejectRunawayEdit(chapter, current, updated); rejected != nil {
+			return json.Marshal(rejected)
 		}
 	}
 	payload := map[string]any{
@@ -425,14 +437,14 @@ func (t *EditChapterTool) addDraftStatus(payload map[string]any, chapter int) {
 	minWords := policy.HardMinWords
 	maxWords := policy.HardMaxWords
 	payload["word_budget"] = map[string]any{
-		"min_words":             minWords,
-		"max_words":             maxWords,
+		"safety_min_words":      minWords,
+		"safety_max_words":      maxWords,
 		"recommended_min_words": policy.RecommendedMinWords,
 		"recommended_max_words": policy.RecommendedMaxWords,
 	}
 	payload["word_budget_recommended"] = policy.WithinRecommendation(wordCount)
 	withinBudget := policy.WithinHardRange(wordCount)
-	payload["word_budget_passed"] = withinBudget
+	payload["runaway_safety_passed"] = withinBudget
 	if segment, segmented := payload["budget_segment"]; segmented {
 		if withinBudget {
 			payload["next_step"] = fmt.Sprintf("字数分段 %v 已保存，当前草稿已进入预算。立即结束本轮；Host 将派发同一草稿的完整质量校验。", segment)
@@ -448,6 +460,27 @@ func (t *EditChapterTool) addDraftStatus(payload map[string]any, chapter int) {
 		"当前草稿 %d 字，仍不在 %d-%d 字区间。立即结束本轮，不要重新 read_chapter 或继续 edit_chapter；Host 将按行段派发下一次局部修复，保留关键情节、人物选择、情感落点和章末钩子。进入区间后再执行各项检查。",
 		wordCount, minWords, maxWords,
 	)
+}
+
+func (t *EditChapterTool) rejectRunawayEdit(chapter int, current, updated string) map[string]any {
+	progress, err := t.store.Progress.Load()
+	if err != nil || progress == nil || progress.Flow == domain.FlowPolishing || len(progress.PendingRewrites) > 0 {
+		return nil
+	}
+	_, policy, ok, err := t.store.ChapterWordBudgetPolicy(progress, chapter)
+	if err != nil || !ok {
+		return nil
+	}
+	before := len([]rune(current))
+	after := len([]rune(updated))
+	if !policy.WithinHardRange(before) || policy.WithinHardRange(after) {
+		return nil
+	}
+	return map[string]any{
+		"chapter": chapter, "changed": false, "word_count": before,
+		"candidate_word_count": after, "runaway_edit_rejected": true,
+		"next_step": "本次局部修复会把原本正常的草稿推过生成后异常膨胀围栏，未落盘。缩小替换范围并保持局部修改，或立即结束本轮由 Host 重新派发。",
+	}
 }
 
 func (t *EditChapterTool) nextStepAfterEdit() string {
