@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-29 `pending` `fix: streamline chapter de-ai recovery`:
+- 2026-07-29 `c410b6f` `fix: streamline chapter de-ai recovery`:
   keeps the first and final consistency gates while allowing digest-bound
   `de_ai_batch_repair` checkpoints to re-run only `check_de_ai` inside the
   bounded repair loop. Transient gateway `Invalid Argument` retries increase
