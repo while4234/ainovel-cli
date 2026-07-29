@@ -1074,6 +1074,14 @@ func TestCloneProjectHandlerCreatesIndependentProject(t *testing.T) {
 	if got := string(cloneTestReadFile(t, filepath.Join(response.Project.OutputDir, "chapters", "chapter.md"))); got != "http clone body" {
 		t.Fatalf("HTTP cloned chapter = %q", got)
 	}
+	revisions := storepkg.NewRevisionStore(response.Project.OutputDir)
+	lease, err := revisions.AcquireNormalFlow("clone-rollback")
+	if err != nil {
+		t.Fatalf("cloned project retained source Web action lease: %v", err)
+	}
+	if err := revisions.ReleaseNormalFlow(lease.Token); err != nil {
+		t.Fatalf("release cloned project lease: %v", err)
+	}
 }
 
 func TestCloneProjectHandlerRejectsRunningProject(t *testing.T) {

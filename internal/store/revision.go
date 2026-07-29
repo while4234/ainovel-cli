@@ -380,6 +380,30 @@ func (s *RevisionStore) ReleaseNormalFlow(token string) error {
 	})
 }
 
+// DetachClonedNormalFlowLease removes process-local ownership copied from a
+// source project while preserving the clone's durable revision history.
+func (s *RevisionStore) DetachClonedNormalFlowLease() error {
+	if s == nil || s.io == nil {
+		return fmt.Errorf("revision store is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.loadUnlocked()
+	if err != nil {
+		return err
+	}
+	if state.NormalLease == nil {
+		return nil
+	}
+	state.NormalLease = nil
+	state.Generation++
+	if err := validateRevisionState(state); err != nil {
+		return err
+	}
+	return s.io.WriteJSON(revisionStateFile, state)
+}
+
 func (s *RevisionStore) FenceForNormalFlow(token string) (RevisionFence, error) {
 	var fence RevisionFence
 	err := s.withRevisionTransaction(func() error {

@@ -209,6 +209,10 @@ func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, err
 	if err := rebaseClonedProjectJSON(stagingRoot, source.RootDir, finalRoot); err != nil {
 		return ProjectManifest{}, err
 	}
+	clonedRevisions := storepkg.NewRevisionStore(filepath.Join(stagingRoot, "output"))
+	if err := clonedRevisions.DetachClonedNormalFlowLease(); err != nil {
+		return ProjectManifest{}, fmt.Errorf("detach cloned normal-flow lease: %w", err)
+	}
 	if err := os.Rename(stagingRoot, finalRoot); err != nil {
 		return ProjectManifest{}, fmt.Errorf("install cloned project: %w", err)
 	}

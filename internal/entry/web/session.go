@@ -3260,9 +3260,12 @@ func (s *ProjectSession) restoreCoCreateCheckpointKind(expectedKind string) erro
 	}
 	if s.coCreateRestoreBlockedByProjectState() {
 		// Once formal planning/writing has advanced, a co-create checkpoint is
-		// stale recovery state. Remove only that transient checkpoint; the
-		// canonical Foundation, character cards and planning artifacts remain.
-		s.clearCoCreateCheckpoint()
+		// inactive recovery state. Keep it while rollback can still reach the
+		// draft boundary, but discard it once prose writing has made that
+		// recovery boundary obsolete.
+		if s.coCreateCheckpointPastRollbackBoundary() {
+			s.clearCoCreateCheckpoint()
+		}
 		return nil
 	}
 	data, err := os.ReadFile(path)
@@ -3323,6 +3326,20 @@ func (s *ProjectSession) coCreateRestoreBlockedByProjectState() bool {
 		return true
 	}
 	return false
+}
+
+func (s *ProjectSession) coCreateCheckpointPastRollbackBoundary() bool {
+	s.mu.Lock()
+	outputDir := strings.TrimSpace(s.manifest.OutputDir)
+	s.mu.Unlock()
+	if outputDir == "" {
+		return false
+	}
+	progress, err := storepkg.NewStore(outputDir).Progress.Load()
+	if err != nil || progress == nil {
+		return false
+	}
+	return progress.Phase == domain.PhaseWriting || progress.Phase == domain.PhaseComplete
 }
 
 func (s *ProjectSession) restoreCoCreateCheckpointFromLog() error {
