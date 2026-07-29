@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `5a1cea5d` `fix: activate reinforced simulation contracts`:
+  fast-forwarded local `main` to the latest `origin/main`, rebuilt the
+  production Web UI plus all three Go executables through `restart-web.cmd`,
+  replaced PID `33172` with PID `33424` on port 9898, and verified `/`,
+  `/api/runtime`, and `/api/projects` return HTTP 200. The deployed CLI reports
+  commit `5a1cea5dace142e9f45cb2ecd20c12a0e83915c0`.
 - 2026-07-29 `faad199` `fix: resume interrupted polishing gates`:
   lets a changed rewrite/polish draft resume from its persisted validation
   receipts after provider failures instead of restarting the full rewrite and
