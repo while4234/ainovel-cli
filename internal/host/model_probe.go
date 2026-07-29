@@ -34,11 +34,22 @@ func probeAddedModelConnectivity(ctx context.Context, model agentcore.ChatModel,
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	_, err := model.Generate(ctx, []agentcore.Message{
+	stream, err := model.GenerateStream(ctx, []agentcore.Message{
 		agentcore.UserMsg("Reply with OK only. This is a connection test."),
 	}, nil, agentcore.WithMaxTokens(8))
 	if err != nil {
 		return fmt.Errorf("model connection test failed: %w", err)
 	}
-	return nil
+	for event := range stream {
+		switch event.Type {
+		case agentcore.StreamEventDone:
+			return nil
+		case agentcore.StreamEventError:
+			if event.Err == nil {
+				return fmt.Errorf("model connection test failed: response stream failed")
+			}
+			return fmt.Errorf("model connection test failed: %w", event.Err)
+		}
+	}
+	return fmt.Errorf("model connection test failed: %w", agentcore.ErrStreamPartial)
 }
