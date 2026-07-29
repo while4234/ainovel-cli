@@ -46,15 +46,16 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-29 `this commit` `fix: align model probe with runtime streaming`:
+- 2026-07-29 `705a515` `fix: align model probe with runtime streaming`:
   changes the provider connection test from non-streaming `Generate` to the
   same `GenerateStream` protocol used by real creation work. The probe still
   requests only an 8-token `OK` response, but now consumes the stream until a
   terminal `done` event and rejects provider errors or streams that close
   early. Four focused Host regressions pass, the Web UI and Go executables
-  rebuild successfully, port 9898 restarts as PID 26628, and the saved
-  `deepseek-yuanyu-0/deepseek-v4-pro` configuration passes three consecutive
-  live model tests through the new path.
+  rebuild successfully, port 9898 ultimately restarts from that commit as PID
+  37920, and the saved `deepseek-yuanyu-0/deepseek-v4-pro` configuration passes
+  three consecutive live model tests plus a final post-deployment probe through
+  the new path.
 - 2026-07-29 `9ca248f` `fix: preserve pause during automatic recovery`:
   makes a manual pause claim the paused lifecycle while an automatic resume is
   between runs, and prevents the pending resume from overwriting that state.
