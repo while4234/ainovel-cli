@@ -101,8 +101,17 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 		if prunedExisting && existing != nil {
 			existing.Synthesis = domain.SimulationSynthesis{}
 		}
+		analysisMetadata := signatures.metadata
+		reportSignature := analysisMetadata.SourceAnalysisSignature
+		if opts.Action == ActionResynthesize && portable != nil && !portable.Analysis.Legacy {
+			reportSignature = portable.Analysis.SourceAnalysisSignature
+			analysisMetadata.SourceAnalysisSignature = portable.Analysis.SourceAnalysisSignature
+			analysisMetadata.SplitterSignature = portable.Analysis.SplitterSignature
+			analysisMetadata.SchemaSignature = portable.Analysis.SchemaSignature
+			analysisMetadata.ModelIdentity = portable.Analysis.ModelIdentity
+		}
 		allowLegacyReports := portable != nil && portable.Analysis.Legacy
-		pending := pendingSourcesForSignature(existing, sources, signatures.metadata.SourceAnalysisSignature, allowLegacyReports)
+		pending := pendingSourcesForSignature(existing, sources, reportSignature, allowLegacyReports)
 		switch opts.Action {
 		case "", ActionScan:
 		case ActionResynthesize:
@@ -171,7 +180,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 			if err := saveSimulationAnalysisState(
 				deps.Store.Simulation,
 				profile,
-				signatures.metadata,
+				analysisMetadata,
 				domain.SimulationProfileHealth{State: "stale", Reasons: []string{"synthesis_pending"}},
 				time.Now(),
 			); err != nil {
@@ -232,7 +241,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (<-chan Event, error) {
 		if err := saveSimulationAnalysisState(
 			deps.Store.Simulation,
 			profile,
-			signatures.metadata,
+			analysisMetadata,
 			domain.SimulationProfileHealth{State: "fresh"},
 			time.Now(),
 		); err != nil {

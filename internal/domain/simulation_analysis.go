@@ -319,6 +319,44 @@ func AggregateSimulationEvidence(reports []SimulationSourceReport, now time.Time
 	return features, evidenceRefs, buildSimulationSafetyIndex(canonical, now)
 }
 
+// SimulationSynthesisGuidanceFeatures converts the corpus-wide synthesis into
+// canonical advisory features. The deterministic source-report reducer remains
+// the only authority for support and coverage statistics, so synthesized
+// guidance is never eligible for a must obligation.
+func SimulationSynthesisGuidanceFeatures(synthesis SimulationSynthesis) []SimulationFeature {
+	fields := simulationSynthesisFields(synthesis)
+	features := make([]SimulationFeature, 0)
+	seen := make(map[string]struct{})
+	for _, field := range fields {
+		for _, rawStatement := range field.items {
+			statement := normalizeSimulationStatement(rawStatement)
+			if statement == "" || looksLikeAbsoluteSimulationPath(statement) ||
+				containsSuspiciousSimulationQuote(statement) {
+				continue
+			}
+			key := field.dimension + "\x00" + statement
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			safety := "guidance"
+			if strings.HasSuffix(field.dimension, ".do_not_copy") ||
+				strings.HasSuffix(field.dimension, ".anti_patterns") {
+				safety = "avoid"
+			}
+			features = append(features, SimulationFeature{
+				ID:             "synthesis-" + stableSimulationFeatureID(key)[len("feature-"):],
+				Dimension:      field.dimension,
+				Statement:      statement,
+				Classification: "local",
+				Safety:         safety,
+			})
+		}
+	}
+	sort.Slice(features, func(i, j int) bool { return features[i].ID < features[j].ID })
+	return features
+}
+
 func SimulationCorpusDigest(sources []SimulationSource) string {
 	return simulationCorpusDigest(sources)
 }
@@ -476,7 +514,7 @@ func mergeSimulationStrings(left, right []string) []string {
 }
 
 func classifySimulationAggregate(candidate SimulationTechniqueCandidate, support, eligible int, coverage float64) string {
-	if candidate.Tendency == "local" || candidate.Scope != "" && candidate.Scope != "global" || len(candidate.Phases) > 0 {
+	if candidate.Tendency == "local" || candidate.Scope != "" && candidate.Scope != "global" {
 		return "local"
 	}
 	if support >= 2 && coverage >= 0.5 {

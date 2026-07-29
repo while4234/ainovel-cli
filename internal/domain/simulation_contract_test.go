@@ -45,6 +45,49 @@ func TestCompileSimulationContractModeBudgetsAndObligations(t *testing.T) {
 	}
 }
 
+func TestCompileSimulationContractUsesExplicitPhaseAndBalancesSafety(t *testing.T) {
+	confidence, coverage := 0.9, 0.5
+	features := make([]SimulationFeature, 0, 12)
+	for i := 0; i < 12; i++ {
+		safety := "guidance"
+		if i >= 6 {
+			safety = "avoid"
+		}
+		features = append(features, SimulationFeature{
+			ID: "phase-feature-" + string(rune('a'+i)), Dimension: "dialogue.turns",
+			Statement:      "phase-routed abstract technique " + string(rune('a'+i)),
+			Classification: "local", Phases: []string{"chapter"},
+			SupportCount: 1, Confidence: &confidence, Coverage: &coverage, Safety: safety,
+		})
+	}
+	profile := simulationContractTestProfile(t, "fresh")
+	profile.Features = features
+	if err := SetSimulationProfileDigest(&profile); err != nil {
+		t.Fatal(err)
+	}
+
+	contract, err := CompileSimulationContract(SimulationContractInput{
+		Profile: &profile, RequestedMode: SimulationModeReinforced, Now: time.Unix(1, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := contract.View(SimulationRoleWriter, "chapter")
+	if writer == nil || len(writer.Should) == 0 {
+		t.Fatalf("explicit chapter phase did not route guidance: %+v", writer)
+	}
+	if len(writer.Avoid) == 0 || len(writer.Avoid) > 3 {
+		t.Fatalf("safety guidance was not retained: %+v", writer)
+	}
+	selectedCount := simulationContractViewCount(*writer)
+	if selectedCount != 9 {
+		t.Fatalf("writer feature count = %d, want reinforced budget 9", selectedCount)
+	}
+	if len(writer.Avoid) >= selectedCount {
+		t.Fatalf("avoid features crowded out all positive guidance: %+v", writer)
+	}
+}
+
 func TestSimulationContractStalenessBindings(t *testing.T) {
 	profile := simulationContractTestProfile(t, "fresh")
 	contract, err := CompileSimulationContract(SimulationContractInput{

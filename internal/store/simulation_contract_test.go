@@ -1,6 +1,9 @@
 package store
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -73,6 +76,46 @@ func TestSimulationContractStoreRejectsStaleRevision(t *testing.T) {
 	}
 	if err := st.SimulationContracts.SaveCAS(next, 0); err == nil {
 		t.Fatal("stale expected revision should be rejected")
+	}
+}
+
+func TestEnsureSimulationContractReplacesPreviousContractVersion(t *testing.T) {
+	dir := t.TempDir()
+	st := NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	saveStoreSimulationProfile(t, st, "feature-a")
+	previous, err := domain.CompileSimulationContract(domain.SimulationContractInput{
+		RequestedMode: domain.SimulationModeNormal, Now: time.Unix(1, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous.Version = "simulation_contract.v1"
+	previous.ContractDigest, err = domain.SimulationContractDigest(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(previous, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, filepath.FromSlash(simulationContractPath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	current, _, err := st.EnsureSimulationContract(domain.SimulationModeReinforced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == nil || current.Version != domain.SimulationContractVersion ||
+		current.Revision != 1 || current.RequestedMode != domain.SimulationModeReinforced {
+		t.Fatalf("previous contract was not replaced: %+v", current)
 	}
 }
 

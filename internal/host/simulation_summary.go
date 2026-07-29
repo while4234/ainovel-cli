@@ -76,10 +76,10 @@ func buildSimulationProfileSummary(st *storepkg.Store, selectedMode string, chap
 	}
 
 	foundationRevision, foundationDigest, briefDigest := currentSimulationBindings(st)
-	contract, contractErr := st.SimulationContracts.Load()
+	contract, _, contractErr := st.EnsureSimulationContract(summary.SelectedMode)
 	contractCurrent := false
 	if contractErr != nil {
-		summary.DiagnosticError = "仿写契约无法读取；强化模式不会标记为已生效"
+		summary.DiagnosticError = "仿写契约无法同步；强化模式不会标记为已生效"
 	} else if contract != nil {
 		current, staleReason := domain.SimulationContractCurrent(
 			contract, profile, summary.SelectedMode, foundationRevision, foundationDigest, briefDigest,

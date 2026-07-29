@@ -35,6 +35,44 @@ func TestAggregateSimulationEvidenceIsOrderInvariant(t *testing.T) {
 	}
 }
 
+func TestAggregateSimulationEvidenceTreatsPhasesAsApplicability(t *testing.T) {
+	coverage := 1.0
+	first := structuredEvidenceReport("a.txt", "sha-a", "alternate sentence lengths", coverage)
+	second := structuredEvidenceReport("b.txt", "sha-b", "alternate sentence lengths", coverage)
+	first.Candidates[0].Phases = []string{"chapter"}
+	second.Candidates[0].Phases = []string{"chapter"}
+
+	features, _, _ := AggregateSimulationEvidence(
+		[]SimulationSourceReport{first, second},
+		time.Unix(100, 0),
+	)
+
+	if len(features) != 1 || features[0].Classification != "stable" {
+		t.Fatalf("phase-scoped stable evidence was misclassified: %+v", features)
+	}
+}
+
+func TestSimulationSynthesisGuidanceFeaturesAreCanonicalAdvisories(t *testing.T) {
+	features := SimulationSynthesisGuidanceFeatures(SimulationSynthesis{
+		PlotDesign: SimulationPlotDesign{
+			OpeningPatterns: []string{"begin with an unresolved choice"},
+		},
+		Style: SimulationStyle{
+			DoNotCopy: []string{"do not repeat source-specific set pieces"},
+		},
+	})
+
+	if len(features) != 2 {
+		t.Fatalf("features = %d, want 2", len(features))
+	}
+	for _, feature := range features {
+		if feature.Classification != "local" || feature.SupportCount != 0 ||
+			!strings.HasPrefix(feature.ID, "synthesis-") {
+			t.Fatalf("synthesis feature claimed evidence statistics: %+v", feature)
+		}
+	}
+}
+
 func TestAggregateSimulationEvidenceExcludesNonBodyFromStableSupport(t *testing.T) {
 	coverage := 1.0
 	body := structuredEvidenceReport("body.txt", "sha-body", "use action before explanation", coverage)

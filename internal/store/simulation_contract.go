@@ -97,6 +97,9 @@ func (s *SimulationContractStore) Load() (*domain.SimulationContract, error) {
 		return nil, err
 	}
 	if err := domain.ValidateSimulationContract(&contract); err != nil {
+		if contract.Version != domain.SimulationContractVersion {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &contract, nil
@@ -113,9 +116,12 @@ func (s *SimulationContractStore) SaveCAS(contract domain.SimulationContract, ex
 	actualRevision := int64(0)
 	if err == nil {
 		if validateErr := domain.ValidateSimulationContract(&current); validateErr != nil {
-			return validateErr
+			if current.Version == domain.SimulationContractVersion {
+				return validateErr
+			}
+		} else {
+			actualRevision = current.Revision
 		}
-		actualRevision = current.Revision
 	} else if !os.IsNotExist(err) {
 		return err
 	}

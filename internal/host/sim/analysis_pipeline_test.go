@@ -26,6 +26,45 @@ func TestBuildSourceAnalysisCoverageUsesHeadMiddleTailWindows(t *testing.T) {
 	}
 }
 
+func TestSaveSimulationAnalysisStateIncludesCanonicalSynthesisGuidance(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.SimulationProfile{
+		Synthesis: domain.SimulationSynthesis{
+			PlotDesign: domain.SimulationPlotDesign{
+				OpeningPatterns: []string{"begin with an unresolved choice"},
+			},
+		},
+	}
+	metadata := domain.SimulationAnalysisMetadata{
+		SourceAnalysisSignature: "source",
+		SplitterSignature:       "splitter",
+		SchemaSignature:         "schema",
+		SynthesisSignature:      "synthesis",
+		AggregationSignature:    "aggregation",
+	}
+
+	if err := saveSimulationAnalysisState(
+		st.Simulation,
+		profile,
+		metadata,
+		domain.SimulationProfileHealth{State: "fresh"},
+		time.Unix(100, 0),
+	); err != nil {
+		t.Fatal(err)
+	}
+	portable, err := st.Simulation.LoadPortable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if portable == nil || len(portable.Features) != 1 ||
+		portable.Features[0].Dimension != "plot_design.opening_patterns" {
+		t.Fatalf("canonical synthesis guidance missing: %+v", portable)
+	}
+}
+
 func TestRunnerSeparatesSourceAndSynthesisSignatureInvalidation(t *testing.T) {
 	dir := t.TempDir()
 	sourceDir := filepath.Join(dir, "simulate")

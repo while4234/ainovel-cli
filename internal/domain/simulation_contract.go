@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	SimulationContractVersion = "simulation_contract.v1"
+	SimulationContractVersion = "simulation_contract.v2"
 
 	SimulationModeNormal     = "normal"
 	SimulationModeReinforced = "reinforced"
@@ -298,11 +298,9 @@ func simulationEffectiveStatus(profile SimulationProfileV2, mode string) (string
 func selectSimulationContractView(features []SimulationFeature, mode string, budget SimulationPolicyBudget) (SimulationContractView, []SimulationExclusion) {
 	view := SimulationContractView{Role: budget.Role, Phase: budget.Phase, ByteBudget: budget.ByteBudget}
 	var exclusions []SimulationExclusion
-	selected := 0
+	var guidance []SimulationFeature
+	var avoids []SimulationFeature
 	for _, feature := range features {
-		if selected >= budget.MaxItems {
-			break
-		}
 		reason := simulationFeatureIneligible(feature, budget)
 		if reason != "" {
 			if reason == "source_surface_feature" || reason == "viewpoint_owned_by_target_story" {
@@ -310,15 +308,31 @@ func selectSimulationContractView(features []SimulationFeature, mode string, bud
 			}
 			continue
 		}
-		switch {
-		case feature.Safety == "avoid":
-			view.Avoid = append(view.Avoid, feature.ID)
-		case mode == SimulationModeReinforced && simulationFeatureCanBeMust(feature):
+		if feature.Safety == "avoid" {
+			avoids = append(avoids, feature)
+			continue
+		}
+		guidance = append(guidance, feature)
+	}
+
+	avoidLimit := budget.MaxItems / 3
+	if avoidLimit < 1 {
+		avoidLimit = 1
+	}
+	avoidCount := min(len(avoids), avoidLimit)
+	guidanceCount := min(len(guidance), budget.MaxItems-avoidCount)
+	avoidCount = min(len(avoids), budget.MaxItems-guidanceCount)
+	guidanceCount = min(len(guidance), budget.MaxItems-avoidCount)
+
+	for _, feature := range guidance[:guidanceCount] {
+		if mode == SimulationModeReinforced && simulationFeatureCanBeMust(feature) {
 			view.Must = append(view.Must, feature.ID)
-		default:
+		} else {
 			view.Should = append(view.Should, feature.ID)
 		}
-		selected++
+	}
+	for _, feature := range avoids[:avoidCount] {
+		view.Avoid = append(view.Avoid, feature.ID)
 	}
 	return view, exclusions
 }
@@ -341,6 +355,9 @@ func simulationFeatureIneligible(feature SimulationFeature, budget SimulationPol
 	}
 	if len(feature.Phases) > 0 && !containsSimulationString(feature.Phases, budget.Phase) {
 		return "phase_mismatch"
+	}
+	if len(feature.Phases) > 0 {
+		return ""
 	}
 	for _, prefix := range budget.Dimensions {
 		if strings.HasPrefix(feature.Dimension, prefix) {

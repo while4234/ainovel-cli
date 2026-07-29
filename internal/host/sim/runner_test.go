@@ -148,6 +148,60 @@ func TestRunnerExplicitRefreshActionsKeepAnalysisAndSynthesisDistinct(t *testing
 	}
 }
 
+func TestRunnerResynthesisReusesSignedReportsAcrossAnalyzerChanges(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := filepath.Join(dir, "simulate")
+	writeSimulationSource(t, sourceDir, "a.txt", "synthetic source")
+	st := store.NewStore(filepath.Join(dir, "output", "novel"))
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	initial := &scriptedLLM{responses: []string{
+		validSourceReportJSON("initial"), validSynthesisJSON("initial"),
+	}}
+	events, err := Run(context.Background(), Deps{
+		Store: st, LLM: initial, ModelIdentity: "provider/model-a",
+		Prompts: Prompts{Source: "source prompt v1", Merge: "merge prompt"},
+	}, Options{SourceDir: sourceDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for event := range events {
+		if event.Err != nil {
+			t.Fatal(event.Err)
+		}
+	}
+	before, err := st.Simulation.LoadPortable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resynthesis := &scriptedLLM{responses: []string{validSynthesisJSON("resynthesized")}}
+	events, err = Run(context.Background(), Deps{
+		Store: st, LLM: resynthesis, ModelIdentity: "provider/model-b",
+		Prompts: Prompts{Source: "source prompt v2", Merge: "merge prompt"},
+	}, Options{SourceDir: sourceDir, Action: ActionResynthesize})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for event := range events {
+		if event.Err != nil {
+			t.Fatal(event.Err)
+		}
+	}
+	if calls := resynthesis.calls.Load(); calls != 1 {
+		t.Fatalf("resynthesis calls = %d, want merge-only call", calls)
+	}
+	after, err := st.Simulation.LoadPortable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Analysis.SourceAnalysisSignature != before.Analysis.SourceAnalysisSignature ||
+		after.Analysis.ModelIdentity != before.Analysis.ModelIdentity {
+		t.Fatalf("resynthesis rewrote source evidence identity: before=%+v after=%+v", before.Analysis, after.Analysis)
+	}
+}
+
 func TestRunnerIncrementallyAnalyzesNewAndChangedSources(t *testing.T) {
 	dir := t.TempDir()
 	sourceDir := filepath.Join(dir, "simulate")

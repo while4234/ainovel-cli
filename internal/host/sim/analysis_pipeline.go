@@ -17,8 +17,8 @@ const (
 	simulationSplitterVersion     = "runner-multi-window.v1"
 	simulationSourceSchemaVersion = "structured-technique.v1"
 	simulationAnalyzerVersion     = "simulation-source-analyzer.v2"
-	simulationReducerVersion      = "evidence-reducer.v1"
-	simulationSelectionVersion    = "feature-selection.v1"
+	simulationReducerVersion      = "evidence-reducer.v2"
+	simulationSelectionVersion    = "feature-selection.v2"
 )
 
 type simulationAnalysisSignatures struct {
@@ -149,6 +149,7 @@ func saveSimulationAnalysisState(
 		return fmt.Errorf("simulation store is nil")
 	}
 	features, refs, safetyIndex := domain.AggregateSimulationEvidence(profile.SourceReports, now)
+	features = append(features, domain.SimulationSynthesisGuidanceFeatures(profile.Synthesis)...)
 	portable, evidence, err := domain.BuildSimulationAnalysisArtifacts(
 		profile,
 		metadata,
