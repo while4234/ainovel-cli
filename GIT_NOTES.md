@@ -46,6 +46,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-29 `faad199` `fix: resume interrupted polishing gates`:
+  lets a changed rewrite/polish draft resume from its persisted validation
+  receipts after provider failures instead of restarting the full rewrite and
+  invalidating already-passed checks. Unchanged committed prose still requires
+  a real polish edit. Focused flow tests and a clean CLI build passed.
 - 2026-07-29 `2580410` `fix: clarify active simulation guidance`:
   gives active analysis precedence over the previous profile health card,
   hides stale diagnostics until replacement synthesis completes, and keeps the
