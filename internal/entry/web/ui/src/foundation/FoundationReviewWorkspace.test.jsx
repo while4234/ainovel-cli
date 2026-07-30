@@ -57,6 +57,7 @@ async function renderWorkspace(overrides = {}) {
   const props = {
     busy: false,
     onConfirm: vi.fn(),
+    onConfirmCharacterCandidate: vi.fn(),
     onRevise: vi.fn(),
     planningRevision: { feedback: '加强新男主的调查动机', status: 'idle' },
     review,
@@ -94,16 +95,31 @@ describe('FoundationReviewWorkspace', () => {
     expect(container.textContent).toContain('只读原著证据');
     expect(container.textContent).toContain('保留梦游因果');
     expect(container.textContent).not.toContain('修改意见');
+    expect(button('去确认')).toBeUndefined();
 
-    await act(async () => button('去确认').click());
+    await act(async () => button('确认与修改').click());
     expect(button('确认与修改').getAttribute('aria-selected')).toBe('true');
     expect(container.textContent).toContain('修改意见');
-    expect(button('按意见重新生成').disabled).toBe(false);
+    expect(button('让 AI 按意见修订').disabled).toBe(false);
     expect(button('确认完整设定并继续').disabled).toBe(false);
 
-    await act(async () => button('按意见重新生成').click());
+    await act(async () => button('让 AI 按意见修订').click());
     await act(async () => button('确认完整设定并继续').click());
     expect(props.onRevise).toHaveBeenCalledTimes(1);
     expect(props.onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('角色卡待确认时工作区只保留一个真正的确认入口', async () => {
+    const props = await renderWorkspace({
+      review: { ...review, characterConfirmationRequired: true }
+    });
+
+    const confirmationButtons = [...container.querySelectorAll('button')]
+      .filter((item) => item.textContent.trim() === '确认角色卡');
+    expect(confirmationButtons.map((item) => item.textContent.trim())).toEqual(['确认角色卡']);
+    expect(button('确认并继续')).toBeUndefined();
+
+    await act(async () => confirmationButtons[0].click());
+    expect(props.onConfirmCharacterCandidate).toHaveBeenCalledTimes(1);
   });
 });

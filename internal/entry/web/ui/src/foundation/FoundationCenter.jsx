@@ -30,6 +30,7 @@ export function FoundationCenter({
   const [state, dispatch] = useReducer(foundationReducer, projectId, createFoundationState);
   const [tab, setTab] = useState('overview');
   const [characterSubmitting, setCharacterSubmitting] = useState(false);
+  const [characterAgentOpenRequestId, setCharacterAgentOpenRequestId] = useState(0);
   const versionRef = useRef(0);
   const stateRef = useRef(state);
   const characterSubmittingRef = useRef(false);
@@ -136,13 +137,22 @@ export function FoundationCenter({
     if (requestedNavigation?.anchor === 'character-confirm-action' && !characterConfirmationRequired) {
       return;
     }
+    if (requestedNavigation?.anchor === 'foundation-character-agent') {
+      setCharacterAgentOpenRequestId(requestId);
+    }
     setTab(requestedTab);
     globalThis.requestAnimationFrame?.(() => {
       const target = requestedNavigation?.anchor
         ? globalThis.document?.getElementById(requestedNavigation.anchor)
         : globalThis.document?.getElementById(`foundation-tab-${requestedTab}`);
       target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      target?.focus?.();
+      const characterAgentToggle = requestedNavigation?.anchor === 'foundation-character-agent'
+        ? target?.querySelector('.character-agent-toggle')
+        : null;
+      if (characterAgentToggle?.getAttribute('aria-expanded') !== 'true') {
+        characterAgentToggle?.click();
+      }
+      (characterAgentToggle || target)?.focus?.();
       onNavigationHandled?.(requestId);
     });
   }, [
@@ -321,7 +331,7 @@ export function FoundationCenter({
     {state.illegalAction ? <div className="warning-note" role="status">{state.illegalAction}</div> : null}
     {state.status === 'stale' ? <div className="foundation-stale" role="alert"><strong>服务器基线已变化，草稿仍完整保留。</strong><span>先加载最新基线，再用当前草稿重新生成 preview。</span><button className="tool-button" disabled={!state.staleServer} type="button" onClick={() => dispatch({ type: 'rebase_stale', ...requestContext() })}>以最新基线重新对比</button></div> : null}
     {!showingSourceOnly && validationNotice.kind === 'actionable' ? <div aria-live="assertive" className="foundation-validation-summary" role="alert"><strong>请处理 {validationNotice.messages.length} 个字段问题</strong><ul>{validationNotice.messages.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
-    {!showingSourceOnly && validationNotice.kind === 'generating' ? <div aria-live="polite" className="foundation-generation-status" role="status"><strong>设定正在生成，当前无需手动处理</strong><span>{state.server.planningReview?.brief ? '共创确认稿已作为故事前提展示；角色确认后会正式发布，世界规则由后续规划流程补齐。' : 'StoryFoundation 尚未发布，故事前提、角色和世界规则会由当前规划流程补齐；发布后页面会自动重新校验。'}</span></div> : null}
+    {!characterConfirmationRequired && !showingSourceOnly && validationNotice.kind === 'generating' ? <div aria-live="polite" className="foundation-generation-status" role="status"><strong>设定正在生成，当前无需手动处理</strong><span>{state.server.planningReview?.brief ? '共创确认稿已作为故事前提展示；角色确认后会正式发布，世界规则由后续规划流程补齐。' : 'StoryFoundation 尚未发布，故事前提、角色和世界规则会由当前规划流程补齐；发布后页面会自动重新校验。'}</span></div> : null}
     {!showingSourceOnly && validationNotice.kind === 'readonly' ? <div aria-live="polite" className="foundation-readonly-validation" role="status"><strong>当前设定只读，暂不能处理校验项</strong><span>恢复到可编辑阶段后再处理以下内容：{validationNotice.messages.join('；')}</span></div> : null}
     <nav aria-label="设定中心区域" className="foundation-tabs" role="tablist">{tabs.map(([id, label], index) => <button aria-controls={`foundation-panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} id={`foundation-tab-${id}`} key={id} role="tab" tabIndex={tab === id ? 0 : -1} type="button" onClick={() => setTab(id)} onKeyDown={(event) => moveTab(event, index, setTab)}>{label}</button>)}</nav>
     <main aria-labelledby={`foundation-tab-${tab}`} className={`foundation-panel foundation-panel-${tab}`} id={`foundation-panel-${tab}`} role="tabpanel">
@@ -332,6 +342,7 @@ export function FoundationCenter({
         relationships={state.draft.relationships} disabled={disabled} dirty={state.status === 'dirty'}
         errors={state.validation.fields} workspace={characterWorkspace} workspaceLoading={!state.characterWorkspace && !state.characterWorkspaceError}
         agentBusy={characterSubmitting}
+        agentOpenRequestId={characterAgentOpenRequestId}
         onChange={(characters) => edit({ characters })}
         onOpenRelationships={() => setTab('relationships')}
         onAnalyze={runCharacterAnalyze} onReview={runCharacterReview}
@@ -342,7 +353,7 @@ export function FoundationCenter({
       {tab === 'preview' ? <FoundationPreview preview={state.preview} dirty={state.status === 'dirty'} disabled={['previewing', 'applying'].includes(state.status)} canApply={canApplyFoundation(state)} onPreview={runPreview} onApply={runApply} /> : null}
       {tab === 'revision' ? <FoundationRevisionStatus server={state.server} status={state.status} busy={['applying', 'auditing', 'regenerating'].includes(state.status)} onRefresh={() => load({ preserveStale: state.status === 'stale' })} onRetry={runRetry} onOpenReview={() => onOpenReview?.(state.server.mode)} /> : null}
     </main>
-    <footer className="foundation-actions"><span>{state.status === 'dirty' ? '有未预览的设定修改' : state.status === 'preview_ready' ? '预览已持久化，可应用' : '服务端状态已同步'}</span><button className="tool-button accent" disabled={state.status !== 'dirty' || !state.validation.valid} type="button" onClick={runPreview}>预览差异与影响</button></footer>
+    {!characterConfirmationRequired ? <footer className="foundation-actions"><span>{state.status === 'dirty' ? '有未预览的设定修改' : state.status === 'preview_ready' ? '预览已持久化，可应用' : '服务端状态已同步'}</span><button className="tool-button accent" disabled={state.status !== 'dirty' || !state.validation.valid} type="button" onClick={runPreview}>预览差异与影响</button></footer> : null}
     {closeRequested ? <CloseDraftDialog trigger={closeRequested} onCancel={() => setCloseRequested(null)} onConfirm={() => { setCloseRequested(null); onClose?.(); }} /> : null}
   </div>;
 }

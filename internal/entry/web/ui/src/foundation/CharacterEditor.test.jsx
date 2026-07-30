@@ -119,6 +119,14 @@ describe('CharacterEditor workspace', () => {
     expect(container.querySelector('.character-run-status')).toBeNull();
   });
 
+  it('从中央审核区进入 AI 调整时自动展开 Character Agent', async () => {
+    await render({ agentOpenRequestId: 1 });
+    expect(container.querySelector('.character-agent-toggle').getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.character-agent-controls')).not.toBeNull();
+    expect(container.querySelector('.character-run-status')).toBeNull();
+    expect(byText('button', '丢弃本轮候选')).not.toBeNull();
+  });
+
   it('删除 core 使用可访问 dialog，Esc 返回触发按钮焦点', async () => {
     await render();
     const trigger = byText('button', '删除');

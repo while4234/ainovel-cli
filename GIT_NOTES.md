@@ -46,6 +46,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: streamline Foundation review actions`:
+  separates AI-intent revision from precise manual field revision, preserves
+  post-edit dependency and quality audits, improves the focused Foundation and
+  character-agent workspaces, and documents the writer-centered review model.
+  Original-project character review now exposes exactly one central
+  `确认角色卡` action wired to the real publication call; the duplicate
+  `确认并继续` and workflow-progress action are removed. Adaptation review keeps
+  `前往确认与修改` in the right inspector and removes the duplicate central
+  `去确认`. The full 393-test Web suite, focused static-embed Go tests,
+  production build, live restart, and two-project Chrome acceptance passed with
+  zero console errors.
 - 2026-07-30 `ace4c39` `fix: make Foundation confirmation discoverable`:
   moves complete Foundation review into a central tabbed workspace, reduces
   the right inspector to status plus a direct entry, and provides polished

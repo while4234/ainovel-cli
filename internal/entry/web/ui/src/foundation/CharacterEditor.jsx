@@ -23,7 +23,7 @@ const fieldLabels = {
 
 export function CharacterEditor({
   value, coreCast, mode = 'normal', sourceFoundation, relationships = [], disabled, dirty = false,
-  errors = {}, workspace, workspaceLoading = false, agentBusy = false, onChange, onOpenRelationships,
+  errors = {}, workspace, workspaceLoading = false, agentBusy = false, agentOpenRequestId = 0, onChange, onOpenRelationships,
   onAnalyze, onReview, onRetry, onDiscard, onConfirm
 }) {
   const [selectedID, setSelectedID] = useState('');
@@ -53,6 +53,11 @@ export function CharacterEditor({
     }))
     .filter((character) => character.name || character.id), [sourceFoundation]);
   const showingSourceOnly = mode === 'adaptation' && !value.length && !candidateCharacters.length && sourceCharacters.length > 0;
+  useEffect(() => {
+    if (Number(agentOpenRequestId) > 0 && !showingSourceOnly) {
+      setAgentExpanded(true);
+    }
+  }, [agentOpenRequestId, showingSourceOnly]);
   const displayCharacters = useMemo(() => {
     if (showingSourceOnly) return sourceCharacters;
     const currentIDs = new Set(value.map((character) => character.id));
@@ -73,13 +78,17 @@ export function CharacterEditor({
 
   useEffect(() => {
     if (!workspace) return;
+    if (Number(agentOpenRequestId) > 0 && !showingSourceOnly) {
+      setAgentExpanded(true);
+      return;
+    }
     const runStatus = workspace.run?.status;
     if (['queued', 'running', 'failed', 'interrupted'].includes(runStatus) || !workspace.candidate) {
       setAgentExpanded(true);
     } else if (runStatus === 'completed') {
       setAgentExpanded(false);
     }
-  }, [workspace?.candidate?.digest, workspace?.run?.status]);
+  }, [agentOpenRequestId, showingSourceOnly, workspace?.candidate?.digest, workspace?.run?.status]);
 
   const updateSelected = (updater) => {
     if (!selected) return;
@@ -283,7 +292,11 @@ function CharacterAgentPanel({
     : workspace?.candidate
       ? '候选已生成，等待确认'
       : '可分析并补全角色';
-  return <section className={`character-agent-panel ${expanded ? 'expanded' : 'collapsed'}`} aria-labelledby="character-agent-heading">
+  return <section
+    aria-labelledby="character-agent-heading"
+    className={`character-agent-panel ${expanded ? 'expanded' : 'collapsed'}`}
+    id="foundation-character-agent"
+  >
     {canConfirm ? <div className="character-confirmation-gate" role="status">
       <div><ShieldCheck size={20} /><span><strong>角色卡审核已通过</strong><small>确认后将发布本轮角色候选，并自动继续生成完整设定。</small></span></div>
       <button id="character-confirm-action" className="tool-button accent" type="button" onClick={() => onConfirm?.()}><Check size={16} />确认角色卡并继续</button>
@@ -309,8 +322,16 @@ function CharacterAgentPanel({
         <div><dt>模式</dt><dd>{workspace?.mode === 'adaptation' ? '改编' : '原创'}</dd></div>
         <div><dt>草稿</dt><dd>{dirty ? '含未保存修改（会作为输入）' : '与基线一致'}</dd></div>
       </dl>
+      {run?.status === 'completed' && workspace?.allowedOperations?.includes('discard') ? (
+        <div className="inline-actions">
+          <button className="tool-button danger-ghost" type="button" onClick={onDiscard}>
+            <X size={16} />
+            丢弃本轮候选
+          </button>
+        </div>
+      ) : null}
     </div>
-    {run ? <div className={`character-run-status ${run.status}`} aria-live="polite" role="status">
+    {run && run.status !== 'completed' ? <div className={`character-run-status ${run.status}`} aria-live="polite" role="status">
       <div><strong>{run.mode === 'review' ? '角色审核' : '角色分析'} · {runLabel(run.status)}</strong><span>阶段：{run.stage || '—'} · attempt {run.attempt || 1}</span></div>
       <progress max="3" value={run.status === 'completed' ? 3 : run.stage === 'running' ? 2 : 1}>处理中</progress>
       <p>{running ? 'Agent 正在处理；轮询只更新运行元数据，不会覆盖当前 Foundation 草稿。' : run.status === 'completed' ? '运行完成。分析结果在候选 diff 中逐项接受；审核结果在 finding 区查看。' : run.error?.message || workspace?.error?.message}</p>

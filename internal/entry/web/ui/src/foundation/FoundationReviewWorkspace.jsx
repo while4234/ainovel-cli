@@ -7,7 +7,8 @@ import {
   GitBranch,
   Pencil,
   ShieldCheck,
-  Sparkles
+  Sparkles,
+  X
 } from 'lucide-react';
 import { foundationReadonlyReasonLabel } from './foundationModel.js';
 
@@ -250,11 +251,243 @@ function FoundationReviewSource({ review }) {
   );
 }
 
+function FoundationManualRevision({ busy, onSubmit, review }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(() => manualDraftFromReview(review));
+  const disabled = busy || review.readonly;
+
+  useEffect(() => {
+    setOpen(false);
+    setDraft(manualDraftFromReview(review));
+  }, [review.foundationGeneration, review.foundationRevision]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape' && !disabled) setOpen(false);
+    };
+    globalThis.document?.addEventListener('keydown', closeOnEscape);
+    return () => globalThis.document?.removeEventListener('keydown', closeOnEscape);
+  }, [disabled, open]);
+
+  const updateCharacter = (index, field, value) => {
+    setDraft((current) => ({
+      ...current,
+      characters: current.characters.map((character, characterIndex) => (
+        characterIndex === index ? { ...character, [field]: value } : character
+      ))
+    }));
+  };
+  const updateRelationship = (index, field, value) => {
+    setDraft((current) => ({
+      ...current,
+      relationships: current.relationships.map((relationship, relationshipIndex) => (
+        relationshipIndex === index ? { ...relationship, [field]: value } : relationship
+      ))
+    }));
+  };
+  const updateRule = (group, index, value) => {
+    setDraft((current) => ({
+      ...current,
+      [group]: current[group].map((rule, ruleIndex) => (
+        ruleIndex === index ? { ...rule, rule: value } : rule
+      ))
+    }));
+  };
+  const feedback = manualRevisionFeedback(review, draft);
+  return (
+    <section className={`foundation-manual-revision ${open ? 'open' : ''}`}>
+      <header>
+        <div>
+          <span>手工精确修改</span>
+          <strong>直接指定字段最终值</strong>
+          <p>你填写的是字段最终值；系统会把差异作为硬约束重新生成依赖内容，并重新执行角色与设定审核。</p>
+        </div>
+        <button className="tool-button" disabled={disabled} onClick={() => setOpen((current) => !current)} type="button">
+          {open ? <X size={16} /> : <Pencil size={16} />}
+          {open ? '退出手动编辑' : '打开手动编辑'}
+        </button>
+      </header>
+      {open ? (
+        <div className="foundation-manual-revision-body">
+          <label>
+            <span>故事前提</span>
+            <textarea
+              rows="4"
+              disabled={disabled}
+              value={draft.premise}
+              onChange={(event) => setDraft((current) => ({ ...current, premise: event.target.value }))}
+            />
+          </label>
+          <details open>
+            <summary>角色卡 · {draft.characters.length}</summary>
+            <div className="foundation-manual-entity-list">
+              {draft.characters.map((character, index) => (
+                <fieldset key={character.id || `${character.name}-${index}`}>
+                  <legend>{character.name || character.id || `角色 ${index + 1}`}</legend>
+                  {manualCharacterFields.map(([field, label]) => (
+                    <label key={field}>
+                      <span>{label}</span>
+                      <textarea
+                        rows={field === 'description' || field === 'arc' ? 3 : 2}
+                        disabled={disabled}
+                        value={character[field]}
+                        onChange={(event) => updateCharacter(index, field, event.target.value)}
+                      />
+                    </label>
+                  ))}
+                </fieldset>
+              ))}
+            </div>
+          </details>
+          <details>
+            <summary>计划关系 · {draft.relationships.length}</summary>
+            <div className="foundation-manual-entity-list">
+              {draft.relationships.map((relationship, index) => (
+                <fieldset key={relationship.id || `relationship-${index}`}>
+                  <legend>{relationship.route}</legend>
+                  <label>
+                    <span>关系标签</span>
+                    <input
+                      value={relationship.label}
+                      disabled={disabled}
+                      onChange={(event) => updateRelationship(index, 'label', event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>关系动态</span>
+                    <textarea
+                      rows="3"
+                      disabled={disabled}
+                      value={relationship.description}
+                      onChange={(event) => updateRelationship(index, 'description', event.target.value)}
+                    />
+                  </label>
+                </fieldset>
+              ))}
+            </div>
+          </details>
+          <details>
+            <summary>世界规则 · {draft.hardRules.length + draft.softRules.length}</summary>
+            <div className="foundation-manual-entity-list">
+              {[['hardRules', '不可违反'], ['softRules', '可调整']].map(([group, label]) => (
+                draft[group].map((rule, index) => (
+                  <label key={`${group}-${rule.id || index}`}>
+                    <span>{label} · {rule.category || `规则 ${index + 1}`}</span>
+                    <textarea
+                      disabled={disabled}
+                      rows="3"
+                      value={rule.rule}
+                      onChange={(event) => updateRule(group, index, event.target.value)}
+                    />
+                  </label>
+                ))
+              ))}
+            </div>
+          </details>
+          <div className="foundation-manual-revision-submit">
+            <div>
+              <strong>{feedback ? '已检测到手工修改' : '尚未修改任何字段'}</strong>
+              <span>提交后不会直接绕过审核；AI 只负责补齐依赖并重新校验。</span>
+            </div>
+            <button
+              className="tool-button accent"
+              disabled={disabled || !feedback}
+              onClick={() => onSubmit?.(feedback)}
+              type="button"
+            >
+              <Check size={16} />
+              保存修改并重新审核
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+const manualCharacterFields = [
+  ['name', '姓名'],
+  ['role', '故事职责'],
+  ['description', '人物描述'],
+  ['goal', '外部目标'],
+  ['motivation', '内在动机'],
+  ['conflict', '核心冲突'],
+  ['arc', '人物弧'],
+  ['voice', '语言与行为约束']
+];
+
+function manualDraftFromReview(review = {}) {
+  return {
+    premise: String(review.premise || ''),
+    characters: [...(review.coreCharacters || []), ...(review.supportingCharacters || [])].map((character) => ({
+      id: textValue(character, 'ID', 'id'),
+      name: textValue(character, 'Name', 'name'),
+      ...Object.fromEntries(manualCharacterFields.map(([field]) => [
+        field,
+        textValue(character, field[0].toUpperCase() + field.slice(1), field)
+      ]))
+    })),
+    relationships: (review.plannedRelationships || []).map((relationship) => ({
+      id: textValue(relationship, 'ID', 'id'),
+      route: `${textValue(relationship, 'SourceCharacterID', 'source_character_id') || '未指定'} → ${textValue(relationship, 'TargetCharacterID', 'target_character_id') || '未指定'}`,
+      label: textValue(relationship, 'Label', 'label'),
+      description: textValue(relationship, 'Description', 'description')
+    })),
+    hardRules: (review.hardWorldRules || []).map(manualRule),
+    softRules: (review.softWorldRules || []).map(manualRule)
+  };
+}
+
+function manualRule(rule = {}) {
+  return {
+    id: textValue(rule, 'ID', 'id'),
+    category: textValue(rule, 'Category', 'category'),
+    rule: textValue(rule, 'Rule', 'rule')
+  };
+}
+
+export function manualRevisionFeedback(review = {}, draft = {}) {
+  const baseline = manualDraftFromReview(review);
+  const changes = [];
+  appendManualChange(changes, '故事前提', baseline.premise, draft.premise);
+  draft.characters?.forEach((character, index) => {
+    const before = baseline.characters[index] || {};
+    manualCharacterFields.forEach(([field, label]) => {
+      appendManualChange(changes, `角色“${character.name || character.id}”的${label}`, before[field], character[field]);
+    });
+  });
+  draft.relationships?.forEach((relationship, index) => {
+    const before = baseline.relationships[index] || {};
+    appendManualChange(changes, `关系“${relationship.route}”的标签`, before.label, relationship.label);
+    appendManualChange(changes, `关系“${relationship.route}”的动态说明`, before.description, relationship.description);
+  });
+  for (const [group, label] of [['hardRules', '硬规则'], ['softRules', '软规则']]) {
+    draft[group]?.forEach((rule, index) => {
+      appendManualChange(changes, `${label}“${rule.category || rule.id || index + 1}”`, baseline[group]?.[index]?.rule, rule.rule);
+    });
+  }
+  if (!changes.length) return '';
+  return [
+    '【用户逐项手工修改，以下字段值是硬约束】',
+    ...changes,
+    '必须逐项采用上述最终值；未列出的现有设定保持不变。仅重新生成为消除矛盾所必需的依赖字段，并重新执行角色、关系、世界规则与完整 Foundation 审核。'
+  ].join('\n');
+}
+
+function appendManualChange(changes, label, before, after) {
+  const previous = String(before || '').trim();
+  const next = String(after || '').trim();
+  if (previous !== next) changes.push(`- ${label}：${JSON.stringify(next)}`);
+}
+
 function FoundationReviewActions({
   busy,
   onConfirm,
   onConfirmCharacterCandidate,
+  onManualRevise,
   onOpenCharacterConfirmation,
+  onOpenCharacterRevision,
   onRevise,
   planningRevision,
   review,
@@ -282,8 +515,9 @@ function FoundationReviewActions({
             <Check size={16} />
             确认角色卡并继续生成完整设定
           </button>
-          <button className="tool-button full-width" disabled={busy} onClick={onOpenCharacterConfirmation} type="button">
-            先查看全部角色卡
+          <button className="tool-button full-width" disabled={busy} onClick={onOpenCharacterRevision} type="button">
+            <Pencil size={16} />
+            让 AI 调整角色卡
           </button>
         </section>
       </div>
@@ -329,8 +563,8 @@ function FoundationReviewActions({
           <div className="foundation-review-choice-heading">
             <span className="foundation-review-choice-icon"><Pencil size={20} /></span>
             <div>
-              <span>还需要调整</span>
-              <strong>提交一轮修改意见</strong>
+              <span>AI 智能修改</span>
+              <strong>描述你想达到的效果</strong>
             </div>
           </div>
           <label className="foundation-review-feedback">
@@ -353,10 +587,15 @@ function FoundationReviewActions({
           </label>
           <button className="tool-button full-width" disabled={!canRevise} onClick={onRevise} type="button">
             <Pencil size={16} />
-            按意见重新生成
+            让 AI 按意见修订
           </button>
         </section>
       </div>
+      <FoundationManualRevision
+        busy={busy}
+        onSubmit={onManualRevise}
+        review={review}
+      />
       {planningRevision?.message ? <div className={`workflow-status ${planningRevision.status || 'idle'}`}><span>{planningRevision.message}</span></div> : null}
     </div>
   );
@@ -366,7 +605,9 @@ export default function FoundationReviewWorkspace({
   busy = false,
   onConfirm = () => {},
   onConfirmCharacterCandidate = () => {},
+  onManualRevise = () => {},
   onOpenCharacterConfirmation = () => {},
+  onOpenCharacterRevision = () => {},
   onRevise = () => {},
   onTabChange,
   planningRevision = {},
@@ -377,7 +618,7 @@ export default function FoundationReviewWorkspace({
   const tabs = useMemo(() => [
     ...baseTabs,
     ...(review.adaptation ? [{ id: 'source', label: '原著证据' }] : []),
-    { id: 'actions', label: '确认与修改' }
+    { id: 'actions', label: review.characterConfirmationRequired ? '查看并调整' : '确认与修改' }
   ], [review.adaptation]);
   const [internalTab, setInternalTab] = useState('overview');
   const activeTab = tabs.some((tab) => tab.id === selectedTab) ? selectedTab : internalTab;
@@ -419,17 +660,17 @@ export default function FoundationReviewWorkspace({
             <span>Revision {review.foundationRevision || '—'}</span>
             <span>Generation {review.foundationGeneration || 1}</span>
           </div>
-          <button
-            className="tool-button accent foundation-review-primary-action"
-            disabled={review.collecting}
-            onClick={() => review.characterConfirmationRequired
-              ? selectTab('actions')
-              : selectTab('actions')}
-            type="button"
-          >
-            <Check size={16} />
-            {review.characterConfirmationRequired ? '确认角色卡' : '去确认'}
-          </button>
+          {review.characterConfirmationRequired ? (
+            <button
+              className="tool-button accent foundation-review-primary-action"
+              disabled={busy || review.collecting}
+              onClick={onConfirmCharacterCandidate}
+              type="button"
+            >
+              <Check size={16} />
+              确认角色卡
+            </button>
+          ) : null}
         </div>
       </header>
       {review.characterConfirmationRequired ? (
@@ -440,8 +681,8 @@ export default function FoundationReviewWorkspace({
             <span>共 {review.coreCharacters.length + review.supportingCharacters.length} 个角色、{review.plannedRelationships.length} 条关系；它们不是空白，也尚未写入正式 Foundation。</span>
           </div>
           <div className="foundation-review-candidate-actions">
-            <button className="tool-button" onClick={onOpenCharacterConfirmation} type="button">查看全部角色</button>
-            <button className="tool-button accent" disabled={busy} onClick={onConfirmCharacterCandidate} type="button">确认并继续</button>
+            <button className="tool-button" onClick={() => selectTab('characters')} type="button">查看全部角色</button>
+            <button className="tool-button" disabled={busy} onClick={onOpenCharacterRevision} type="button">让 AI 调整</button>
           </div>
         </div>
       ) : null}
@@ -479,7 +720,9 @@ export default function FoundationReviewWorkspace({
             busy={busy}
             onConfirm={onConfirm}
             onConfirmCharacterCandidate={onConfirmCharacterCandidate}
+            onManualRevise={onManualRevise}
             onOpenCharacterConfirmation={onOpenCharacterConfirmation}
+            onOpenCharacterRevision={onOpenCharacterRevision}
             onRevise={onRevise}
             planningRevision={planningRevision}
             review={review}

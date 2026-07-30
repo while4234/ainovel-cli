@@ -3857,11 +3857,13 @@ export default function App() {
     }
   };
 
-  const reviseCoCreatePlanningRun = async () => {
+  const reviseCoCreatePlanningRun = async (manualFeedback = '') => {
     if (!activeProject?.id || !coCreatePlanningReview.pending || busy || projectRunning) {
       return;
     }
-    const foundationFeedback = String(planningRevision?.feedback || '').trim();
+    const foundationFeedback = typeof manualFeedback === 'string' && manualFeedback.trim()
+      ? manualFeedback.trim()
+      : String(planningRevision?.feedback || '').trim();
     const payload = coCreatePlanningReview.kind === 'foundation'
       ? { ok: Boolean(foundationFeedback), error: '请输入 Foundation 修改意见', body: { feedback: foundationFeedback } }
       : buildCoCreatePlanningRevisionPayload(planningRevision, coCreatePlanningReview);
@@ -4509,6 +4511,16 @@ export default function App() {
       target?.focus?.();
     });
   };
+  const openFoundationCharacterRevision = () => {
+    setFoundationNavigation({
+      projectId: activeProject?.id || '',
+      tab: 'characters',
+      anchor: 'foundation-character-agent',
+      requestId: Date.now()
+    });
+    setCenterView('foundation');
+    setToolDrawerOpen(false);
+  };
   const confirmReviewedCharacterCandidate = async () => {
     if (!activeProject?.id || !coCreatePlanningReview.characterConfirmationRequired || busy || projectRunning) {
       return;
@@ -4626,7 +4638,7 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${centerView === 'foundation' ? 'foundation-focus' : ''}`}>
       <nav className="mobile-workspace-nav" aria-label="移动端工作台导航">
         <button aria-expanded={projectDrawerOpen} onClick={() => setProjectDrawerOpen((open) => !open)} type="button">
           <BookOpen size={17} />
@@ -5010,9 +5022,6 @@ export default function App() {
         <WorkflowProgressPanel
           projectId={activeProject?.id || ''}
           snapshot={snapshot}
-          onNextAction={currentProjectNextAction?.code === 'confirm_character_candidate'
-            ? openFoundationCharacterConfirmation
-            : undefined}
         />
         <ManuscriptWorkspace
           active={centerView === 'manuscript'}
@@ -5073,6 +5082,8 @@ export default function App() {
                    onConfirm={confirmCoCreatePlanningRun}
                    onConfirmCharacterCandidate={confirmReviewedCharacterCandidate}
                    onOpenCharacterConfirmation={openFoundationCharacterConfirmation}
+                   onOpenCharacterRevision={openFoundationCharacterRevision}
+                   onManualRevise={reviseCoCreatePlanningRun}
                    onRevise={reviseCoCreatePlanningRun}
                    planningRevision={planningRevision}
                    review={coCreatePlanningReview}
@@ -5438,6 +5449,8 @@ function CoCreatePlanningWorkspace({
   onConfirm,
   onConfirmCharacterCandidate,
   onOpenCharacterConfirmation,
+  onOpenCharacterRevision,
+  onManualRevise,
   onRevise,
   planningRevision,
   review,
@@ -5452,6 +5465,8 @@ function CoCreatePlanningWorkspace({
         onConfirm={onConfirm}
         onConfirmCharacterCandidate={onConfirmCharacterCandidate}
         onOpenCharacterConfirmation={onOpenCharacterConfirmation}
+        onOpenCharacterRevision={onOpenCharacterRevision}
+        onManualRevise={onManualRevise}
         onRevise={onRevise}
         planningRevision={planningRevision}
         review={review}

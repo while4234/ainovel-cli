@@ -86,6 +86,16 @@ textarea:disabled {
   background: var(--bg);
 }
 
+@media (min-width: 1101px) {
+  .app-shell.foundation-focus {
+    grid-template-columns: minmax(224px, 264px) minmax(0, 1fr);
+  }
+
+  .app-shell.foundation-focus .status-pane {
+    display: none;
+  }
+}
+
 .project-pane,
 .status-pane,
 .writing-pane {
@@ -3664,6 +3674,179 @@ h2 {
   color: var(--muted);
 }
 
+.foundation-manual-revision {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) + 2px);
+  background: var(--surface-solid);
+  box-shadow: 0 10px 28px rgba(30, 60, 70, .05);
+}
+
+.foundation-manual-revision.open {
+  position: fixed;
+  z-index: 90;
+  inset: max(18px, 3vh) max(18px, 3vw);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface-solid);
+  box-shadow:
+    0 0 0 100vmax rgba(17, 27, 35, .34),
+    0 24px 70px rgba(17, 37, 45, .24);
+}
+
+.foundation-manual-revision > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  background: linear-gradient(120deg, rgba(247, 250, 250, .98), rgba(239, 247, 246, .9));
+}
+
+.foundation-manual-revision > header > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.foundation-manual-revision > header span {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .05em;
+}
+
+.foundation-manual-revision > header strong {
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
+.foundation-manual-revision > header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.foundation-manual-revision-body {
+  display: grid;
+  gap: 14px;
+  max-height: min(560px, 58vh);
+  padding: 16px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+}
+
+.foundation-manual-revision.open .foundation-manual-revision-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+.foundation-manual-revision-body > label,
+.foundation-manual-entity-list label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.foundation-manual-revision-body textarea,
+.foundation-manual-revision-body input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.foundation-manual-revision-body textarea {
+  resize: vertical;
+}
+
+.foundation-manual-revision-body details {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(249, 251, 251, .72);
+}
+
+.foundation-manual-revision-body summary {
+  padding: 11px 13px;
+  color: var(--text-strong);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.foundation-manual-entity-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 12px 12px;
+}
+
+.foundation-manual-entity-list fieldset {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: var(--surface-solid);
+}
+
+.foundation-manual-entity-list legend {
+  max-width: 100%;
+  padding: 0 6px;
+  overflow: hidden;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.foundation-manual-revision-submit {
+  position: sticky;
+  bottom: -16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 0 -16px -16px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 -10px 24px rgba(30, 60, 70, .08);
+  backdrop-filter: blur(10px);
+}
+
+.foundation-manual-revision-submit > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.foundation-manual-revision-submit strong {
+  color: var(--text-strong);
+  font-size: 13px;
+}
+
+.foundation-manual-revision-submit span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .foundation-review-sidebar-guide {
   display: flex;
   align-items: flex-start;
@@ -4331,6 +4514,16 @@ h2 {
   }
 
   .foundation-review-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .foundation-manual-revision > header,
+  .foundation-manual-revision-submit {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .foundation-manual-entity-list {
     grid-template-columns: 1fr;
   }
 }
@@ -5159,5 +5352,9 @@ h2 {
 
   .foundation-review-choice.revise > .tool-button {
     grid-column: 2;
+  }
+
+  .foundation-manual-revision-body {
+    max-height: min(480px, 52vh);
   }
 }
