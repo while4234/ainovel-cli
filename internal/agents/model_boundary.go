@@ -13,6 +13,7 @@ import (
 
 const (
 	productionAgentInputLimitBytes = 60 * 1024
+	architectLongInputLimitBytes   = 96 * 1024
 	characterAgentInputLimitBytes  = 128 * 1024
 	writerAgentInputLimitBytes     = 96 * 1024
 	continuityAuditInputLimitBytes = 128 * 1024
@@ -212,6 +213,13 @@ func (m *diagnosticModel) inputLimitBytes() int {
 		// remains far below Writer's 128K-token runtime window. Keep planning
 		// agents at 60 KiB so long books still cannot inject whole-book context.
 		return writerAgentInputLimitBytes
+	}
+	if m.task == "agent_architect_long" {
+		// Long-form Architect must retain one bounded novel_context result for
+		// the active volume. Confirmed Foundation data plus that focal planning
+		// window can legitimately cross the shared 60 KiB planning boundary
+		// while remaining far below Architect's 96K-token runtime window.
+		return architectLongInputLimitBytes
 	}
 	if m.task == "agent_character" {
 		// Character review must compare one complete staged cast and its

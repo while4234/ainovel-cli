@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: unblock long-form planning contexts`:
+  classifies the confirmed target Foundation as dynamic adaptation-planner
+  evidence instead of static role-core text, and gives only
+  `architect_long` a 96 KiB compiled-input boundary for one valid focal-volume
+  context. Planner calls now rely on their tokenizer-aware 40k-token compiler
+  hard limit instead of a conflicting 60 KiB UTF-8 byte ceiling. Focused
+  agents/adaptation tests plus full Host and tools packages pass; the repaired
+  Web service is healthy on port 9898 with both monitored test projects
+  resuming from their saved planning checkpoints.
 - 2026-07-30 `31d8a34` `fix: unify original character revision feedback`:
   distinguishes the pre-Foundation character-candidate gate from complete
   StoryFoundation review while giving both the same author-facing

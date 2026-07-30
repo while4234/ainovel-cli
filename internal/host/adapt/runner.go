@@ -62,6 +62,7 @@ const (
 	adaptationPlannerAuthorizationMaxAttempts = 3
 	adaptationProposalRuntimeVersion          = 2
 	adaptationProposalRuntimeLegacyVersion    = 1
+	adaptationPlannerDefaultInputLimitBytes   = 60 * 1024
 	adaptationSourceFoundationVersion         = 4
 	adaptationSourceFoundationPromptVersion   = "source-foundation-merge-v3"
 	adaptationSourceAnalyzerVersion           = 2
@@ -5588,6 +5589,16 @@ func generatePlannerText(
 	return generatePlannerTextForStage(ctx, StagePlan, llm, systemPrompt, userPrompt, maxTokens, emit, current, total, label, maxAttemptsOverride...)
 }
 
+func plannerInputLimitBytes(stage Stage) int {
+	if stage == StagePlan {
+		// Planner calls have already passed promptcompile's tokenizer-aware
+		// 40k-token hard limit. A second byte ceiling is not equivalent for
+		// UTF-8 prompts and can reject valid compiled Chinese context.
+		return 0
+	}
+	return adaptationPlannerDefaultInputLimitBytes
+}
+
 func generatePlannerTextForStage(
 	ctx context.Context,
 	stage Stage,
@@ -5667,7 +5678,7 @@ func generatePlannerTextForStage(
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: modeldiag.StoreFromContext(ctx), Task: "adapt_planner_" + string(stage), Batch: attempt, System: compiledSystem, User: []byte(compiledUser), InputLimitBytes: 60 * 1024, OutputLimitTokens: maxTokens, SelectorCounts: map[string]int{"model_calls": 1}, SplitReason: string(stage)})
+		recorder, beginErr := modeldiag.Begin(modeldiag.Request{Store: modeldiag.StoreFromContext(ctx), Task: "adapt_planner_" + string(stage), Batch: attempt, System: compiledSystem, User: []byte(compiledUser), InputLimitBytes: plannerInputLimitBytes(stage), OutputLimitTokens: maxTokens, SelectorCounts: map[string]int{"model_calls": 1}, SplitReason: string(stage)})
 		if beginErr != nil {
 			return "", beginErr
 		}

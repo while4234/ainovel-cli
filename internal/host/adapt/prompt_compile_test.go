@@ -45,6 +45,29 @@ func TestCompilePlannerCallLoadsOnlyCurrentMode(t *testing.T) {
 	}
 }
 
+func TestCompilePlannerCallClassifiesTargetFoundationAsEvidence(t *testing.T) {
+	dynamicFoundation := targetFoundationPromptMarker + "\n" + strings.Repeat("confirmed target detail ", 1_000)
+	systemPrompt, userPrompt, diagnostics, err := compilePlannerCall(
+		t.Context(),
+		"planner role\n\n"+dynamicFoundation,
+		`Planning input: {"granularity":"arc","events":["meet"]}`,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("compilePlannerCall: %v", err)
+	}
+	if strings.Contains(systemPrompt, targetFoundationPromptMarker) {
+		t.Fatal("dynamic target Foundation remained in the bounded role core")
+	}
+	if !strings.Contains(userPrompt, targetFoundationPromptMarker) ||
+		!strings.Contains(userPrompt, strings.Repeat("confirmed target detail ", 100)) {
+		t.Fatal("dynamic target Foundation was not preserved as planner evidence")
+	}
+	if diagnostics == nil || diagnostics.Components[0].Tokens >= diagnostics.Components[3].Tokens {
+		t.Fatalf("component classification was not reflected in diagnostics: %+v", diagnostics)
+	}
+}
+
 func TestCompilePlannerCallDoesNotTruncateOversizedJSON(t *testing.T) {
 	payload := `{"granularity":"arc","events":["meet","case"]}`
 	_, _, diagnostics, err := compilePlannerCall(t.Context(), "planner role", payload, oversizedEvidenceCounter{})

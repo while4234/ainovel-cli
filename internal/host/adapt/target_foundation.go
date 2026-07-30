@@ -10,6 +10,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
+const targetFoundationPromptMarker = "TARGET STORY FOUNDATION (confirmed canonical truth; never rename, delete, or replace confirmed cast):"
+
 func adaptationPlannerSystemPrompt(deps Deps) string {
 	base := strings.TrimSpace(deps.Prompts.Planner)
 	if deps.Store == nil {
@@ -28,7 +30,7 @@ func adaptationPlannerSystemPrompt(deps Deps) string {
 	if err != nil {
 		return base
 	}
-	return base + "\n\nTARGET STORY FOUNDATION (confirmed canonical truth; never rename, delete, or replace confirmed cast):\n" + string(payload) +
+	return base + "\n\n" + targetFoundationPromptMarker + "\n" + string(payload) +
 		"\nKeep every planning claim explicitly separated as SOURCE FACT, TARGET ADAPTATION DECISION, or NEW ORIGINAL SETTING. SourceFoundation is read-only evidence; when it conflicts with this target foundation, the confirmed target decision governs the target story while the source discrepancy remains visible."
 }
 

@@ -95,6 +95,7 @@ func compilePlannerCall(
 		return "", "", nil, err
 	}
 	rules, _ := ctx.Value(promptRulesContextKey{}).([]promptcompile.Rule)
+	roleCore, targetFoundationEvidence := splitPlannerRoleCoreAndEvidence(systemPrompt)
 	compiler := promptcompile.NewWithLimits(counter, promptcompile.Limits{
 		MaxRules:          domain.AdaptationPromptMaxRules,
 		MaxForbiddenRules: domain.AdaptationPromptMaxForbiddenRules,
@@ -103,7 +104,7 @@ func compilePlannerCall(
 		Agent: promptcompile.AgentPlanner,
 		Mode:  mode,
 		RoleCore: promptcompile.Component{
-			Text: strings.TrimSpace(systemPrompt),
+			Text: roleCore,
 		},
 		ModeContract: promptcompile.Component{
 			Text: modeContract,
@@ -114,7 +115,7 @@ func compilePlannerCall(
 			Mode: mode,
 		},
 		EvidencePacket: promptcompile.Component{
-			Text: strings.TrimSpace(userPrompt),
+			Text: joinPlannerEvidence(targetFoundationEvidence, userPrompt),
 			Mode: mode,
 		},
 		Rules: rules,
@@ -124,6 +125,25 @@ func compilePlannerCall(
 	}
 	diagnostics := result.Diagnostics
 	return result.SystemPrompt, result.UserPrompt, &diagnostics, nil
+}
+
+func splitPlannerRoleCoreAndEvidence(systemPrompt string) (string, string) {
+	systemPrompt = strings.TrimSpace(systemPrompt)
+	index := strings.Index(systemPrompt, targetFoundationPromptMarker)
+	if index < 0 {
+		return systemPrompt, ""
+	}
+	return strings.TrimSpace(systemPrompt[:index]), strings.TrimSpace(systemPrompt[index:])
+}
+
+func joinPlannerEvidence(parts ...string) string {
+	joined := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			joined = append(joined, part)
+		}
+	}
+	return strings.Join(joined, "\n\n")
 }
 
 func promptModeFromPayload(payload string) (promptcompile.Mode, bool) {
