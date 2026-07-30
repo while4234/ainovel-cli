@@ -63,6 +63,7 @@ const (
 	adaptationProposalRuntimeVersion          = 2
 	adaptationProposalRuntimeLegacyVersion    = 1
 	adaptationPlannerDefaultInputLimitBytes   = 60 * 1024
+	adaptationPlannerAuditInputLimitBytes     = 96 * 1024
 	adaptationSourceFoundationVersion         = 4
 	adaptationSourceFoundationPromptVersion   = "source-foundation-merge-v3"
 	adaptationSourceAnalyzerVersion           = 2
@@ -5595,6 +5596,12 @@ func plannerInputLimitBytes(stage Stage) int {
 		// 40k-token hard limit. A second byte ceiling is not equivalent for
 		// UTF-8 prompts and can reject valid compiled Chinese context.
 		return 0
+	}
+	if stage == StageAudit {
+		// A pre-writing audit owns exactly one bounded detail batch plus its
+		// source/event evidence. That valid package can cross the shared 60 KiB
+		// extraction ceiling while remaining bounded by batch construction.
+		return adaptationPlannerAuditInputLimitBytes
 	}
 	return adaptationPlannerDefaultInputLimitBytes
 }

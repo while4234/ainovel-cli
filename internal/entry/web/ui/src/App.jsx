@@ -4517,6 +4517,32 @@ export default function App() {
       target?.focus?.();
     });
   };
+  const runWorkflowNextAction = (action) => {
+    const actionID = String(action?.id || '').trim();
+    switch (actionID) {
+      case 'confirm_adaptation_proposal':
+        setSideView('adapt');
+        confirmAdaptationRun();
+        return;
+      case 'confirm_foundation':
+      case 'confirm_planning':
+        setSideView('cocreate');
+        confirmCoCreatePlanningRun();
+        return;
+      case 'confirm_character_candidate':
+        openFoundationCharacterConfirmation();
+        return;
+      case 'resume_project':
+      case 'resume_adaptation_proposal':
+      case 'resume_adaptation_proposal_details':
+      case 'resume_analysis':
+      case 'resume_writing':
+        runAction(resumeProject, { reportResumeNoOp: true });
+        return;
+      default:
+        setError(`当前流程动作尚未接入状态面板：${actionID || 'unknown'}`);
+    }
+  };
   const openFoundationCharacterRevision = () => {
     setFoundationNavigation({
       projectId: activeProject?.id || '',
@@ -5095,6 +5121,7 @@ export default function App() {
         ) : null}
 
         <WorkflowProgressPanel
+          onNextAction={runWorkflowNextAction}
           projectId={activeProject?.id || ''}
           snapshot={snapshot}
         />

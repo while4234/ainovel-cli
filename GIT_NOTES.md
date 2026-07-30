@@ -46,7 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-30 `this commit` `fix: unblock long-form planning contexts`:
+- 2026-07-30 `this commit` `fix: route planning reviews through workflow panel`:
+  wires durable workflow next actions to the matching adaptation, original
+  planning, character-confirmation, or resume handler instead of leaving the
+  progress panel inert. Pre-writing detail-batch audits now have a scoped
+  96 KiB input boundary; a real 65,184-byte audit passed after deployment.
+- 2026-07-30 `76690ed` `fix: unblock long-form planning contexts`:
   classifies the confirmed target Foundation as dynamic adaptation-planner
   evidence instead of static role-core text, and gives only
   `architect_long` a 96 KiB compiled-input boundary for one valid focal-volume

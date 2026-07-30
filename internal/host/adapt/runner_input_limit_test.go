@@ -9,4 +9,7 @@ func TestPlannerInputLimitUsesCompiledTokenBudget(t *testing.T) {
 	if got := plannerInputLimitBytes(StageDossier); got != adaptationPlannerDefaultInputLimitBytes {
 		t.Fatalf("dossier input byte limit = %d, want %d", got, adaptationPlannerDefaultInputLimitBytes)
 	}
+	if got := plannerInputLimitBytes(StageAudit); got != adaptationPlannerAuditInputLimitBytes {
+		t.Fatalf("audit input byte limit = %d, want %d", got, adaptationPlannerAuditInputLimitBytes)
+	}
 }
