@@ -81,7 +81,14 @@ func EditOriginalCharacterCandidate(
 	editedLifecycle.InputDigest = editedBinding.InputDigest
 	editedLifecycle.Completeness = completeness
 	editedLifecycle.AnalysisStatus = domain.CharacterCardAnalysisCandidateReady
-	editedLifecycle.ReviewStatus = domain.CharacterCardReviewStale
+	if lifecycle.ReviewStatus == domain.CharacterCardReviewNotReviewed {
+		editedLifecycle.ReviewStatus = domain.CharacterCardReviewNotReviewed
+		editedLifecycle.ReviewedCandidate = domain.CharacterCardCandidateReference{}
+		editedLifecycle.ReviewedInputDigest = ""
+		editedLifecycle.ReviewSummary = ""
+	} else {
+		editedLifecycle.ReviewStatus = domain.CharacterCardReviewStale
+	}
 	editedLifecycle.ConfirmationStatus = domain.CharacterCardUnconfirmed
 	editedLifecycle.Findings = findings
 	editedLifecycle.Error = nil
@@ -116,19 +123,30 @@ func ConfirmOriginalCharacterCandidate(
 		lifecycle.Candidate == binding.Candidate &&
 		lifecycle.IdempotencyKey == strings.TrimSpace(request.IdempotencyKey) &&
 		strings.TrimSpace(request.CandidateDigest) == binding.Candidate.CharacterContentDigest {
+		repairedCandidate := *candidate
+		repairedLifecycle := *lifecycle
 		coreCast, loadErr := st.CoreCast.Load()
 		if loadErr != nil {
 			return CharacterConfirmationResult{}, loadErr
 		}
-		coreCastRevision := int64(0)
-		if coreCast != nil {
-			coreCastRevision = coreCast.Revision
+		if lifecycle.Mode == domain.CharacterCardProjectAdaptation {
+			var repairErr error
+			var repaired domain.CoreCastContract
+			repairedCandidate, repairedLifecycle, repaired, repairErr =
+				repairConfirmedCharacterCoreCastProjection(st, *candidate, *lifecycle)
+			if repairErr != nil {
+				return CharacterConfirmationResult{}, repairErr
+			}
+			coreCast = &repaired
+		}
+		if coreCast == nil {
+			return CharacterConfirmationResult{}, fmt.Errorf("confirmed character CoreCast is missing")
 		}
 		return CharacterConfirmationResult{
-			CandidateRevision:  candidate.Revision,
-			FoundationRevision: binding.Candidate.FoundationRevision,
-			CoreCastRevision:   coreCastRevision,
-			CandidateDigest:    binding.Candidate.CharacterContentDigest,
+			CandidateRevision:  repairedCandidate.Revision,
+			FoundationRevision: repairedLifecycle.Candidate.FoundationRevision,
+			CoreCastRevision:   coreCast.Revision,
+			CandidateDigest:    repairedLifecycle.Candidate.CharacterContentDigest,
 			Idempotent:         true,
 		}, nil
 	}
@@ -164,12 +182,27 @@ func ConfirmOriginalCharacterCandidate(
 	if err := bindConfirmedCharacterCoreCast(st, &projected, lifecycle.Mode); err != nil {
 		return CharacterConfirmationResult{}, err
 	}
+	var sourceCharacters []domain.SourceMajorCharacter
+	if lifecycle.Mode == domain.CharacterCardProjectAdaptation {
+		sourceCharacters, err = adaptationCoreSourceCharacters(st, lifecycle.SourceMappings, projected)
+		if err != nil {
+			return CharacterConfirmationResult{}, err
+		}
+		projected, err = domain.ApplyCharacterSourceMappingsToCoreCast(
+			projected,
+			lifecycle.SourceMappings,
+			sourceMajorCharacterIDs(sourceCharacters),
+		)
+		if err != nil {
+			return CharacterConfirmationResult{}, fmt.Errorf("project Character source mappings into CoreCast: %w", err)
+		}
+	}
 	for _, finding := range conflicts {
 		if finding.Blocking || finding.Severity == domain.CharacterCardSeverityBlocking {
 			return CharacterConfirmationResult{}, fmt.Errorf("CoreCast conflict blocks character confirmation: %s", finding.Description)
 		}
 	}
-	completion := domain.CoreCastCompletion(projected, nil, nil)
+	completion := domain.CoreCastCompletion(projected, sourceCharacters, sourceCharacters)
 	if !completion.Complete {
 		return CharacterConfirmationResult{}, fmt.Errorf("projected CoreCast is incomplete: %s", strings.Join(completion.BlockingReasons, "; "))
 	}
@@ -200,7 +233,13 @@ func ConfirmOriginalCharacterCandidate(
 	if err != nil {
 		return CharacterConfirmationResult{}, fmt.Errorf("save projected CoreCast: %w", err)
 	}
-	confirmedCast, _, err := st.CoreCast.ConfirmCAS(savedCast.Revision, savedCast.ContentSignature, nil, nil, nil)
+	confirmedCast, _, err := st.CoreCast.ConfirmCAS(
+		savedCast.Revision,
+		savedCast.ContentSignature,
+		sourceCharacters,
+		sourceCharacters,
+		nil,
+	)
 	if err != nil {
 		return CharacterConfirmationResult{}, fmt.Errorf("confirm projected CoreCast: %w", err)
 	}
@@ -219,6 +258,7 @@ func ConfirmOriginalCharacterCandidate(
 		if review == nil {
 			return CharacterConfirmationResult{}, fmt.Errorf("Foundation generation is missing")
 		}
+		candidate.Foundation = originalCandidateWithConfirmedBrief(candidate.Foundation, review.Brief)
 		published, _, err = st.PublishOriginalCharacterCandidate(
 			storepkg.FoundationGenerationFence{
 				Generation:   review.FoundationGeneration,
@@ -268,6 +308,162 @@ func ConfirmOriginalCharacterCandidate(
 		CoreCastRevision:   confirmedCast.Revision,
 		CandidateDigest:    savedLifecycle.Candidate.CharacterContentDigest,
 	}, nil
+}
+
+func repairConfirmedCharacterCoreCastProjection(
+	st *storepkg.Store,
+	candidate domain.CharacterCardCandidate,
+	lifecycle domain.CharacterCardLifecycle,
+) (domain.CharacterCardCandidate, domain.CharacterCardLifecycle, domain.CoreCastContract, error) {
+	current, err := st.CoreCast.Load()
+	if err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	if current == nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, fmt.Errorf("confirmed character CoreCast is missing")
+	}
+	projected, conflicts, err := domain.ProjectCharacterCandidateCoreCast(candidate.Foundation, current)
+	if err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	for _, finding := range conflicts {
+		if finding.Blocking || finding.Severity == domain.CharacterCardSeverityBlocking {
+			return candidate, lifecycle, domain.CoreCastContract{}, fmt.Errorf(
+				"CoreCast conflict blocks projection repair: %s",
+				finding.Description,
+			)
+		}
+	}
+	if err := bindConfirmedCharacterCoreCast(st, &projected, lifecycle.Mode); err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	var sourceCharacters []domain.SourceMajorCharacter
+	if lifecycle.Mode == domain.CharacterCardProjectAdaptation {
+		sourceCharacters, err = adaptationCoreSourceCharacters(st, lifecycle.SourceMappings, projected)
+		if err != nil {
+			return candidate, lifecycle, domain.CoreCastContract{}, err
+		}
+		projected, err = domain.ApplyCharacterSourceMappingsToCoreCast(
+			projected,
+			lifecycle.SourceMappings,
+			sourceMajorCharacterIDs(sourceCharacters),
+		)
+		if err != nil {
+			return candidate, lifecycle, domain.CoreCastContract{}, err
+		}
+	}
+	if projected.ContentSignature == current.ContentSignature {
+		return candidate, lifecycle, *current, nil
+	}
+	saved, err := st.CoreCast.SaveCAS(projected, current.Revision)
+	if err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	_, _, err = st.CoreCast.ConfirmCAS(
+		saved.Revision,
+		saved.ContentSignature,
+		sourceCharacters,
+		sourceCharacters,
+		nil,
+	)
+	if err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	published, err := st.CoreCast.PublishConfirmed(
+		st.Foundation,
+		sourceCharacters,
+		sourceCharacters,
+		nil,
+	)
+	if err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	_, rebound, _, _, err := tools.CurrentCharacterCanonicalBinding(st)
+	if err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	candidate.Base = rebound
+	candidate.Foundation.Revision = rebound.Candidate.FoundationRevision
+	candidate.ProjectedCast = published
+	candidate, err = st.CharacterCards.SaveCandidateCAS(candidate, candidate.Revision)
+	if err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	lifecycle.Candidate = rebound.Candidate
+	lifecycle.Inputs = rebound.Inputs
+	lifecycle.InputDigest = rebound.InputDigest
+	lifecycle.ReviewedCandidate = rebound.Candidate
+	lifecycle.ReviewedInputDigest = rebound.InputDigest
+	lifecycle, err = st.CharacterCards.SaveCAS(lifecycle, lifecycle.Revision, rebound)
+	if err != nil {
+		return candidate, lifecycle, domain.CoreCastContract{}, err
+	}
+	return candidate, lifecycle, published, nil
+}
+
+func adaptationCoreSourceCharacters(
+	st *storepkg.Store,
+	mappings []domain.CharacterSourceMapping,
+	contract domain.CoreCastContract,
+) ([]domain.SourceMajorCharacter, error) {
+	source, err := st.Adaptation.LoadSourceFoundation()
+	if err != nil {
+		return nil, err
+	}
+	if source == nil {
+		return nil, fmt.Errorf("adaptation SourceFoundation is missing")
+	}
+	formal := domain.ResolveSourceCharacters(*source)
+	formalByID := make(map[string]domain.SourceMajorCharacter, len(formal))
+	for _, character := range formal {
+		formalByID[character.ID] = character
+	}
+	coreIDs := make(map[string]struct{}, len(contract.Members))
+	for _, member := range contract.Members {
+		coreIDs[member.Character.ID] = struct{}{}
+	}
+	selected := make(map[string]struct{}, len(formal))
+	for _, mapping := range mappings {
+		coreRelevant := mapping.Action == domain.CharacterSourceExclude
+		if !coreRelevant {
+			for _, targetID := range mapping.TargetCharacterIDs {
+				if _, core := coreIDs[targetID]; core {
+					coreRelevant = true
+					break
+				}
+			}
+		}
+		if !coreRelevant {
+			continue
+		}
+		for _, sourceID := range mapping.SourceCharacterIDs {
+			if _, exists := formalByID[sourceID]; exists {
+				selected[sourceID] = struct{}{}
+			}
+		}
+	}
+	out := make([]domain.SourceMajorCharacter, 0, len(selected))
+	for _, character := range formal {
+		if _, exists := selected[character.ID]; exists {
+			out = append(out, character)
+		}
+	}
+	return out, nil
+}
+
+func sourceMajorCharacterIDs(values []domain.SourceMajorCharacter) []string {
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, value.ID)
+	}
+	return ids
+}
+
+func originalCandidateWithConfirmedBrief(candidate domain.StoryFoundation, brief string) domain.StoryFoundation {
+	if strings.TrimSpace(candidate.Premise) == "" {
+		candidate.Premise = strings.TrimSpace(brief)
+	}
+	return candidate
 }
 
 func currentCoreCast(st *storepkg.Store) *domain.CoreCastContract {

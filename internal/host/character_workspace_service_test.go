@@ -134,6 +134,30 @@ func TestCharacterWorkspaceServiceAnalyzeReviewAndRetry(t *testing.T) {
 	}
 }
 
+func TestCharacterWorkspaceAnalyzeCanReferencePersistedCandidate(t *testing.T) {
+	st, staged, _ := stagedOriginalCharacterWorkflow(t)
+	_, binding, _, _, err := tools.CurrentCharacterCanonicalBinding(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewCharacterWorkspaceService(st, &fakeCharacterAgentRuntime{store: st})
+	run, fresh, err := service.PrepareAnalyze(CharacterAnalyzeRequest{
+		ExpectedBaseRevision:       binding.Candidate.FoundationRevision,
+		ExpectedBaseAuditSignature: binding.Candidate.FoundationAuditSignature,
+		IdempotencyKey:             "analyze-persisted-candidate",
+		Instruction:                "仅修正关系标签",
+		CandidateRevision:          staged.Revision,
+		CandidateDigest:            stagedCandidateDigest(t, staged),
+	})
+	if err != nil || !fresh {
+		t.Fatalf("PrepareAnalyze persisted candidate: fresh=%t err=%v", fresh, err)
+	}
+	if run.InputCandidateDigest != stagedCandidateDigest(t, staged) ||
+		!reflect.DeepEqual(run.InputCandidate, staged.Foundation) {
+		t.Fatalf("analyze input = %+v", run.InputCandidate)
+	}
+}
+
 func TestCharacterWorkspaceStateLazilyReportsLegacyCardCompletenessWithoutMutation(t *testing.T) {
 	dir := t.TempDir()
 	st := storepkg.NewStore(dir)

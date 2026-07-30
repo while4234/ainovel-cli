@@ -343,7 +343,11 @@ func (s *ProjectSession) StartBackgroundAction(
 		return ActionRecord{}, false, err
 	}
 	action, created, err := s.actions.Start(kind, idempotencyKey, func(ctx context.Context) error {
-		return run(ctx)
+		actionCtx, contextErr := s.normalFlowActionContext(ctx)
+		if contextErr != nil {
+			return contextErr
+		}
+		return run(actionCtx)
 	}, actionLifecycle{
 		started: func() {
 			s.AppendSnapshot()

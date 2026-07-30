@@ -4,6 +4,9 @@ import { sourceDispositionLabels } from '../coreCast.js';
 export function FoundationOverview({ server, draft, disabled, premiseError, onPremiseChange, onOpenCoreCast }) {
   const runtime = server.activeRevision;
   const planning = server.planningReview;
+  const confirmedBrief = server.mode === 'normal' ? String(planning?.brief || '').trim() : '';
+  const premise = draft.premise || confirmedBrief;
+  const showingConfirmedBrief = !draft.premise.trim() && Boolean(confirmedBrief);
   return <div className="foundation-overview-grid">
     <section className="foundation-card" aria-labelledby="foundation-overview-target">
       <h3 id="foundation-overview-target">目标 StoryFoundation</h3>
@@ -19,7 +22,7 @@ export function FoundationOverview({ server, draft, disabled, premiseError, onPr
         <Metric label="规划审核" value={planning ? `${planning.state || planning.status || 'pending'} · rev ${planning.revision || 0}` : '无'} />
         <Metric label="核心角色" value={server.coreCastConfirmed ? '已确认' : '需要确认'} />
       </dl>
-      <label className="foundation-premise-field"><span>目标故事前提</span><textarea aria-invalid={Boolean(premiseError)} disabled={disabled} value={draft.premise} onChange={(event) => onPremiseChange(event.target.value)} />{premiseError ? <small className="field-error">{premiseError}</small> : null}</label>
+      <label className="foundation-premise-field"><span>目标故事前提{showingConfirmedBrief ? '（共创确认稿）' : ''}</span><textarea aria-invalid={Boolean(premiseError && !premise)} disabled={disabled} value={premise} onChange={(event) => onPremiseChange(event.target.value)} />{showingConfirmedBrief ? <small>该内容来自已确认的共创稿；本轮角色确认后会随 StoryFoundation 正式发布。</small> : premiseError ? <small className="field-error">{premiseError}</small> : null}</label>
       {!server.coreCastConfirmed ? <button className="tool-button" type="button" onClick={onOpenCoreCast}>前往共创工作区确认</button> : null}
     </section>
 

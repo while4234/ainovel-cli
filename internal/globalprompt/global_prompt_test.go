@@ -38,6 +38,25 @@ func TestDeepSeekGlobalPromptExcludesWritingOnlyContracts(t *testing.T) {
 	}
 }
 
+func TestEveryModelGlobalPromptRequiresSimplifiedChineseUserFacingOutput(t *testing.T) {
+	for _, model := range []string{
+		"deepseek/deepseek-v4-pro",
+		"openai/gpt-5.5",
+		"xai/grok-4.3-latest",
+	} {
+		prefix := TextForModel(model)
+		for _, contract := range []string{
+			"全局输出语言契约",
+			"必须使用简体中文",
+			"finding 描述",
+		} {
+			if !strings.Contains(prefix, contract) {
+				t.Fatalf("%s global prompt is missing %q", model, contract)
+			}
+		}
+	}
+}
+
 func TestApplyForModelSelectsGPTPrompt(t *testing.T) {
 	gptPrefix := TextForModel("openai/gpt-5.5")
 	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")

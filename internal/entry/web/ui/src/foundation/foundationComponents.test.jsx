@@ -3,10 +3,18 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { CoreCastEditor } from '../components/CoreCastEditor.jsx';
 import { FoundationOverview } from './FoundationOverview.jsx';
-import { foundationValidationPresentation, FoundationLoadFailure } from './FoundationCenter.jsx';
+import { characterReviewInput, foundationValidationPresentation, FoundationLoadFailure } from './FoundationCenter.jsx';
 import { CharacterEditor } from './CharacterEditor.jsx';
 
 describe('foundation components', () => {
+  it('已有候选的复审提交候选本身而不是空 canonical 草稿', () => {
+    const candidateFoundation = { premise: '候选前提', characters: [{ id: 'hero' }] };
+    expect(characterReviewInput({
+      draft: { premise: '', characters: [] },
+      characterWorkspace: { candidate: { revision: 7, foundation: candidateFoundation } }
+    })).toEqual({ foundation: candidateFoundation, revision: 7 });
+  });
+
   it('只读生成阶段把空基线校验解释为暂态，而不是可操作 warning', () => {
     const validation = { summary: ['故事前提不能为空', '至少需要一个角色', '至少需要一条世界规则'] };
     expect(foundationValidationPresentation({
@@ -37,6 +45,26 @@ describe('foundation components', () => {
     expect(markup).toContain('目标故事前提');
     expect(markup).toContain('来源角色档案');
     expect(markup).toContain('原著主角');
+  });
+
+  it('原创生成阶段立即展示已确认的共创故事前提', () => {
+    const markup = renderToStaticMarkup(<FoundationOverview
+      server={{
+        mode: 'normal',
+        baseRevision: 0,
+        baseAuditSignature: 'audit',
+        editable: false,
+        planningReview: { brief: '女主必须在真相与自由之间作出选择。' }
+      }}
+      draft={{ premise: '', characters: [], relationships: [], world_rules: [] }}
+      disabled
+      premiseError="故事前提不能为空"
+      onPremiseChange={() => {}}
+    />);
+    expect(markup).toContain('目标故事前提（共创确认稿）');
+    expect(markup).toContain('女主必须在真相与自由之间作出选择。');
+    expect(markup).toContain('本轮角色确认后会随 StoryFoundation 正式发布');
+    expect(markup).not.toContain('field-error');
   });
 
   it('核心角色只读模式展示中文重要性和来源角色', () => {

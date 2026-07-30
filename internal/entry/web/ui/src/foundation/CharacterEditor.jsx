@@ -76,6 +76,8 @@ export function CharacterEditor({
     const runStatus = workspace.run?.status;
     if (['queued', 'running', 'failed', 'interrupted'].includes(runStatus) || !workspace.candidate) {
       setAgentExpanded(true);
+    } else if (runStatus === 'completed') {
+      setAgentExpanded(false);
     }
   }, [workspace?.candidate?.digest, workspace?.run?.status]);
 
@@ -504,17 +506,19 @@ function FindingPanel({ findings = [], characters, completeness = [], stale, onF
       .filter((id) => names.has(id))
   );
   const counts = {
-    passed: characters.filter((character) => !findings.some((item) => item.character_id === character.id)).length,
+    passed: characters.filter((character) => !findings.some((item) =>
+      item.character_id === character.id && (item.blocking || item.severity === 'blocking')
+    )).length,
     blocking: findings.filter((item) => item.blocking || item.severity === 'blocking').length,
     warning: findings.filter((item) => !item.blocking && item.severity === 'warning').length,
     information: findings.filter((item) => item.severity === 'information').length
   };
   return <section className="finding-panel" aria-labelledby="character-findings-heading">
-    <div className="foundation-section-head"><div><h3 id="character-findings-heading">角色审核 finding</h3><p>{stale ? '这些 finding 来自旧草稿，仅作参考；修复不代表模型建议已自动应用。' : '点击问题可选择角色、展开语义分组并聚焦对应字段。'}</p></div>
-      <div className="finding-counts"><span>通过 {counts.passed}</span><span>阻塞 {counts.blocking}</span><span>警告 {counts.warning}</span><span>信息 {counts.information}</span><span>完整 {completeCharacterIDs.size}/{characters.length}</span></div>
+    <div className="foundation-section-head"><div><h3 id="character-findings-heading">角色审核结果</h3><p>{stale ? '这些审核结果来自旧草稿，仅作参考；修改后需要重新审核。' : '阻塞问题必须修复；优化建议不会阻止角色候选确认，可按创作取舍处理。'}</p></div>
+      <div className="finding-counts"><span>通过 {counts.passed}</span><span>阻塞 {counts.blocking}</span><span>建议 {counts.warning}</span><span>信息 {counts.information}</span><span>完整 {completeCharacterIDs.size}/{characters.length}</span></div>
     </div>
-    {!findings.length ? <div className="empty-state"><ShieldCheck size={22} /><span>尚无审核 finding。</span></div> : <div className="finding-list">{[...findings].sort(severitySort).map((finding) => <button className={`finding-card ${finding.severity}`} key={finding.id} type="button" onClick={() => onFocus(finding)}>
-      <span className="finding-card-title"><strong>{finding.blocking ? '阻塞' : finding.severity === 'warning' ? '警告' : '信息'}</strong><span>{names.get(finding.character_id) || (finding.scope === 'global' ? '全局' : finding.character_id)}</span></span>
+    {!findings.length ? <div className="empty-state"><ShieldCheck size={22} /><span>暂无审核问题或优化建议。</span></div> : <div className="finding-list">{[...findings].sort(severitySort).map((finding) => <button className={`finding-card ${finding.severity}`} key={finding.id} type="button" onClick={() => onFocus(finding)}>
+      <span className="finding-card-title"><strong>{finding.blocking ? '阻塞问题' : finding.severity === 'warning' ? '优化建议' : '信息'}</strong><span>{names.get(finding.character_id) || (finding.scope === 'global' ? '全局' : finding.character_id)}</span></span>
       <span>{finding.description}</span>{finding.evidence_summary ? <small>证据：{finding.evidence_summary}</small> : null}{finding.suggestion ? <small>建议：{finding.suggestion}</small> : null}
     </button>)}</div>}
   </section>;

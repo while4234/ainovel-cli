@@ -98,6 +98,27 @@ describe('CharacterEditor workspace', () => {
     expect(props.onChange).not.toHaveBeenCalled();
   });
 
+  it('角色任务完成后自动收起运行详情，保留角色双栏可视空间', async () => {
+    const runningWorkspace = {
+      ...workspace,
+      candidate: { digest: 'candidate-1', foundation: { characters, relationships: [] } },
+      run: { mode: 'review', status: 'running', stage: 'running', attempt: 1 }
+    };
+    await render({ workspace: runningWorkspace });
+    expect(container.querySelector('.character-agent-toggle').getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.character-run-status')).not.toBeNull();
+
+    await render({
+      workspace: {
+        ...runningWorkspace,
+        allowedOperations: ['analyze', 'review', 'confirm'],
+        run: { ...runningWorkspace.run, status: 'completed', stage: 'completed' }
+      }
+    });
+    expect(container.querySelector('.character-agent-toggle').getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('.character-run-status')).toBeNull();
+  });
+
   it('删除 core 使用可访问 dialog，Esc 返回触发按钮焦点', async () => {
     await render();
     const trigger = byText('button', '删除');

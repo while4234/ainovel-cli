@@ -206,19 +206,30 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
       }
     }
   };
-  const runCharacterAnalyze = (options) => runCharacterOperation((signal) => analyzeCharacters(
-    projectId, state.server, cloneFoundation(state.draft),
-    { ...options, idempotencyKey: foundationIdempotencyKey('character-analyze'), signal }
-  ), 'analyze');
-  const runCharacterReview = () => runCharacterOperation((signal) => reviewCharacters(
-    projectId, state.server, cloneFoundation(state.draft),
-    {
-      candidateRevision: 0,
-      sourceMappings: state.characterWorkspace?.sourceMappings || [],
-      idempotencyKey: foundationIdempotencyKey('character-review'),
-      signal
-    }
-  ), 'review');
+  const runCharacterAnalyze = (options) => {
+    const analyzeInput = characterReviewInput(state);
+    return runCharacterOperation((signal) => analyzeCharacters(
+      projectId, state.server, cloneFoundation(analyzeInput.foundation),
+      {
+        ...options,
+        candidateRevision: analyzeInput.revision,
+        idempotencyKey: foundationIdempotencyKey('character-analyze'),
+        signal
+      }
+    ), 'analyze');
+  };
+  const runCharacterReview = () => {
+    const reviewInput = characterReviewInput(state);
+    return runCharacterOperation((signal) => reviewCharacters(
+      projectId, state.server, cloneFoundation(reviewInput.foundation),
+      {
+        candidateRevision: reviewInput.revision,
+        sourceMappings: state.characterWorkspace?.sourceMappings || [],
+        idempotencyKey: foundationIdempotencyKey('character-review'),
+        signal
+      }
+    ), 'review');
+  };
   const runCharacterRetry = () => runCharacterOperation((signal) => retryCharacterWorkspace(
     projectId, state.server, state.characterWorkspace.run,
     foundationIdempotencyKey('character-retry'), signal
@@ -259,7 +270,7 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     {state.illegalAction ? <div className="warning-note" role="status">{state.illegalAction}</div> : null}
     {state.status === 'stale' ? <div className="foundation-stale" role="alert"><strong>服务器基线已变化，草稿仍完整保留。</strong><span>先加载最新基线，再用当前草稿重新生成 preview。</span><button className="tool-button" disabled={!state.staleServer} type="button" onClick={() => dispatch({ type: 'rebase_stale', ...requestContext() })}>以最新基线重新对比</button></div> : null}
     {!showingSourceOnly && validationNotice.kind === 'actionable' ? <div aria-live="assertive" className="foundation-validation-summary" role="alert"><strong>请处理 {validationNotice.messages.length} 个字段问题</strong><ul>{validationNotice.messages.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
-    {!showingSourceOnly && validationNotice.kind === 'generating' ? <div aria-live="polite" className="foundation-generation-status" role="status"><strong>设定正在生成，当前无需手动处理</strong><span>StoryFoundation 尚未发布，故事前提、角色和世界规则会由当前规划流程补齐；发布后页面会自动重新校验。</span></div> : null}
+    {!showingSourceOnly && validationNotice.kind === 'generating' ? <div aria-live="polite" className="foundation-generation-status" role="status"><strong>设定正在生成，当前无需手动处理</strong><span>{state.server.planningReview?.brief ? '共创确认稿已作为故事前提展示；角色确认后会正式发布，世界规则由后续规划流程补齐。' : 'StoryFoundation 尚未发布，故事前提、角色和世界规则会由当前规划流程补齐；发布后页面会自动重新校验。'}</span></div> : null}
     {!showingSourceOnly && validationNotice.kind === 'readonly' ? <div aria-live="polite" className="foundation-readonly-validation" role="status"><strong>当前设定只读，暂不能处理校验项</strong><span>恢复到可编辑阶段后再处理以下内容：{validationNotice.messages.join('；')}</span></div> : null}
     <nav aria-label="设定中心区域" className="foundation-tabs" role="tablist">{tabs.map(([id, label], index) => <button aria-controls={`foundation-panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} id={`foundation-tab-${id}`} key={id} role="tab" tabIndex={tab === id ? 0 : -1} type="button" onClick={() => setTab(id)} onKeyDown={(event) => moveTab(event, index, setTab)}>{label}</button>)}</nav>
     <main aria-labelledby={`foundation-tab-${tab}`} className={`foundation-panel foundation-panel-${tab}`} id={`foundation-panel-${tab}`} role="tabpanel">
@@ -303,6 +314,14 @@ function moveTab(event, index, setTab) {
 }
 function statusLabel(status) { return ({ loading: '加载中', clean: '已同步', dirty: '有修改', previewing: '正在预览', preview_ready: '预览就绪', applying: '正在应用', auditing: '正在审查', regenerating: '正在重新生成', awaiting_outline_approval: '等待大纲 / 提案确认', completed: '已完成', failed: '修订失败', stale: '基线已过期', readonly: '只读' })[status] || status; }
 function hasUnpublishedFoundationDraft(status) { return ['dirty', 'previewing', 'preview_ready'].includes(status); }
+
+export function characterReviewInput(state) {
+  const candidate = state?.characterWorkspace?.candidate;
+  return {
+    foundation: candidate?.foundation || state?.draft || {},
+    revision: Number(candidate?.revision || 0)
+  };
+}
 
 export function foundationValidationPresentation(server, validation) {
   const messages = Array.isArray(validation?.summary) ? validation.summary : [];

@@ -240,7 +240,8 @@ export function reviewStatusForCharacter(characterID, findings, stale = false, r
   if (stale) return 'stale';
   const scoped = array(findings).filter((finding) => finding.character_id === characterID);
   if (!scoped.length) return reviewed ? 'passed' : 'not_reviewed';
-  return 'needs_revision';
+  const hasBlockingFinding = scoped.some((finding) => finding.blocking || finding.severity === 'blocking');
+  return hasBlockingFinding ? 'needs_revision' : reviewed ? 'passed' : 'not_reviewed';
 }
 
 export function normalizeRelationship(value = {}) {

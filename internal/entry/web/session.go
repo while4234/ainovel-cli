@@ -199,6 +199,10 @@ type normalFlowActionHost interface {
 	BeginNormalFlowAction(string) (func(), error)
 }
 
+type normalFlowActionContextHost interface {
+	NormalFlowActionContext(context.Context) (context.Context, error)
+}
+
 type foundationRevisionRouteHost interface {
 	ResumeFoundationRevision() (string, error)
 }
@@ -2384,6 +2388,9 @@ func (s *ProjectSession) prepareNormalFoundationGeneration(plan startup.Plan, cr
 		return err
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
+	if _, err := st.SaveFoundationPremise(nil, strings.TrimSpace(plan.RawPrompt)); err != nil {
+		return fmt.Errorf("save confirmed co-create premise: %w", err)
+	}
 	review, err := s.normalCoCreatePlanningReview(plan, createdAt, domain.PlanningReviewStatusCollecting)
 	if err != nil {
 		return err
@@ -4332,6 +4339,11 @@ func (s *ProjectSession) beginCancellableAction(parent context.Context, kind str
 	if parent == nil {
 		parent = context.Background()
 	}
+	parent, err = s.normalFlowActionContext(parent)
+	if err != nil {
+		unlock()
+		return nil, nil, err
+	}
 	ctx, cancel := context.WithCancel(parent)
 	s.setActionCancel(kind, cancel)
 	return ctx, func() {
@@ -4339,6 +4351,32 @@ func (s *ProjectSession) beginCancellableAction(parent context.Context, kind str
 		cancel()
 		unlock()
 	}, nil
+}
+
+func (s *ProjectSession) normalFlowActionContext(parent context.Context) (context.Context, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	s.actionMu.Lock()
+	revisions, lease := s.actionRevisionStore, s.actionRevisionLease
+	hostOwnsLease := s.actionLeaseRelease != nil
+	s.actionMu.Unlock()
+
+	if revisions != nil && lease != nil {
+		fence, err := revisions.FenceForNormalFlow(lease.Token)
+		if err != nil {
+			return nil, err
+		}
+		return storepkg.ContextWithRevisionFence(parent, fence), nil
+	}
+	if hostOwnsLease {
+		actionHost, ok := s.host.(normalFlowActionContextHost)
+		if !ok {
+			return nil, fmt.Errorf("normal-flow action host cannot provide a revision-fenced context")
+		}
+		return actionHost.NormalFlowActionContext(parent)
+	}
+	return nil, fmt.Errorf("normal-flow action revision lease is not active")
 }
 
 func (s *ProjectSession) isActionRunning(kind string) bool {

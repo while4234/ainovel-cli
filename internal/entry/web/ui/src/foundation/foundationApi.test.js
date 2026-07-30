@@ -85,6 +85,49 @@ describe('foundation API adapter', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/projects/p/foundation/characters?run_id=run%2Fa');
   });
 
+  it('复审持久化候选时只提交 revision 和 digest，避免数组规范化触发越权校验', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ character_workspace: {} }), { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const candidate = {
+      schema_version: 3,
+      revision: 0,
+      premise: '',
+      characters: [{ id: 'hero', name: '林舟', role: '主角', traits: [] }],
+      relationships: [],
+      world_rules: []
+    };
+    await reviewCharacters('p', { baseRevision: 0, baseAuditSignature: 'audit' }, candidate, {
+      candidateRevision: 7,
+      idempotencyKey: 'persisted-review'
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.candidate_revision).toBe(7);
+    expect(body.candidate_digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(body).not.toHaveProperty('candidate');
+  });
+
+  it('重新分析持久化候选时只提交 revision 和 digest，避免规范化误改非角色字段', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ character_workspace: {} }), { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const candidate = {
+      schema_version: 3,
+      revision: 0,
+      premise: '',
+      characters: [{ id: 'hero', name: '林舟', role: '主角', traits: [] }],
+      relationships: [],
+      world_rules: []
+    };
+    await analyzeCharacters('p', { baseRevision: 0, baseAuditSignature: 'audit' }, candidate, {
+      candidateRevision: 8,
+      instruction: '仅修正关系标签',
+      idempotencyKey: 'persisted-analyze'
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.candidate_revision).toBe(8);
+    expect(body.candidate_digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(body).not.toHaveProperty('candidate');
+  });
+
   it('candidate digest 对服务端规范化排序稳定', async () => {
     const left = { characters: [{ id: 'b', name: '乙', role: '配角', traits: ['冷静', '敏锐'] }, { id: 'a', name: '甲', role: '主角', traits: [] }], relationships: [] };
     const right = { characters: [{ id: 'a', name: '甲', role: '主角', traits: [] }, { id: 'b', name: '乙', role: '配角', traits: ['敏锐', '冷静'] }], relationships: [] };

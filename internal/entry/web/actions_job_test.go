@@ -381,6 +381,45 @@ func TestBackgroundActionOwnershipIncludesFinalRegistryAndSnapshot(t *testing.T)
 	}
 }
 
+func TestBackgroundActionRunnerReceivesNormalFlowRevisionFence(t *testing.T) {
+	dir := t.TempDir()
+	st := storepkg.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	session, err := NewProjectSession(
+		ProjectManifest{ID: "background-revision-fence", RootDir: dir, OutputDir: dir},
+		newFakeProjectHost(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	fenced := make(chan bool, 1)
+	action, created, err := session.StartBackgroundAction(
+		"character_review",
+		"revision-fence",
+		func(ctx context.Context) error {
+			_, ok := storepkg.RevisionFenceFromContext(ctx)
+			fenced <- ok
+			return nil
+		},
+	)
+	if err != nil || !created {
+		t.Fatalf("StartBackgroundAction = created=%v err=%v", created, err)
+	}
+	select {
+	case ok := <-fenced:
+		if !ok {
+			t.Fatal("background action runner did not receive a revision fence")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("background action runner did not execute")
+	}
+	waitForActionStatus(t, session.actions, action.ActionID, ActionStatusCompleted)
+}
+
 func TestAdaptationWorkflowFinalWritesRemainOwned(t *testing.T) {
 	tests := []struct {
 		name string

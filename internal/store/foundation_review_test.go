@@ -164,6 +164,27 @@ func TestFoundationReviewCannotBeginWithoutConfirmedCoreCast(t *testing.T) {
 	}
 }
 
+func TestOriginalCharacterReviewPreservesSeededPremiseSection(t *testing.T) {
+	st := NewStore(t.TempDir())
+	if _, err := st.SaveFoundationPremise(nil, "共创确认后的故事前提"); err != nil {
+		t.Fatal(err)
+	}
+	review := &domain.PlanningReview{Brief: "共创确认后的故事前提"}
+	if _, err := st.BeginOriginalCharacterReview(review); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(review.FoundationSections, []string{"premise"}) {
+		t.Fatalf("Foundation sections = %+v", review.FoundationSections)
+	}
+	foundation, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.FoundationBaseRevision != foundation.Revision || foundation.Premise != review.Brief {
+		t.Fatalf("review=%+v foundation=%+v", review, foundation)
+	}
+}
+
 func completePendingFoundationReviewForTest(t *testing.T, st *Store) *domain.PlanningReview {
 	t.Helper()
 	review := &domain.PlanningReview{Brief: "pending fixture", StartPrompt: "start"}

@@ -13,6 +13,7 @@ import (
 
 const (
 	productionAgentInputLimitBytes = 60 * 1024
+	characterAgentInputLimitBytes  = 128 * 1024
 	writerAgentInputLimitBytes     = 96 * 1024
 	continuityAuditInputLimitBytes = 128 * 1024
 )
@@ -211,6 +212,13 @@ func (m *diagnosticModel) inputLimitBytes() int {
 		// remains far below Writer's 128K-token runtime window. Keep planning
 		// agents at 60 KiB so long books still cannot inject whole-book context.
 		return writerAgentInputLimitBytes
+	}
+	if m.task == "agent_character" {
+		// Character review must compare one complete staged cast and its
+		// planned relationships. A normal eight-to-twelve-character candidate
+		// can exceed the generic planning boundary while remaining far below
+		// the Character model's runtime context window.
+		return characterAgentInputLimitBytes
 	}
 	return productionAgentInputLimitBytes
 }

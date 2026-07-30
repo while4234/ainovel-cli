@@ -147,6 +147,9 @@ func (s *Store) beginFoundationReviewLocked(review *domain.PlanningReview, requi
 	review.CoreCastSignature = ""
 	review.FoundationConfirmedAt = ""
 	review.FoundationSections = nil
+	if !requireCoreCast && strings.TrimSpace(foundation.Premise) != "" {
+		review.FoundationSections = []string{"premise"}
+	}
 	review.FoundationGeneration++
 	if review.FoundationGeneration <= 0 {
 		review.FoundationGeneration = 1
@@ -222,6 +225,11 @@ func (s *Store) PublishOriginalCharacterCandidate(
 	}
 	if _, err := s.CoreCast.publishConfirmed(s.Foundation, nil, nil, nil); err != nil {
 		return domain.StoryFoundation{}, review, fmt.Errorf("record projected CoreCast publication: %w", err)
+	}
+	if strings.TrimSpace(published.Premise) != "" && !foundationSectionRecorded(review.FoundationSections, "premise") {
+		if _, err := s.recordFoundationSectionLocked(review, "premise"); err != nil {
+			return domain.StoryFoundation{}, review, err
+		}
 	}
 	if !foundationSectionRecorded(review.FoundationSections, "characters") {
 		if _, err := s.recordFoundationSectionLocked(review, "characters"); err != nil {

@@ -59,6 +59,7 @@ type CharacterAnalyzeRequest struct {
 	Instruction                string                  `json:"instruction,omitempty"`
 	AllowSupportingCharacters  bool                    `json:"allow_supporting_characters"`
 	Candidate                  *domain.StoryFoundation `json:"candidate,omitempty"`
+	CandidateRevision          int64                   `json:"candidate_revision,omitempty"`
 	CandidateDigest            string                  `json:"candidate_digest"`
 }
 
@@ -266,7 +267,7 @@ func (s *CharacterWorkspaceService) PrepareAnalyze(
 	if err := validateCharacterInstruction(request.Instruction); err != nil {
 		return domain.CharacterWorkspaceRun{}, false, err
 	}
-	inputCandidate, digest, err := s.normalizeInputCandidate(current, request.Candidate)
+	inputCandidate, digest, err := s.analyzeRequestCandidate(current, binding, request)
 	if err != nil {
 		return domain.CharacterWorkspaceRun{}, false, err
 	}
@@ -336,6 +337,38 @@ func (s *CharacterWorkspaceService) PrepareAnalyze(
 		UpdatedAt:                 now,
 	}
 	return s.createRun(run)
+}
+
+func (s *CharacterWorkspaceService) analyzeRequestCandidate(
+	current domain.StoryFoundation,
+	canonicalBinding domain.CharacterCardBinding,
+	request CharacterAnalyzeRequest,
+) (domain.StoryFoundation, string, error) {
+	if request.Candidate != nil || request.CandidateRevision <= 0 {
+		return s.normalizeInputCandidate(current, request.Candidate)
+	}
+	candidate, err := s.store.CharacterCards.LoadCandidate()
+	if err != nil {
+		return domain.StoryFoundation{}, "", err
+	}
+	if candidate == nil || candidate.Revision != request.CandidateRevision {
+		return domain.StoryFoundation{}, "", characterWorkspaceError(
+			CharacterWorkspaceErrorStale,
+			"candidate_revision is stale for character analysis",
+		)
+	}
+	if candidate.Base.Candidate != canonicalBinding.Candidate ||
+		candidate.Base.InputDigest != canonicalBinding.InputDigest {
+		return domain.StoryFoundation{}, "", characterWorkspaceError(
+			CharacterWorkspaceErrorStale,
+			"persisted character candidate no longer matches the current Foundation inputs",
+		)
+	}
+	digest, err := domain.CharacterCardContentDigest(candidate.Foundation)
+	if err != nil {
+		return domain.StoryFoundation{}, "", err
+	}
+	return domain.CloneStoryFoundation(candidate.Foundation), digest, nil
 }
 
 func (s *CharacterWorkspaceService) PrepareReview(

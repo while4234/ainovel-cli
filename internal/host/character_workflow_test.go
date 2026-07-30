@@ -41,10 +41,10 @@ func TestAdaptationCharacterWorkflowPublishesCompleteCastAndTargetFoundation(t *
 	original.ID = "target-original"
 	original.Name = "Archivist Qiao"
 	original.Role = "target-original archive custodian"
-	original.Tier = string(domain.CharacterTierSecondary)
+	original.Tier = string(domain.CharacterTierImportant)
 	original.Goal = "Keep the archive auditable."
 	original.Motivation = "Prevent another cover-up."
-	original.Conflict = ""
+	original.Conflict = "Publishing the evidence endangers the witnesses the archivist must protect."
 
 	relationships := []domain.CharacterRelationship{
 		{
@@ -226,15 +226,34 @@ func TestConfirmOriginalCharacterCandidatePublishesReviewedCandidateAndIsIdempot
 	}
 }
 
+func TestOriginalCandidateUsesConfirmedBriefWhenLegacyPremiseIsEmpty(t *testing.T) {
+	candidate := domain.StoryFoundation{}
+	got := originalCandidateWithConfirmedBrief(candidate, "  已确认的中文共创前提  ")
+	if got.Premise != "已确认的中文共创前提" {
+		t.Fatalf("premise = %q", got.Premise)
+	}
+
+	candidate.Premise = "候选中已有前提"
+	got = originalCandidateWithConfirmedBrief(candidate, "不应覆盖")
+	if got.Premise != candidate.Premise {
+		t.Fatalf("existing premise was overwritten: %q", got.Premise)
+	}
+}
+
 func TestConfirmOriginalCharacterCandidateRejectsStaleFoundation(t *testing.T) {
 	st, candidate, binding := stagedOriginalCharacterWorkflow(t)
 	review, err := st.RunMeta.PlanningReview()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SaveFoundationPremise(&storepkg.FoundationGenerationFence{
+	if _, err := st.SaveFoundationWorldRules(&storepkg.FoundationGenerationFence{
 		Generation: review.FoundationGeneration, BaseRevision: review.FoundationBaseRevision,
-	}, "A concurrent author revision wins."); err != nil {
+	}, []domain.WorldRule{{
+		ID:       "rule-concurrent",
+		Category: "evidence",
+		Rule:     "A concurrent author revision wins.",
+		Strength: domain.WorldRuleStrengthHard,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	_, err = ConfirmOriginalCharacterCandidate(st, CharacterConfirmationRequest{
@@ -276,6 +295,40 @@ func TestEditOriginalCharacterCandidateInvalidatesReview(t *testing.T) {
 		IdempotencyKey:            "confirm-with-stale-review",
 	}); err == nil {
 		t.Fatal("edited candidate confirmation accepted without a fresh review")
+	}
+}
+
+func TestEditOriginalCharacterCandidateKeepsUnreviewedLifecycleValid(t *testing.T) {
+	st, candidate, binding := stagedOriginalCharacterWorkflow(t)
+	_, lifecycle, _, err := tools.CurrentCharacterWorkflow(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreviewed := *lifecycle
+	unreviewed.ReviewStatus = domain.CharacterCardReviewNotReviewed
+	unreviewed.ReviewedCandidate = domain.CharacterCardCandidateReference{}
+	unreviewed.ReviewedInputDigest = ""
+	unreviewed.ReviewSummary = ""
+	if _, err := st.CharacterCards.SaveCAS(unreviewed, lifecycle.Revision, binding); err != nil {
+		t.Fatal(err)
+	}
+
+	editedCharacters := append([]domain.Character(nil), candidate.Foundation.Characters...)
+	editedCharacters[0].Goal = "Expose the conspiracy without rewriting unrelated character fields."
+	saved, editedLifecycle, err := EditOriginalCharacterCandidate(st, CharacterCandidateEditRequest{
+		ExpectedCandidateRevision: candidate.Revision,
+		Characters:                editedCharacters,
+		Relationships:             candidate.Foundation.Relationships,
+		RelationshipsReviewed:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Revision <= candidate.Revision ||
+		editedLifecycle.ReviewStatus != domain.CharacterCardReviewNotReviewed ||
+		editedLifecycle.ReviewedCandidate.CharacterContentDigest != "" ||
+		editedLifecycle.ReviewedInputDigest != "" {
+		t.Fatalf("edited unreviewed workflow candidate=%+v lifecycle=%+v", saved, editedLifecycle)
 	}
 }
 

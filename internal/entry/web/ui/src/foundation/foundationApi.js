@@ -33,9 +33,10 @@ export function loadCharacterWorkspace(projectId, runId = '', signal) {
 }
 
 export async function analyzeCharacters(projectId, server, candidate, {
-  characterIDs = [], instruction = '', allowSupportingCharacters = false, idempotencyKey, signal
+  candidateRevision = 0, characterIDs = [], instruction = '', allowSupportingCharacters = false, idempotencyKey, signal
 } = {}) {
   const candidateDigest = await characterCandidateDigest(candidate);
+  const persistedCandidateRevision = Number(candidateRevision || 0);
   return analyzeProjectFoundationCharacters(projectId, {
     expected_base_revision: server.baseRevision,
     expected_base_audit_signature: server.baseAuditSignature,
@@ -43,7 +44,8 @@ export async function analyzeCharacters(projectId, server, candidate, {
     scope: { character_ids: characterIDs },
     instruction: String(instruction || '').trim(),
     allow_supporting_characters: Boolean(allowSupportingCharacters),
-    candidate: stripSourceFields(candidate),
+    ...(persistedCandidateRevision > 0 ? {} : { candidate: stripSourceFields(candidate) }),
+    candidate_revision: persistedCandidateRevision,
     candidate_digest: candidateDigest
   }, { signal });
 }
@@ -52,12 +54,13 @@ export async function reviewCharacters(projectId, server, candidate, {
   candidateRevision = 0, sourceMappings = [], idempotencyKey, signal
 } = {}) {
   const candidateDigest = await characterCandidateDigest(candidate);
+  const persistedCandidateRevision = Number(candidateRevision || 0);
   return reviewProjectFoundationCharacters(projectId, {
     expected_base_revision: server.baseRevision,
     expected_base_audit_signature: server.baseAuditSignature,
     idempotency_key: idempotencyKey,
-    candidate: stripSourceFields(candidate),
-    candidate_revision: Number(candidateRevision || 0),
+    ...(persistedCandidateRevision > 0 ? {} : { candidate: stripSourceFields(candidate) }),
+    candidate_revision: persistedCandidateRevision,
     candidate_digest: candidateDigest,
     source_mappings: sourceMappings
   }, { signal });

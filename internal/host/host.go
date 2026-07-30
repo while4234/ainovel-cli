@@ -1487,6 +1487,15 @@ func (h *Host) normalFlowContext(ctx context.Context) (context.Context, error) {
 	return storepkg.ContextWithRevisionFence(ctx, fence), nil
 }
 
+// NormalFlowActionContext binds a Web-owned background action to the active
+// normal-flow lease. Writable agent tools reject contexts without this fence.
+func (h *Host) NormalFlowActionContext(ctx context.Context) (context.Context, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return h.normalFlowContext(ctx)
+}
+
 // Steer 提交用户干预。
 func (h *Host) Steer(text string) error {
 	text = strings.TrimSpace(text)

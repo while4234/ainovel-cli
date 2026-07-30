@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   acceptAllCharacterCandidates, candidateFingerprint, characterFieldDiff, duplicateFoundationCharacter,
   filterAndSortCharacters, mergeCharacterField, newFoundationCharacter, normalizeCharacter,
-  normalizeCharacterWorkspace, normalizeFoundationResponse, normalizeWorldRule, sourceMajorCharacters, validateFoundationDraft
+  normalizeCharacterWorkspace, normalizeFoundationResponse, normalizeWorldRule, reviewStatusForCharacter,
+  sourceMajorCharacters, validateFoundationDraft
 } from './foundationModel.js';
 
 const complete = {
@@ -13,6 +14,14 @@ const complete = {
 };
 
 describe('foundation model', () => {
+  it('非阻塞审核建议不把已通过角色误标为需修订', () => {
+    const advisory = [{ character_id: 'hero', severity: 'warning', blocking: false }];
+    const blocking = [{ character_id: 'hero', severity: 'blocking', blocking: true }];
+    expect(reviewStatusForCharacter('hero', advisory, false, true)).toBe('passed');
+    expect(reviewStatusForCharacter('hero', advisory, false, false)).toBe('not_reviewed');
+    expect(reviewStatusForCharacter('hero', blocking, false, true)).toBe('needs_revision');
+  });
+
   it('按稳定 sr_/hr_ ID 恢复旧项目规则强度，不让错误重试把 soft 全显示成 hard', () => {
     expect(normalizeWorldRule({ id: 'sr_escape_tension', strength: 'hard' }).strength).toBe('soft');
     expect(normalizeWorldRule({ id: 'hr_identity_lock', strength: 'soft' }).strength).toBe('hard');
