@@ -97,6 +97,10 @@ func TestGlobalModelsAndDefaultSwitch(t *testing.T) {
 	if len(stages) != len(bootstrap.KnownModelStages) {
 		t.Fatalf("project stage routes = %d, want %d: %+v", len(stages), len(bootstrap.KnownModelStages), stages)
 	}
+	characterAnalysis := findModelRoute(stages, bootstrap.StageRouteKey(bootstrap.StageCharacterAnalysis))
+	if characterAnalysis.Label != "角色分析" || characterAnalysis.FallbackRole != "character" {
+		t.Fatalf("character analysis stage route = %+v", characterAnalysis)
+	}
 	for _, route := range stages {
 		if route.Provider != "openai" || route.Model != "gpt-next" || route.Explicit {
 			t.Fatalf("inherited project stage route = %+v", route)

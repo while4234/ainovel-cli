@@ -73,7 +73,15 @@ describe('project model settings panel', () => {
     expect(appSource).toContain('每个阶段可继承项目默认路由，或明确选择“后端 / 模型”组合。');
     expect(appSource).toContain('独立细纲生成与修订使用“详细提纲”模型');
     expect(appSource).toContain("onSwitch(route.role, target.provider, target.model)");
-    expect(appSource).toContain('<span>Agent 高级路由</span>');
+    expect(appSource).not.toContain('<span>Agent 高级路由</span>');
+  });
+
+  it('keeps internal Agent routes out of the user-facing model settings', () => {
+    expect(appSource).not.toContain('aria-label="Agent model routes"');
+    expect(appSource).not.toContain('className="model-route-editor"');
+    expect(appSource).not.toContain('Agent · {route.fallback_role}');
+    expect(appSource).not.toContain('value={customModel.role}');
+    expect(appSource).toContain('新建只登记一个新的配置 ID，不会改变当前默认模型或任何创作阶段模型');
   });
 
   it('keeps novel settings and outlines out of the backend diagnostics panel', () => {

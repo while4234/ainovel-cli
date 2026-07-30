@@ -91,15 +91,8 @@ describe('ui styles', () => {
     expect(css).toMatch(/\.planning-revision-controls\.compact \.proposal-revision-textarea\s*{[^}]*min-height:\s*88px;/s);
   });
 
-  it('uses agent chips with one project model editor', () => {
-    expect(css).toMatch(/\.agent-chip-list\s*{[^}]*flex-wrap:\s*wrap;/s);
-    expect(css).toMatch(/\.model-route-editor\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
-    expect(css).toMatch(/\.model-route-editor select,[\s\S]*?width:\s*100%;/);
-    expect(css).not.toMatch(/\.model-route\s*{/);
-  });
-
   it('keeps model management and add controls single-column full width', () => {
-    expect(css).toMatch(/\.model-route-list,\s*[\r\n]+\.custom-model-form\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/\.custom-model-form\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
     expect(css).toMatch(/\.model-editor-actions,\s*[\r\n]+\.existing-model-actions\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
     expect(css).toMatch(/\.backend-picker-row\s*{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
     expect(css).toMatch(/\.model-editor-actions \.tool-button,\s*[\r\n]+\.existing-model-actions \.tool-button\s*{[^}]*width:\s*100%;/s);

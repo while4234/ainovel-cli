@@ -269,7 +269,6 @@ h2 {
 .steer-form textarea,
 .adapt-brief,
 .cocreate-form textarea,
-.model-route-editor select,
 .default-model-controls select,
 .backend-picker-row select,
 .field-label input,
@@ -295,7 +294,6 @@ h2 {
 .create-project input,
 .composer input,
 .library-save-stack input,
-.model-route-editor select,
 .default-model-controls select,
 .backend-picker-row select,
 .field-label input,
@@ -322,8 +320,7 @@ h2 {
 .model-field input:focus,
 .model-field select:focus,
 .backend-picker-row select:focus,
-.default-model-controls select:focus,
-.model-route-editor select:focus {
+.default-model-controls select:focus {
   border-color: var(--accent);
   box-shadow: var(--focus);
 }
@@ -3163,7 +3160,6 @@ h2 {
   box-shadow: var(--focus);
 }
 
-.model-route-list,
 .custom-model-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -3207,43 +3203,6 @@ h2 {
   color: #236241;
 }
 
-.agent-chip-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
-.agent-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 32px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  padding: 0 10px;
-  background: var(--surface-solid);
-  color: var(--text);
-  font-weight: 800;
-}
-
-.agent-chip small {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 900;
-}
-
-.agent-chip.active {
-  border-color: rgba(37, 130, 80, 0.38);
-  background: var(--success-soft);
-  color: #236241;
-}
-
-.model-route-editor {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-}
-
 .stage-model-list {
   display: grid;
   gap: 10px;
@@ -3258,27 +3217,6 @@ h2 {
 .stage-model-route select {
   min-width: 0;
   width: 100%;
-}
-
-.model-route-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-
-.model-route-heading strong,
-.model-route-heading span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.model-route-heading span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .backend-picker-row {

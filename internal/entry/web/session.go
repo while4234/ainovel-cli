@@ -735,23 +735,13 @@ func (s *ProjectSession) ModelConfig() apiModelConfig {
 			ReasoningEffort: s.host.CurrentThinking(role),
 		})
 	}
-	stageLabels := map[string]string{
-		bootstrap.StageCoCreate:          "首次/阶段共创",
-		bootstrap.StageSourceAnalysis:    "资料分析",
-		bootstrap.StageSkeleton:          "骨架规划",
-		bootstrap.StageDetailOutline:     "详细提纲",
-		bootstrap.StageWriting:           "正文创作",
-		bootstrap.StageReview:            "审校与摘要",
-		bootstrap.StageCharacterAnalysis: "角色分析",
-		bootstrap.StageCharacterReview:   "角色审核",
-	}
 	stages := make([]apiModelRoute, 0, len(bootstrap.KnownModelStages))
 	for _, stage := range bootstrap.KnownModelStages {
 		key := bootstrap.StageRouteKey(stage)
 		provider, model, explicit := s.host.CurrentModelSelection(key)
 		stages = append(stages, apiModelRoute{
 			Role:            key,
-			Label:           stageLabels[stage],
+			Label:           globalModelStageLabels[stage],
 			FallbackRole:    bootstrap.StageFallbackRole(stage),
 			Provider:        provider,
 			Model:           model,

@@ -9154,12 +9154,8 @@ function ModelPanel({
   onUploadCodexAuth
 }) {
   const config = runtime?.config || {};
-  const roles = modelConfig?.roles || [];
   const stages = modelConfig?.stages || [];
-  const projectRoles = activeProject?.id ? roles.filter((route) => route.role !== 'default') : [];
   const providers = modelConfig?.providers || [];
-  const levels = modelConfig?.thinking_levels || ['', 'off', 'low', 'medium', 'high', 'xhigh', 'max'];
-  const providerMap = new Map(providers.map((provider) => [provider.name, provider.models || []]));
   const stageModelRouteOptions = buildStageModelRouteOptions(providers);
   const providerChips = providers.map((provider) => ({
     name: provider.name,
@@ -9172,13 +9168,12 @@ function ModelPanel({
   const defaultProvider = visibleDefault.provider;
   const defaultModels = visibleDefault.models;
   const defaultModel = visibleDefault.model;
-  const [selectedProjectRole, setSelectedProjectRole] = useState('default');
   const [existingTarget, setExistingTarget] = useState({ provider: '', model: '' });
   const existingProvider = existingTarget.provider || providers[0]?.name || '';
   const existingModels = modelOptionsForProvider(providers, existingProvider, existingTarget.model);
   const existingModel = existingTarget.model || existingModels[0] || '';
   const existingIsDefault = activeDefaultRoute.provider === existingProvider && activeDefaultRoute.model === existingModel;
-  const existingModelPayload = buildExistingModelActionPayload(customModel.role, existingProvider, existingModel);
+  const existingModelPayload = buildExistingModelActionPayload('default', existingProvider, existingModel);
   const canDeleteExistingModel = Boolean(existingProvider && existingModel && !existingIsDefault);
   const coCreateTimeoutSeconds = modelConfig?.cocreate_timeout_seconds || config.cocreate_timeout_seconds || 60;
   const coCreateMaxTokens = modelConfig?.cocreate_max_tokens || config.cocreate_max_tokens || 4096;
@@ -9219,17 +9214,6 @@ function ModelPanel({
     setBudgetQualityAttemptsDraft(String(budgetQualityMaxAttempts));
     setAdaptationOutlineAuditRetryAttemptsDraft(String(adaptationOutlineAuditRetryMaxAttempts));
   }, [modelCallMaxAttempts, structureRepairMaxAttempts, budgetQualityMaxAttempts, adaptationOutlineAuditRetryMaxAttempts]);
-  useEffect(() => {
-    if (!activeProject?.id || projectRoles.length === 0) {
-      if (selectedProjectRole !== 'default') {
-        setSelectedProjectRole('default');
-      }
-      return;
-    }
-    if (!projectRoles.some((route) => route.role === selectedProjectRole)) {
-      setSelectedProjectRole(projectRoles[0]?.role || 'default');
-    }
-  }, [activeProject?.id, projectRoles, selectedProjectRole]);
   useEffect(() => {
     if (providers.length === 0) {
       if (existingTarget.provider || existingTarget.model) {
@@ -9295,24 +9279,7 @@ function ModelPanel({
 	const isGrokOAuthEditor = customModel.mode === 'grok_oauth' || String(customModel.auth || '').trim().toLowerCase() === 'grok_oauth';
   const addValidationMessage = modelAddValidationMessage(customModel, modelConfig);
   const canAdd = !addValidationMessage;
-  const selectedProjectRoute = projectRoles.find((route) => route.role === selectedProjectRole) || projectRoles[0] || null;
-  const selectedProjectProvider = selectedProjectRoute?.provider || '';
-  const selectedProjectModels = modelOptionsForProvider(providers, selectedProjectProvider, selectedProjectRoute?.model || '');
-  const selectedProjectModel = selectedProjectRoute?.model || selectedProjectModels[0] || '';
-  const selectedProjectScope = selectedProjectRoute
-    ? selectedProjectRoute.role === 'default'
-      ? (selectedProjectRoute.explicit ? 'project default' : 'global default')
-      : (selectedProjectRoute.explicit ? 'project override' : 'inherits default')
-    : '';
-  const projectDefaultModelOption = '__project_default_model__';
   const stageInheritedModelOption = '__stage_inherited_model__';
-  const selectedProjectInheritsDefault = Boolean(
-    selectedProjectRoute &&
-    selectedProjectRoute.role !== 'default' &&
-    !selectedProjectRoute.explicit
-  );
-  const selectedProjectProviderValue = selectedProjectInheritsDefault ? projectDefaultModelOption : selectedProjectProvider;
-  const selectedProjectModelValue = selectedProjectInheritsDefault ? projectDefaultModelOption : selectedProjectModel;
   const editorModelProvider = customModel.mode === 'existing'
     ? customModel.original_provider || customModel.provider
     : customModel.provider;
@@ -9513,146 +9480,53 @@ function ModelPanel({
         ) : (
           <div className="stage-model-list">
             {stages.map((route) => {
-			  const stageProvider = providers.find((provider) => provider.name === route.provider) || {};
-			  const stageReasoningLevels = reasoningLevelsForModel(route.model, stageProvider);
-			  return (
-			  <div className="stage-model-route" key={route.role}>
-				<label className="field-label">
-				<span>{route.label || route.role}</span>
-                <select
-                  disabled={busy || stageModelRouteOptions.length === 0}
-                  value={route.explicit ? modelRouteOptionValue(route.provider, route.model) : stageInheritedModelOption}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    if (value === stageInheritedModelOption) {
-                      onInherit?.(route.role);
-                      return;
-                    }
-                    const target = stageModelRouteOptions.find((option) => option.value === value);
-                    if (target) {
-                      onSwitch(route.role, target.provider, target.model);
-                    }
-                  }}
-                >
-                  <option value={stageInheritedModelOption}>
-                    继承 {route.fallback_role || 'Agent'}（{route.provider} / {route.model}）
-                  </option>
-                  {stageModelRouteOptions.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-				</label>
-				{stageReasoningLevels ? (
-				  <label className="field-label stage-thinking-route">
-					<span>思考深度</span>
-					<select
-					  disabled={busy}
-					  value={route.reasoning_effort || ''}
-					  onChange={(event) => onThinking(route.role, event.target.value)}
-					>
-					  {stageReasoningLevels.map((level) => (
-						<option key={level || 'inherit'} value={level}>{level || '继承模型默认'}</option>
-					  ))}
-					</select>
-				  </label>
-				) : null}
-			  </div>
-			  );
-			})}
-            <p className="muted">每个阶段可继承项目默认路由，或明确选择“后端 / 模型”组合。一次 Architect 规划可能连续完成骨架和首批细纲，此时全程使用“骨架规划”模型；独立细纲生成与修订使用“详细提纲”模型。</p>
-          </div>
-        )}
-      </section>
-      <section>
-        <div className="section-title">
-          <SlidersHorizontal size={17} />
-          <span>Agent 高级路由</span>
-        </div>
-        {projectRoles.length === 0 ? (
-          <div className="empty-state">打开项目后可配置模型</div>
-        ) : (
-          <div className="model-route-list">
-            <div className="agent-chip-list" role="tablist" aria-label="Agent model routes">
-              {projectRoles.map((route) => (
-                <button
-                  aria-selected={selectedProjectRole === route.role}
-                  className={`agent-chip ${selectedProjectRole === route.role ? 'active' : ''}`}
-                  disabled={busy}
-                  key={route.role}
-                  onClick={() => setSelectedProjectRole(route.role)}
-                  role="tab"
-                  type="button"
-                >
-                  <span>{route.role}</span>
-                  {route.explicit ? <small>project</small> : null}
-                </button>
-              ))}
-            </div>
-            {selectedProjectRoute ? (
-              <div className="model-route-editor">
-                <div className="model-route-heading">
-                  <strong>{selectedProjectRoute.role}</strong>
-                  <span>{selectedProjectScope}</span>
+              const stageProvider = providers.find((provider) => provider.name === route.provider) || {};
+              const stageReasoningLevels = reasoningLevelsForModel(route.model, stageProvider);
+              return (
+                <div className="stage-model-route" key={route.role}>
+                  <label className="field-label">
+                    <span>{route.label || route.role}</span>
+                    <select
+                      disabled={busy || stageModelRouteOptions.length === 0}
+                      value={route.explicit ? modelRouteOptionValue(route.provider, route.model) : stageInheritedModelOption}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        if (value === stageInheritedModelOption) {
+                          onInherit?.(route.role);
+                          return;
+                        }
+                        const target = stageModelRouteOptions.find((option) => option.value === value);
+                        if (target) {
+                          onSwitch(route.role, target.provider, target.model);
+                        }
+                      }}
+                    >
+                      <option value={stageInheritedModelOption}>
+                        继承默认（{route.provider} / {route.model}）
+                      </option>
+                      {stageModelRouteOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {stageReasoningLevels ? (
+                    <label className="field-label stage-thinking-route">
+                      <span>思考深度</span>
+                      <select
+                        disabled={busy}
+                        value={route.reasoning_effort || ''}
+                        onChange={(event) => onThinking(route.role, event.target.value)}
+                      >
+                        {stageReasoningLevels.map((level) => (
+                          <option key={level || 'inherit'} value={level}>{level || '继承模型默认'}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                 </div>
-                <label className="field-label">
-                  <span>后端</span>
-                  <select
-                    disabled={busy || providers.length === 0}
-                    value={selectedProjectProviderValue}
-                    onChange={(event) => {
-                      const provider = event.target.value;
-                      if (provider === projectDefaultModelOption) {
-                        onInherit?.(selectedProjectRoute.role);
-                        return;
-                      }
-                      const models = providerMap.get(provider) || [];
-                      onSwitch(selectedProjectRoute.role, provider, models[0] || selectedProjectModel);
-                    }}
-                  >
-                    {providers.length === 0 ? <option value="">无后端</option> : null}
-                    {selectedProjectRoute.role !== 'default' ? (
-                      <option value={projectDefaultModelOption}>默认模型</option>
-                    ) : null}
-                    {providers.map((provider) => (
-                      <option key={provider.name} value={provider.name}>{provider.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field-label">
-                  <span>模型</span>
-                  <select
-                    disabled={busy || selectedProjectInheritsDefault || !selectedProjectProvider || selectedProjectModels.length === 0}
-                    value={selectedProjectModelValue}
-                    onChange={(event) => {
-                      if (event.target.value === projectDefaultModelOption) {
-                        onInherit?.(selectedProjectRoute.role);
-                        return;
-                      }
-                      onSwitch(selectedProjectRoute.role, selectedProjectProvider, event.target.value);
-                    }}
-                  >
-                    {selectedProjectModels.length === 0 ? <option value="">无模型</option> : null}
-                    {selectedProjectInheritsDefault ? (
-                      <option value={projectDefaultModelOption}>默认模型</option>
-                    ) : selectedProjectModels.map((model) => (
-                      <option key={model} value={model}>{model}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field-label">
-                  <span>推理强度</span>
-                  <select
-                    disabled={busy}
-                    value={selectedProjectRoute.reasoning_effort || ''}
-                    onChange={(event) => onThinking(selectedProjectRoute.role, event.target.value)}
-                  >
-                    {levels.map((level) => (
-                      <option key={level || 'inherit'} value={level}>{level || 'inherit'}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            ) : null}
+              );
+            })}
+            <p className="muted">每个阶段可继承项目默认路由，或明确选择“后端 / 模型”组合。一次 Architect 规划可能连续完成骨架和首批细纲，此时全程使用“骨架规划”模型；独立细纲生成与修订使用“详细提纲”模型。</p>
           </div>
         )}
       </section>
@@ -9724,20 +9598,9 @@ function ModelPanel({
           </div>
         ) : (
           <div className="model-test-note">
-            新建只登记一个新的配置 ID，不会改变 default 或任何 agent 当前使用的模型；配置 ID 只是本地名称，不是 API key。
+            新建只登记一个新的配置 ID，不会改变当前默认模型或任何创作阶段模型；配置 ID 只是本地名称，不是 API key。
           </div>
         )}
-        {editingExistingModel ? (
-          <select
-            disabled={busy}
-            value={customModel.role}
-            onChange={(event) => setCustomModel((previous) => ({ ...previous, role: event.target.value }))}
-          >
-            {(roles.length ? roles : [{ role: 'default' }]).map((route) => (
-              <option key={route.role} value={route.role}>{route.role}</option>
-            ))}
-          </select>
-        ) : null}
         {!editingExistingModel ? (
           <>
             <select

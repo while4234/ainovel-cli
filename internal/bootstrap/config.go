@@ -408,12 +408,12 @@ const (
 var KnownModelStages = []string{
 	StageCoCreate,
 	StageSourceAnalysis,
+	StageCharacterAnalysis,
+	StageCharacterReview,
 	StageSkeleton,
 	StageDetailOutline,
 	StageWriting,
 	StageReview,
-	StageCharacterAnalysis,
-	StageCharacterReview,
 }
 
 func StageRouteKey(stage string) string {

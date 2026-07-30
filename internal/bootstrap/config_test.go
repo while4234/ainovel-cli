@@ -23,6 +23,9 @@ func TestCharacterStagesRouteThroughCharacterRole(t *testing.T) {
 	if !knownRoles["character"] {
 		t.Fatal("character model role is not accepted")
 	}
+	if KnownModelStages[2] != StageCharacterAnalysis || KnownModelStages[3] != StageCharacterReview {
+		t.Fatalf("character stages should follow source analysis in model settings: %#v", KnownModelStages)
+	}
 }
 
 func TestNormalizeResumeSchedule(t *testing.T) {

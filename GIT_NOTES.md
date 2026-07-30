@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: simplify creative stage model settings`:
+  moves 角色分析 and 角色审核 directly after 资料分析, removes the user-facing
+  Agent advanced-route editor and provider-role selector, and keeps internal
+  Agent routing as an inherited compatibility mechanism. Bootstrap/Web focused
+  tests, 374 Web tests, production build, and live port 9898 asset/API checks
+  passed.
 - 2026-07-30 `this commit` `fix: expose complete source foundation before cocreate`:
   source chapter analysis now extracts evidence-backed gender and complete
   character-card fields, while full-book batches preserve source relationships
