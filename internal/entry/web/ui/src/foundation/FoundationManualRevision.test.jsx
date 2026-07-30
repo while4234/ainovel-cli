@@ -74,13 +74,19 @@ describe('FoundationReviewWorkspace character confirmation', () => {
     container.remove();
   });
 
-  it('把查看、AI 调整和确认显示为三个明确动作', async () => {
+  it('在角色候选审核页直接收集 AI 调整意见，并保留逐项工作台入口', async () => {
     const onOpenCharacterRevision = vi.fn();
+    const onReviseCharacterCandidate = vi.fn();
     const onConfirmCharacterCandidate = vi.fn();
     await act(async () => root.render(
       <FoundationReviewWorkspace
         onConfirmCharacterCandidate={onConfirmCharacterCandidate}
         onOpenCharacterRevision={onOpenCharacterRevision}
+        onReviseCharacterCandidate={onReviseCharacterCandidate}
+        planningRevision={{
+          characterFeedback: '强化女主主动调查真相的目标',
+          allowSupportingCharacters: true
+        }}
         review={{
           ...review,
           characterConfirmationRequired: true
@@ -90,15 +96,24 @@ describe('FoundationReviewWorkspace character confirmation', () => {
     ));
 
     const buttons = [...container.querySelectorAll('button')];
-    const aiRevise = buttons.find((item) => item.textContent.includes('让 AI 调整角色卡'));
+    const aiRevise = buttons.find((item) => item.textContent.includes('让 AI 按意见调整角色卡'));
+    const openWorkbench = buttons.find((item) => item.textContent.includes('打开角色工作台逐项检查'));
     const confirm = buttons.find((item) => item.textContent.includes('确认角色卡并继续生成完整设定'));
 
-    expect(container.textContent).toContain('当前唯一下一步');
+    expect(container.querySelector('[aria-label="角色卡修改意见"]').value).toBe('强化女主主动调查真相的目标');
+    expect(container.textContent).toContain('完整 StoryFoundation 会在角色确认后继续生成');
     expect(aiRevise).toBeTruthy();
+    expect(aiRevise.disabled).toBe(false);
+    expect(openWorkbench).toBeTruthy();
     expect(confirm).toBeTruthy();
 
     await act(async () => aiRevise.click());
+    await act(async () => openWorkbench.click());
     await act(async () => confirm.click());
+    expect(onReviseCharacterCandidate).toHaveBeenCalledWith({
+      feedback: '强化女主主动调查真相的目标',
+      allowSupportingCharacters: true
+    });
     expect(onOpenCharacterRevision).toHaveBeenCalledTimes(1);
     expect(onConfirmCharacterCandidate).toHaveBeenCalledTimes(1);
   });

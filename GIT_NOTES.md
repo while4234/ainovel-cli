@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: unify original character revision feedback`:
+  distinguishes the pre-Foundation character-candidate gate from complete
+  StoryFoundation review while giving both the same author-facing
+  view/revise/review/confirm skeleton. Original candidate review now collects
+  intent in place, starts a revision/digest-guarded Character Agent run
+  directly, and retains the character workbench for candidate inspection and
+  explicit independent review. Container-responsive cards remove the 1440x900
+  narrow-center overlap. All 396 Web tests, embedded-Web Go tests, production
+  build, live restart, and isolated installed-Chrome acceptance passed.
 - 2026-07-30 `this commit` `fix: streamline Foundation review actions`:
   separates AI-intent revision from precise manual field revision, preserves
   post-edit dependency and quality audits, improves the focused Foundation and

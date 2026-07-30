@@ -197,10 +197,12 @@ import { FoundationCenter } from './foundation/FoundationCenter.jsx';
 import { projectNextAction } from './foundation/characterConfirmation.js';
 import {
   confirmCharacterCandidate,
+  foundationError,
   foundationIdempotencyKey
 } from './foundation/foundationApi.js';
 import { foundationReadonlyReasonLabel } from './foundation/foundationModel.js';
 import FoundationReviewWorkspace from './foundation/FoundationReviewWorkspace.jsx';
+import { startReviewedCharacterRevision } from './foundation/reviewedCharacterRevision.js';
 
 const eventTypes = ['host_event', 'stream_delta', 'stream_clear', 'snapshot', 'cocreate_state'];
 const SSE_WATCHDOG_INTERVAL_MS = 5_000;
@@ -359,6 +361,8 @@ function createOutlineRevisionState() {
 function createCoCreatePlanningRevisionState() {
   return {
     feedback: '',
+    characterFeedback: '',
+    allowSupportingCharacters: false,
     instruction: '',
     scope: 'all',
     chapter: '1',
@@ -3897,6 +3901,8 @@ export default function App() {
       setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
       setPlanningRevision({
         feedback: '',
+        characterFeedback: '',
+        allowSupportingCharacters: false,
         instruction: '',
         scope: 'all',
         chapter: '1',
@@ -4521,6 +4527,75 @@ export default function App() {
     setCenterView('foundation');
     setToolDrawerOpen(false);
   };
+  const reviseReviewedCharacterCandidate = async ({
+    feedback = '',
+    allowSupportingCharacters = false
+  } = {}) => {
+    const instruction = String(feedback || '').trim();
+    if (!activeProject?.id ||
+      !coCreatePlanningReview.characterConfirmationRequired ||
+      busy ||
+      projectRunning) {
+      return;
+    }
+    if (!instruction) {
+      setPlanningRevision((previous) => ({
+        ...previous,
+        status: 'error',
+        message: '',
+        error: '请输入角色卡修改意见'
+      }));
+      return;
+    }
+    const projectId = activeProject.id;
+    const projectEpoch = projectOpenSeqRef.current;
+    const requestSeq = ++planningMutationSeqRef.current;
+    const requestIsCurrent = () => isCurrentProject(projectId) &&
+      isProjectScopedResponseCurrent(projectId, activeProjectIdRef.current, projectEpoch, projectOpenSeqRef.current) &&
+      requestSeq === planningMutationSeqRef.current;
+    setBusy(true);
+    setPlanningRevision((previous) => ({
+      ...previous,
+      status: 'running',
+      message: '正在提交角色卡修改意见…',
+      error: ''
+    }));
+    try {
+      await startReviewedCharacterRevision(projectId, coCreatePlanningReview, {
+        feedback: instruction,
+        allowSupportingCharacters,
+        isCurrent: requestIsCurrent
+      });
+      if (!requestIsCurrent()) return;
+      setPlanningRevision((previous) => ({
+        ...previous,
+        characterFeedback: '',
+        status: 'done',
+        message: '修改意见已提交；Character Agent 正在生成新候选，完成后请重新审核',
+        error: ''
+      }));
+      setFoundationNavigation({
+        projectId,
+        tab: 'characters',
+        anchor: 'foundation-character-agent',
+        requestId: Date.now()
+      });
+      setCenterView('foundation');
+      setToolDrawerOpen(false);
+    } catch (err) {
+      const classified = foundationError(err);
+      if (requestIsCurrent()) {
+        setPlanningRevision((previous) => ({
+          ...previous,
+          status: 'error',
+          message: '',
+          error: classified.message
+        }));
+      }
+    } finally {
+      if (requestIsCurrent()) setBusy(false);
+    }
+  };
   const confirmReviewedCharacterCandidate = async () => {
     if (!activeProject?.id || !coCreatePlanningReview.characterConfirmationRequired || busy || projectRunning) {
       return;
@@ -5085,6 +5160,7 @@ export default function App() {
                    onOpenCharacterRevision={openFoundationCharacterRevision}
                    onManualRevise={reviseCoCreatePlanningRun}
                    onRevise={reviseCoCreatePlanningRun}
+                   onReviseCharacterCandidate={reviseReviewedCharacterCandidate}
                    planningRevision={planningRevision}
                    review={coCreatePlanningReview}
                    selectedFoundationTab={foundationReviewTab}
@@ -5452,6 +5528,7 @@ function CoCreatePlanningWorkspace({
   onOpenCharacterRevision,
   onManualRevise,
   onRevise,
+  onReviseCharacterCandidate,
   planningRevision,
   review,
   selectedFoundationTab,
@@ -5468,6 +5545,7 @@ function CoCreatePlanningWorkspace({
         onOpenCharacterRevision={onOpenCharacterRevision}
         onManualRevise={onManualRevise}
         onRevise={onRevise}
+        onReviseCharacterCandidate={onReviseCharacterCandidate}
         planningRevision={planningRevision}
         review={review}
         selectedTab={selectedFoundationTab}

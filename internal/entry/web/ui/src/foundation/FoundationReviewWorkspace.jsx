@@ -489,37 +489,107 @@ function FoundationReviewActions({
   onOpenCharacterConfirmation,
   onOpenCharacterRevision,
   onRevise,
+  onReviseCharacterCandidate,
   planningRevision,
   review,
   setPlanningRevision
 }) {
   if (review.characterConfirmationRequired) {
+    const characterFeedback = String(planningRevision?.characterFeedback || '');
+    const allowSupportingCharacters = Boolean(planningRevision?.allowSupportingCharacters);
+    const canReviseCharacters = Boolean(!busy && characterFeedback.trim() && !review.readonly);
     return (
       <div className="foundation-review-action-layout">
-        <section className="foundation-review-choice confirm foundation-review-character-gate">
-          <div className="foundation-review-choice-heading">
-            <span className="foundation-review-choice-icon"><ShieldCheck size={22} /></span>
-            <div>
-              <span>当前唯一下一步</span>
-              <strong>确认已经审核通过的角色卡</strong>
-            </div>
+        <section className="foundation-review-action-copy">
+          <Pencil size={20} />
+          <div>
+            <span>角色卡审核</span>
+            <h4>确认当前候选，或提交一轮明确的角色调整意见</h4>
+            <p>当前只生成了角色卡与初步关系，完整 StoryFoundation 会在角色确认后继续生成。调整会创建新的角色候选；生成完成后仍需在角色工作台重新执行独立审核。</p>
           </div>
-          <p>本轮 {review.coreCharacters.length + review.supportingCharacters.length} 个角色仍是候选状态。确认后才会发布 CoreCast 和 StoryFoundation，并继续补全世界规则与后续规划。</p>
-          <button
-            className="tool-button accent full-width"
-            disabled={busy}
-            id="foundation-review-confirm-character"
-            onClick={onConfirmCharacterCandidate}
-            type="button"
-          >
-            <Check size={16} />
-            确认角色卡并继续生成完整设定
-          </button>
-          <button className="tool-button full-width" disabled={busy} onClick={onOpenCharacterRevision} type="button">
-            <Pencil size={16} />
-            让 AI 调整角色卡
-          </button>
         </section>
+        {planningRevision?.error ? <div className="error-banner compact">{planningRevision.error}</div> : null}
+        <div className="foundation-review-choice-grid">
+          <section className="foundation-review-choice confirm foundation-review-character-gate">
+            <div className="foundation-review-choice-heading">
+              <span className="foundation-review-choice-icon"><ShieldCheck size={22} /></span>
+              <div>
+                <span>角色卡符合预期</span>
+                <strong>确认已经审核通过的角色卡</strong>
+              </div>
+            </div>
+            <p>本轮 {review.coreCharacters.length + review.supportingCharacters.length} 个角色仍是候选状态。确认后才会发布 CoreCast，并继续补全世界规则与后续规划。</p>
+            <div className="foundation-review-choice-note">
+              <Check size={14} />
+              仅在你确认后推进流程
+            </div>
+            <button
+              className="tool-button accent full-width"
+              disabled={busy}
+              id="foundation-review-confirm-character"
+              onClick={onConfirmCharacterCandidate}
+              type="button"
+            >
+              <Check size={16} />
+              确认角色卡并继续生成完整设定
+            </button>
+          </section>
+          <section className="foundation-review-choice revise">
+            <div className="foundation-review-choice-heading">
+              <span className="foundation-review-choice-icon"><Pencil size={20} /></span>
+              <div>
+                <span>AI 智能调整</span>
+                <strong>描述你希望角色达到的效果</strong>
+              </div>
+            </div>
+            <label className="foundation-review-feedback">
+              <textarea
+                aria-label="角色卡修改意见"
+                disabled={busy || review.readonly}
+                maxLength="4000"
+                placeholder="例如：强化女主主动调查真相的目标，让她与搭档在利益上存在冲突；保留现有核心角色，不要新增主要人物。"
+                rows="3"
+                value={characterFeedback}
+                onChange={(event) => setPlanningRevision((previous) => ({
+                  ...previous,
+                  characterFeedback: event.target.value,
+                  error: ''
+                }))}
+              />
+              <small>{characterFeedback.length} / 4000</small>
+            </label>
+            <label className="check-row">
+              <input
+                checked={allowSupportingCharacters}
+                disabled={busy || review.readonly}
+                type="checkbox"
+                onChange={(event) => setPlanningRevision((previous) => ({
+                  ...previous,
+                  allowSupportingCharacters: event.target.checked,
+                  error: ''
+                }))}
+              />
+              <span>允许 AI 在确有必要时新增非核心配角</span>
+            </label>
+            <button
+              className="tool-button full-width"
+              disabled={!canReviseCharacters}
+              onClick={() => onReviseCharacterCandidate({
+                feedback: characterFeedback.trim(),
+                allowSupportingCharacters
+              })}
+              type="button"
+            >
+              <Sparkles size={16} />
+              让 AI 按意见调整角色卡
+            </button>
+            <button className="tool-button full-width" disabled={busy} onClick={onOpenCharacterRevision} type="button">
+              <Pencil size={16} />
+              打开角色工作台逐项检查
+            </button>
+          </section>
+        </div>
+        {planningRevision?.message ? <div className={`workflow-status ${planningRevision.status || 'idle'}`}><span>{planningRevision.message}</span></div> : null}
       </div>
     );
   }
@@ -609,6 +679,7 @@ export default function FoundationReviewWorkspace({
   onOpenCharacterConfirmation = () => {},
   onOpenCharacterRevision = () => {},
   onRevise = () => {},
+  onReviseCharacterCandidate = () => {},
   onTabChange,
   planningRevision = {},
   review = {},
@@ -682,7 +753,7 @@ export default function FoundationReviewWorkspace({
           </div>
           <div className="foundation-review-candidate-actions">
             <button className="tool-button" onClick={() => selectTab('characters')} type="button">查看全部角色</button>
-            <button className="tool-button" disabled={busy} onClick={onOpenCharacterRevision} type="button">让 AI 调整</button>
+            <button className="tool-button" disabled={busy} onClick={() => selectTab('actions')} type="button">填写调整意见</button>
           </div>
         </div>
       ) : null}
@@ -724,6 +795,7 @@ export default function FoundationReviewWorkspace({
             onOpenCharacterConfirmation={onOpenCharacterConfirmation}
             onOpenCharacterRevision={onOpenCharacterRevision}
             onRevise={onRevise}
+            onReviseCharacterCandidate={onReviseCharacterCandidate}
             planningRevision={planningRevision}
             review={review}
             setPlanningRevision={setPlanningRevision}

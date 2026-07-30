@@ -3001,6 +3001,7 @@ h2 {
 }
 
 .foundation-review-workspace {
+  container-type: inline-size;
   min-height: 100%;
   gap: 0;
   padding: 0;
@@ -5356,5 +5357,28 @@ h2 {
 
   .foundation-manual-revision-body {
     max-height: min(480px, 52vh);
+  }
+}
+
+@container (max-width: 760px) {
+  .foundation-review-choice-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foundation-review-choice.revise {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .foundation-review-choice.revise .foundation-review-choice-heading,
+  .foundation-review-choice.revise .foundation-review-feedback,
+  .foundation-review-choice.revise > .check-row,
+  .foundation-review-choice.revise > .tool-button {
+    grid-column: 1;
+  }
+
+  .foundation-review-choice.revise .foundation-review-feedback textarea {
+    height: auto;
+    min-height: 54px;
   }
 }
