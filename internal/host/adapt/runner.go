@@ -62,8 +62,8 @@ const (
 	adaptationPlannerAuthorizationMaxAttempts = 3
 	adaptationProposalRuntimeVersion          = 2
 	adaptationProposalRuntimeLegacyVersion    = 1
-	adaptationSourceFoundationVersion         = 3
-	adaptationSourceFoundationPromptVersion   = "source-foundation-merge-v2"
+	adaptationSourceFoundationVersion         = 4
+	adaptationSourceFoundationPromptVersion   = "source-foundation-merge-v3"
 	adaptationSourceAnalyzerVersion           = 2
 	adaptationSourceAnalyzerPromptVersion     = "source-chapter-analyzer-v2"
 	sourceFoundationBatchKindReports          = "reports"
@@ -279,6 +279,10 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 			return fmt.Errorf("merge source foundation: %w", err)
 		}
 		foundation := sourceFoundationWithMetadata(toSourceFoundation(fr), manifest, reports, deps.Prompts.FoundationMerge, deps.foundationMergeBatchRunes())
+		foundation, _, err = domain.ApplyAdaptationSourceCharacterPolicy(foundation, reports)
+		if err != nil {
+			return fmt.Errorf("apply formal source character policy: %w", err)
+		}
 		if err := deps.Store.Adaptation.SaveSourceFoundation(foundation); err != nil {
 			return fmt.Errorf("save source foundation: %w", err)
 		}
@@ -312,17 +316,119 @@ func ensurePreparedSourceDossierIfReady(ctx context.Context, deps Deps, sourcePa
 	if foundation == nil {
 		return false, nil
 	}
+	reportSignature := sourceReportsSignature(reports)
+	promptSignature := sourceFoundationPromptSignature(deps.Prompts.FoundationMerge)
+	migratedLegacyFoundation := false
+	if legacySourceFoundationCanMigrate(foundation, manifest, reportSignature) {
+		emit(StageFoundation, manifest.ChapterCount, manifest.ChapterCount, "根据已存逐章报告升级正式角色范围，无需重新分析原文...", nil)
+		upgraded := sourceFoundationWithMetadata(
+			*foundation,
+			manifest,
+			reports,
+			deps.Prompts.FoundationMerge,
+			deps.foundationMergeBatchRunes(),
+		)
+		upgraded, _, err = domain.ApplyAdaptationSourceCharacterPolicy(upgraded, reports)
+		if err != nil {
+			return true, fmt.Errorf("apply legacy prepared formal source character policy: %w", err)
+		}
+		if err = deps.Store.Adaptation.SaveSourceFoundation(upgraded); err != nil {
+			return true, fmt.Errorf("save migrated prepared source foundation: %w", err)
+		}
+		foundation = &upgraded
+		migratedLegacyFoundation = true
+	}
+	repairedFormalCast := false
+	if !migratedLegacyFoundation && foundation.Version == adaptationSourceFoundationVersion {
+		repaired, _, policyErr := domain.ApplyAdaptationSourceCharacterPolicy(*foundation, reports)
+		if policyErr != nil {
+			return true, fmt.Errorf("check prepared formal source character policy: %w", policyErr)
+		}
+		if !sameFormalSourceCast(*foundation, repaired) {
+			emit(StageFoundation, manifest.ChapterCount, manifest.ChapterCount, "根据完整证据索引修复源书正式角色范围...", nil)
+			if policyErr = deps.Store.Adaptation.SaveSourceFoundation(repaired); policyErr != nil {
+				return true, fmt.Errorf("save repaired prepared source foundation: %w", policyErr)
+			}
+			foundation = &repaired
+			repairedFormalCast = true
+		}
+	}
 	current, err := deps.Store.Adaptation.CoCreateDossierCurrent(CoCreateDossierPromptVersion, CoCreateDossierBatchSize, CoCreateDossierBatchRuneLimit)
 	if err != nil {
 		return false, fmt.Errorf("check co-create dossier: %w", err)
 	}
 	if current {
+		if migratedLegacyFoundation || repairedFormalCast {
+			emit(StageDone, manifest.ChapterCount, manifest.ChapterCount, "已复用逐章报告并完成源书正式角色范围升级", nil)
+			return true, nil
+		}
 		return false, nil
 	}
 	if _, err := EnsureCoCreateDossier(ctx, deps, manifest, reports, emit); err != nil {
 		return true, err
 	}
+	if !sourceFoundationCurrent(
+		foundation,
+		manifest,
+		reportSignature,
+		promptSignature,
+		deps.foundationMergeBatchRunes(),
+	) {
+		emit(StageFoundation, manifest.ChapterCount, manifest.ChapterCount, "升级源书正式角色卡策略并重建 foundation...", nil)
+		result, mergeErr := mergeSourceFoundationResumable(
+			ctx,
+			deps,
+			manifest,
+			reports,
+			deps.foundationMergeBatchRunes(),
+			emit,
+		)
+		if mergeErr != nil {
+			return true, fmt.Errorf("upgrade prepared source foundation: %w", mergeErr)
+		}
+		upgraded := sourceFoundationWithMetadata(
+			toSourceFoundation(result),
+			manifest,
+			reports,
+			deps.Prompts.FoundationMerge,
+			deps.foundationMergeBatchRunes(),
+		)
+		upgraded, _, mergeErr = domain.ApplyAdaptationSourceCharacterPolicy(upgraded, reports)
+		if mergeErr != nil {
+			return true, fmt.Errorf("apply prepared formal source character policy: %w", mergeErr)
+		}
+		if mergeErr = deps.Store.Adaptation.SaveSourceFoundation(upgraded); mergeErr != nil {
+			return true, fmt.Errorf("save upgraded prepared source foundation: %w", mergeErr)
+		}
+	}
+	emit(StageDone, manifest.ChapterCount, manifest.ChapterCount, "已复用逐章报告并完成源书角色策略升级", nil)
 	return true, nil
+}
+
+func sameFormalSourceCast(left, right domain.AdaptationSourceFoundation) bool {
+	leftData, leftErr := json.Marshal(struct {
+		Characters    []domain.Character             `json:"characters"`
+		Relationships []domain.CharacterRelationship `json:"relationships"`
+	}{left.Characters, left.Relationships})
+	rightData, rightErr := json.Marshal(struct {
+		Characters    []domain.Character             `json:"characters"`
+		Relationships []domain.CharacterRelationship `json:"relationships"`
+	}{right.Characters, right.Relationships})
+	return leftErr == nil && rightErr == nil && string(leftData) == string(rightData)
+}
+
+func legacySourceFoundationCanMigrate(
+	foundation *domain.AdaptationSourceFoundation,
+	manifest *domain.AdaptationSourceManifest,
+	reportSignature string,
+) bool {
+	if foundation == nil || manifest == nil {
+		return false
+	}
+	return foundation.Version == adaptationSourceFoundationVersion-1 &&
+		foundation.SourceChapterCount == manifest.ChapterCount &&
+		strings.TrimSpace(foundation.SourceSignature) == store.AdaptationSourceSignature(*manifest) &&
+		strings.TrimSpace(foundation.ReportSignature) == strings.TrimSpace(reportSignature)
 }
 
 func mergeSourceFoundationResumable(

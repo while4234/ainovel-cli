@@ -357,6 +357,14 @@ func ResolveSourceCharacters(source AdaptationSourceFoundation) []SourceMajorCha
 }
 
 func ResolveSourceMajorCharacters(source AdaptationSourceFoundation, dossier AdaptationCoCreateDossier) ([]SourceMajorCharacter, []CoreCastMissingItem) {
+	// SourceFoundation v4+ is already the reviewed formal-card projection:
+	// only protagonists and important supporting characters remain in
+	// Characters. Re-expanding "major" identities from the older dossier
+	// would reintroduce evidence-only labels and make a confirmed Character
+	// workflow impossible to publish.
+	if source.Version >= 4 {
+		return ResolveSourceCharacters(source), nil
+	}
 	identities := make(map[string][]SourceMajorCharacter)
 	for _, character := range source.Characters {
 		id := strings.TrimSpace(character.ID)

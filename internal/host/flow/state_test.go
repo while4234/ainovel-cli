@@ -31,6 +31,40 @@ func TestCompletionReportAllowsOnlyPassOrLegacyInconclusive(t *testing.T) {
 	}
 }
 
+func TestLoadStateRoutesNewAdaptationThroughCharacterBeforeCoreCastExists(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	signature := strings.Repeat("a", 64)
+	if _, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
+		Mode:                 domain.CoreCastModeAdaptation,
+		DraftRevision:        1,
+		DraftHash:            "adaptation-draft",
+		SourceSignature:      signature,
+		AdaptationIntentHash: signature,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(
+		domain.AdaptationPlanningStageTargetFoundationGenerating,
+		-1,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	state := LoadState(st)
+	if !state.AdaptationCharacterPending {
+		t.Fatalf("adaptation character workflow was not loaded before CoreCast creation: %+v", state)
+	}
+	instruction := Route(state)
+	if instruction == nil || instruction.Agent != "character" ||
+		!strings.Contains(instruction.Task, `"project_mode":"adaptation"`) ||
+		!strings.Contains(instruction.Task, `"mode":"analyze"`) {
+		t.Fatalf("new adaptation routed past Character Agent: %+v", instruction)
+	}
+}
+
 func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

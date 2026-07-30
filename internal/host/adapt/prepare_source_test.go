@@ -326,7 +326,8 @@ func TestPrepareSourceBackfillsDossierFromPreparedSnapshotWithoutResplitting(t *
 			Title:        source.Title,
 			SourceSHA256: source.SHA256,
 			Summary:      fmt.Sprintf("chapter %d summary", source.Chapter),
-			KeyEvents:    []string{fmt.Sprintf("chapter %d event", source.Chapter)},
+			Characters:   []string{"Ari"},
+			KeyEvents:    []string{fmt.Sprintf("Ari drives chapter %d event", source.Chapter)},
 		}
 		if err := st.Adaptation.SaveSourceReport(report); err != nil {
 			t.Fatalf("SaveSourceReport %d: %v", source.Chapter, err)
@@ -346,7 +347,10 @@ func TestPrepareSourceBackfillsDossierFromPreparedSnapshotWithoutResplitting(t *
 		t.Fatalf("prepared source validation should trust the stored snapshot for the selected source path: %v", err)
 	}
 
-	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{{text: adaptDossierBatchEnvelope()}}}
+	llm := &scriptedAdaptLLM{responses: []adaptLLMResponse{
+		{text: adaptDossierBatchEnvelope()},
+		{text: adaptFoundationMergeEnvelope()},
+	}}
 	var events []Event
 	if err := PrepareSource(context.Background(), Deps{
 		Store: st,
@@ -358,8 +362,8 @@ func TestPrepareSourceBackfillsDossierFromPreparedSnapshotWithoutResplitting(t *
 	}, sourcePath, captureAdaptProgress(&events)); err != nil {
 		t.Fatalf("PrepareSource backfill dossier: %v", err)
 	}
-	if llm.calls != 1 {
-		t.Fatalf("calls=%d, want dossier-only backfill", llm.calls)
+	if llm.calls != 2 {
+		t.Fatalf("calls=%d, want dossier backfill plus formal-cast policy upgrade", llm.calls)
 	}
 	if indexAdaptEvent(events, "切分原文章节") >= 0 {
 		t.Fatalf("prepared dossier backfill should not split source: %+v", events)
@@ -692,6 +696,36 @@ func TestSourceFoundationHasVersionedMetadataRejectsLegacyFoundation(t *testing.
 	foundation.BatchRuneLimit = 70_000
 	if !SourceFoundationHasVersionedMetadata(&foundation, &manifest) {
 		t.Fatal("fully bound source foundation should be reusable")
+	}
+}
+
+func TestLegacySourceFoundationPolicyMigrationRequiresExactStoredEvidence(t *testing.T) {
+	manifest := domain.AdaptationSourceManifest{
+		SourcePath:   "source.txt",
+		ChapterCount: 1,
+		Chapters: []domain.AdaptationSource{{
+			Chapter: 1,
+			Title:   "One",
+			SHA256:  "chapter-signature",
+		}},
+	}
+	foundation := domain.AdaptationSourceFoundation{
+		Version:            adaptationSourceFoundationVersion - 1,
+		SourceChapterCount: manifest.ChapterCount,
+		SourceSignature:    store.AdaptationSourceSignature(manifest),
+		ReportSignature:    "report-signature",
+	}
+	if !legacySourceFoundationCanMigrate(&foundation, &manifest, "report-signature") {
+		t.Fatal("matching v3 foundation and stored report signature should migrate without another model call")
+	}
+	foundation.ReportSignature = "stale-report"
+	if legacySourceFoundationCanMigrate(&foundation, &manifest, "report-signature") {
+		t.Fatal("stale report evidence must not be migrated deterministically")
+	}
+	foundation.ReportSignature = "report-signature"
+	foundation.Version = adaptationSourceFoundationVersion
+	if legacySourceFoundationCanMigrate(&foundation, &manifest, "report-signature") {
+		t.Fatal("current source foundation is not a legacy migration candidate")
 	}
 }
 

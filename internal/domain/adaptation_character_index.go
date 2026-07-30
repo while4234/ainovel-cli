@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const AdaptationSourceCharacterIndexVersion = 1
+const AdaptationSourceCharacterIndexVersion = 2
 
 type AdaptationCharacterEvidenceReference struct {
 	Chapter      int    `json:"chapter,omitempty"`
@@ -45,6 +45,9 @@ type AdaptationSourceCharacterIndexEntry struct {
 	DossierMajor       bool                                    `json:"dossier_major"`
 	CoreCast           bool                                    `json:"core_cast"`
 	Named              bool                                    `json:"named"`
+	CardEligible       bool                                    `json:"card_eligible"`
+	IdentityUncertain  bool                                    `json:"identity_uncertain"`
+	EligibilityReasons []string                                `json:"eligibility_reasons"`
 	ImportanceEvidence []string                                `json:"importance_evidence"`
 	Conflicts          []string                                `json:"conflicts"`
 	Uncertainties      []string                                `json:"uncertainties"`
@@ -53,6 +56,7 @@ type AdaptationSourceCharacterIndexEntry struct {
 type AdaptationSourceCharacterIndex struct {
 	Version        int                                   `json:"version"`
 	InputSignature string                                `json:"input_signature"`
+	SourceChapters int                                   `json:"source_chapters"`
 	Characters     []AdaptationSourceCharacterIndexEntry `json:"characters"`
 }
 
@@ -95,17 +99,19 @@ func BuildAdaptationSourceCharacterIndex(
 	coreCast *CoreCastContract,
 ) (AdaptationSourceCharacterIndex, error) {
 	signature, err := jsonSignature(struct {
+		Version int                         `json:"version"`
 		Source  *AdaptationSourceFoundation `json:"source_foundation"`
 		Reports []AdaptationSourceReport    `json:"reports"`
 		Dossier *AdaptationCoCreateDossier  `json:"dossier"`
 		Core    *CoreCastContract           `json:"core_cast"`
-	}{source, reports, dossier, coreCast})
+	}{AdaptationSourceCharacterIndexVersion, source, reports, dossier, coreCast})
 	if err != nil {
 		return AdaptationSourceCharacterIndex{}, fmt.Errorf("sign adaptation source character inputs: %w", err)
 	}
 
 	entries := make(map[string]*AdaptationSourceCharacterIndexEntry)
 	identityOwners := make(map[string][]string)
+	mergeExplicitReportIdentities := false
 	registerIdentity := func(id, value string) {
 		key := normalizedIdentity(value)
 		if key == "" {
@@ -147,6 +153,14 @@ func BuildAdaptationSourceCharacterIndex(
 			} else {
 				profile.ID = stableFoundationID("source-char", normalizedIdentity(profile.Name))
 			}
+		} else if mergeExplicitReportIdentities {
+			// Chapter analyzers may choose a different ID spelling from
+			// SourceFoundation or an earlier chapter. A uniquely resolved
+			// name/alias still denotes the same source identity.
+			owners := identityOwners[normalizedIdentity(profile.Name)]
+			if len(owners) == 1 && entries[profile.ID] == nil {
+				profile.ID = owners[0]
+			}
 		}
 		entry := entries[profile.ID]
 		if entry == nil {
@@ -177,6 +191,7 @@ func BuildAdaptationSourceCharacterIndex(
 			}
 		}
 	}
+	mergeExplicitReportIdentities = true
 
 	resolveName := func(name string) []*AdaptationSourceCharacterIndexEntry {
 		name = strings.TrimSpace(name)
@@ -302,10 +317,12 @@ func BuildAdaptationSourceCharacterIndex(
 
 	out := AdaptationSourceCharacterIndex{
 		Version: AdaptationSourceCharacterIndexVersion, InputSignature: signature,
-		Characters: make([]AdaptationSourceCharacterIndexEntry, 0, len(entries)),
+		SourceChapters: adaptationSourceChapterCount(source, reports),
+		Characters:     make([]AdaptationSourceCharacterIndexEntry, 0, len(entries)),
 	}
 	for _, entry := range entries {
 		finalizeAdaptationSourceCharacterEntry(entry)
+		applyAdaptationCharacterEligibility(entry, out.SourceChapters)
 		out.Characters = append(out.Characters, *entry)
 	}
 	sort.Slice(out.Characters, func(i, j int) bool { return out.Characters[i].ID < out.Characters[j].ID })
@@ -370,43 +387,278 @@ func EvaluateAdaptationCharacterCoverage(
 }
 
 func adaptationCoverageRule(entry AdaptationSourceCharacterIndexEntry) (CharacterTier, bool, []string) {
+	reasons := append([]string(nil), entry.EligibilityReasons...)
+	if !entry.CardEligible {
+		return CharacterTierDecorative, false, reasons
+	}
+	tier, err := normalizedCharacterTier(entry.Profile.Tier)
+	if err != nil || tier == CharacterTierDecorative {
+		tier = CharacterTierImportant
+	}
+	return tier, true, reasons
+}
+
+func adaptationSourceChapterCount(
+	source *AdaptationSourceFoundation,
+	reports []AdaptationSourceReport,
+) int {
+	total := 0
+	if source != nil {
+		total = source.SourceChapterCount
+	}
+	for _, report := range reports {
+		if report.Chapter > total {
+			total = report.Chapter
+		}
+	}
+	return total
+}
+
+func applyAdaptationCharacterEligibility(entry *AdaptationSourceCharacterIndexEntry, sourceChapters int) {
+	if entry == nil {
+		return
+	}
+	defer func() {
+		entry.ImportanceEvidence = append([]string(nil), entry.EligibilityReasons...)
+	}()
+	entry.IdentityUncertain = uncertainAdaptationCharacterIdentity(
+		entry.CanonicalName,
+		entry.Profile.Role,
+		entry.Profile.Notes,
+		entry.Conflicts,
+	)
 	var reasons []string
 	if entry.CoreCast {
-		reasons = append(reasons, "CoreCast source disposition")
-	}
-	if entry.DossierMajor {
-		reasons = append(reasons, "dossier major character")
+		reasons = append(reasons, "explicitly retained by confirmed CoreCast")
 	}
 	if entry.AppearanceCount > 1 {
-		reasons = append(reasons, fmt.Sprintf("appears in %d chapters", entry.AppearanceCount))
+		reasons = append(reasons, fmt.Sprintf("appears in %d source chapters", entry.AppearanceCount))
 	}
 	if entry.Profile.Goal != "" || entry.Profile.Motivation != "" {
 		reasons = append(reasons, "has an independent goal or motivation")
 	}
-	if len(entry.Relationships) > 0 {
-		reasons = append(reasons, "has a persistent relationship signal")
-	}
 	if entry.CausalEventCount > 0 {
 		reasons = append(reasons, "causally affects reported events")
 	}
-	if len(entry.StateChanges) > 0 {
-		reasons = append(reasons, "has reported state changes")
+	if len(entry.StateChanges) > 0 || strings.TrimSpace(entry.Profile.Arc) != "" {
+		reasons = append(reasons, "has a state change or causal character arc")
+	}
+	if persistentAdaptationRelationship(entry.Relationships) {
+		reasons = append(reasons, "has a relationship continuing across source chapters")
 	}
 
-	required := entry.CoreCast || entry.DossierMajor ||
-		(entry.Named && (entry.AppearanceCount > 1 || entry.Profile.Goal != "" ||
-			entry.Profile.Motivation != "" || len(entry.Relationships) > 0 ||
-			entry.CausalEventCount > 0 || len(entry.StateChanges) > 0))
-	if entry.CoreCast || entry.DossierMajor || entry.AppearanceCount >= 3 || entry.CausalEventCount >= 2 {
-		return CharacterTierImportant, true, reasons
+	if !entry.Named {
+		entry.CardEligible = false
+		entry.EligibilityReasons = append(reasons, "generic occupation, appearance, group, or walk-on identity")
+		return
 	}
-	if required {
-		return CharacterTierSecondary, true, reasons
+	role := strings.ToLower(strings.TrimSpace(entry.Profile.Role))
+	tier := strings.ToLower(strings.TrimSpace(entry.Profile.Tier))
+	coreTier := tier == string(CharacterTierCore) || strings.Contains(tier, "核心")
+	mainlineRole := coreTier ||
+		containsAnyAdaptationMarker(role, "主角", "共同主角", "反派", "protagonist", "antagonist", "lead", "hero", "villain")
+	explicitCoreLead := coreTier &&
+		containsAnyAdaptationMarker(role, "主角", "男主", "女主", "protagonist", "lead", "hero")
+	if entry.IdentityUncertain && !entry.CoreCast && !explicitCoreLead {
+		entry.CardEligible = false
+		entry.EligibilityReasons = append(reasons, "independent identity remains uncertain")
+		return
 	}
-	if len(reasons) == 0 {
-		reasons = []string{"single appearance without independent motive or continuing causal effect"}
+
+	strongSignals := 0
+	if entry.Profile.Goal != "" || entry.Profile.Motivation != "" {
+		strongSignals++
 	}
-	return CharacterTierDecorative, false, reasons
+	if entry.CausalEventCount > 0 {
+		strongSignals++
+	}
+	if len(entry.StateChanges) > 0 || strings.TrimSpace(entry.Profile.Arc) != "" {
+		strongSignals++
+	}
+	if persistentAdaptationRelationship(entry.Relationships) {
+		strongSignals++
+	}
+
+	shortSource := sourceChapters > 0 && sourceChapters <= 2
+	entry.CardEligible = entry.CoreCast ||
+		(mainlineRole && (entry.AppearanceCount > 0 || entry.CausalEventCount > 0 || sourceChapters == 0)) ||
+		(entry.AppearanceCount >= 2 && strongSignals >= 2) ||
+		(entry.AppearanceCount >= 3 && strongSignals >= 1) ||
+		(shortSource && entry.AppearanceCount > 0 && strongSignals >= 2) ||
+		(entry.AppearanceCount == 0 && mainlineRole && strongSignals >= 2)
+	if !entry.CardEligible {
+		reasons = append(reasons, "insufficient whole-book evidence for a formal character card")
+	}
+	entry.EligibilityReasons = normalizedStrings(reasons)
+}
+
+func persistentAdaptationRelationship(values []AdaptationSourceCharacterRelationship) bool {
+	chapters := make(map[int]struct{})
+	for _, value := range values {
+		if value.Chapter > 0 {
+			chapters[value.Chapter] = struct{}{}
+		}
+	}
+	return len(chapters) >= 2
+}
+
+func uncertainAdaptationCharacterIdentity(name, role, notes string, _ []string) bool {
+	// Profile merge conflicts describe evolving characterization as well as
+	// identity. Treating every conflict sentence as an identity claim causes
+	// long-running protagonists to be rejected merely because their chapters
+	// discuss disguise, dreams, or mistaken identity. Only the identity's own
+	// label and role contract decide whether it is an unresolved person.
+	text := strings.ToLower(strings.Join([]string{name, role, notes}, "\n"))
+	return containsAnyAdaptationMarker(text,
+		"真主人", "真正主人", "未知身份", "身份不明", "身份存疑", "神秘身份",
+		"梦游身份", "另一人格", "另一个人格", "误认身份", "人格重叠",
+		"identity uncertain", "uncertain identity", "unknown identity",
+	)
+}
+
+func containsAnyAdaptationMarker(value string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// ApplyAdaptationSourceCharacterPolicy separates the complete evidence index
+// from the formal source cast. Reports remain untouched; only SourceFoundation
+// cards and relationship endpoints are filtered.
+func ApplyAdaptationSourceCharacterPolicy(
+	source AdaptationSourceFoundation,
+	reports []AdaptationSourceReport,
+) (AdaptationSourceFoundation, AdaptationSourceCharacterIndex, error) {
+	index, err := BuildAdaptationSourceCharacterIndex(&source, reports, nil, nil)
+	if err != nil {
+		return AdaptationSourceFoundation{}, AdaptationSourceCharacterIndex{}, err
+	}
+	eligibleIDs := make(map[string]struct{})
+	for _, entry := range index.Characters {
+		if !entry.CardEligible {
+			continue
+		}
+		eligibleIDs[entry.ID] = struct{}{}
+	}
+	filtered := source
+	filtered.Characters = make([]Character, 0, len(eligibleIDs))
+	formalIDs := make(map[string]struct{})
+	for _, entry := range index.Characters {
+		if !entry.CardEligible {
+			continue
+		}
+		copy := CloneCharacter(entry.Profile)
+		filtered.Characters = append(filtered.Characters, copy)
+		formalIDs[copy.ID] = struct{}{}
+	}
+	if len(filtered.Characters) == 0 {
+		return AdaptationSourceFoundation{}, index, fmt.Errorf("formal source cast policy rejected every character")
+	}
+	filtered.Relationships = nil
+	for _, relationship := range source.Relationships {
+		if relationship.SourceCharacterID == relationship.TargetCharacterID {
+			continue
+		}
+		if _, ok := formalIDs[relationship.SourceCharacterID]; !ok {
+			continue
+		}
+		if _, ok := formalIDs[relationship.TargetCharacterID]; !ok {
+			continue
+		}
+		filtered.Relationships = append(filtered.Relationships, relationship)
+	}
+	return filtered, index, nil
+}
+
+// ValidateAdaptationCharacterCardEligibility prevents the Character Agent from
+// turning evidence-only walk-ons into formal target cards.
+func ValidateAdaptationCharacterCardEligibility(
+	index AdaptationSourceCharacterIndex,
+	mappings []CharacterSourceMapping,
+	targets []Character,
+) error {
+	if index.Version != AdaptationSourceCharacterIndexVersion {
+		return fmt.Errorf("adaptation source character eligibility index is stale")
+	}
+	entries := make(map[string]AdaptationSourceCharacterIndexEntry, len(index.Characters))
+	for _, entry := range index.Characters {
+		entries[entry.ID] = entry
+	}
+	targetByID := make(map[string]Character, len(targets))
+	for _, target := range targets {
+		targetByID[target.ID] = target
+	}
+	eligibleTargetIDs := make(map[string]struct{})
+	for _, mapping := range mappings {
+		normalized := mapping
+		normalizeCharacterSourceMapping(&normalized)
+		hasEligibleSource := false
+		for _, sourceID := range normalized.SourceCharacterIDs {
+			if entry, ok := entries[sourceID]; ok && entry.CardEligible {
+				hasEligibleSource = true
+				break
+			}
+		}
+		if !hasEligibleSource || normalized.Action == CharacterSourceExclude {
+			continue
+		}
+		for _, targetID := range normalized.TargetCharacterIDs {
+			eligibleTargetIDs[targetID] = struct{}{}
+		}
+	}
+	for _, mapping := range mappings {
+		normalized := mapping
+		normalizeCharacterSourceMapping(&normalized)
+		hasEligibleSource := false
+		var ineligible []string
+		for _, sourceID := range normalized.SourceCharacterIDs {
+			entry, ok := entries[sourceID]
+			if !ok {
+				continue
+			}
+			if entry.CardEligible {
+				hasEligibleSource = true
+			} else {
+				ineligible = append(ineligible, sourceID)
+			}
+		}
+		if len(ineligible) > 0 {
+			mergesIntoEligibleTarget := normalized.Action == CharacterSourceMerge &&
+				len(normalized.TargetCharacterIDs) > 0
+			for _, targetID := range normalized.TargetCharacterIDs {
+				if _, ok := eligibleTargetIDs[targetID]; !ok {
+					mergesIntoEligibleTarget = false
+					break
+				}
+			}
+			allowed := normalized.Action == CharacterSourceExclude ||
+				(normalized.Action == CharacterSourceMerge && hasEligibleSource) ||
+				mergesIntoEligibleTarget
+			if !allowed {
+				return fmt.Errorf(
+					"evidence-only source characters %q may only be excluded or merged with an eligible identity",
+					strings.Join(ineligible, ", "),
+				)
+			}
+		}
+		if normalized.Action != CharacterSourceTargetOriginal {
+			continue
+		}
+		target := targetByID[normalized.TargetCharacterIDs[0]]
+		tier, tierErr := normalizedCharacterTier(target.Tier)
+		if tierErr != nil || (tier != CharacterTierCore && tier != CharacterTierImportant) {
+			return fmt.Errorf("target-original character %q must be core or important", target.ID)
+		}
+		if strings.TrimSpace(target.Role) == "" || strings.TrimSpace(target.Goal) == "" ||
+			strings.TrimSpace(target.Motivation) == "" || strings.TrimSpace(target.Conflict) == "" ||
+			strings.TrimSpace(target.Arc) == "" {
+			return fmt.Errorf("target-original character %q lacks an irreplaceable mainline role contract", target.ID)
+		}
+	}
+	return nil
 }
 
 func mergeAdaptationSourceProfile(entry *AdaptationSourceCharacterIndexEntry, incoming Character) {
@@ -509,8 +761,6 @@ func finalizeAdaptationSourceCharacterEntry(entry *AdaptationSourceCharacterInde
 		entry.Uncertainties = append(entry.Uncertainties, "evidence insufficient for a knowledge boundary")
 	}
 	entry.Uncertainties = normalizedStrings(entry.Uncertainties)
-	entry.ImportanceEvidence = nil
-	_, _, entry.ImportanceEvidence = adaptationCoverageRule(*entry)
 	sort.Slice(entry.Evidence, func(i, j int) bool {
 		left := fmt.Sprintf("%09d\x00%s\x00%s", entry.Evidence[i].Chapter, entry.Evidence[i].Kind, entry.Evidence[i].Summary)
 		right := fmt.Sprintf("%09d\x00%s\x00%s", entry.Evidence[j].Chapter, entry.Evidence[j].Kind, entry.Evidence[j].Summary)
@@ -528,19 +778,27 @@ func finalizeAdaptationSourceCharacterEntry(entry *AdaptationSourceCharacterInde
 	})
 }
 
-func likelyNamedAdaptationCharacter(name, role string) bool {
+func likelyNamedAdaptationCharacter(name, _ string) bool {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
 		return false
 	}
 	for _, marker := range []string{
 		"未命名", "无名", "路人", "群众", "店员", "侍卫", "士兵", "管理员",
-		"服务员", "司机", "医生", "护士", "老师", "同学", "unknown", "unnamed",
+		"服务员", "司机", "医生", "护士", "老师", "同学", "老板", "秘书",
+		"邮递员", "快递员", "清纯女孩", "黄裙女孩", "陌生女孩", "陌生男子",
+		"梦中女孩", "女孩", "男人", "女人", "男孩", "女孩子", "黑影",
+		"未命名", "无名", "路人", "群众", "店员", "侍卫", "士兵", "管理员",
+		"服务员", "司机", "医生", "护士", "老师", "同学", "老板", "秘书",
+		"邮递员", "快递员", "清纯女孩", "黄裙女孩", "陌生女孩", "陌生男子",
+		"男人", "女人", "男孩", "女孩", "黑影", "unknown", "unnamed",
 	} {
-		if strings.Contains(key, marker) &&
-			(strings.TrimSpace(role) == "" || normalizedIdentity(name) == normalizedIdentity(role)) {
+		if key == marker {
 			return false
 		}
+	}
+	if containsAnyAdaptationMarker(key, "未命名", "无名", "陌生", "录像中的", "三名", "两名", "一名") {
+		return false
 	}
 	return true
 }

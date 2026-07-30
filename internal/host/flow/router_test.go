@@ -69,7 +69,9 @@ func TestRoute_AdaptationCharactersUseSharedAnalyzeAndReviewRuns(t *testing.T) {
 	analyze := Route(state)
 	if analyze == nil || analyze.Agent != "character" ||
 		!strings.Contains(analyze.Task, `"mode":"analyze"`) ||
-		!strings.Contains(analyze.Task, `"project_mode":"adaptation"`) {
+		!strings.Contains(analyze.Task, `"project_mode":"adaptation"`) ||
+		!strings.Contains(analyze.Task, "新男主（主视角）") ||
+		!strings.Contains(analyze.Task, "target_original mapping") {
 		t.Fatalf("adaptation analyze route = %+v", analyze)
 	}
 
@@ -82,7 +84,8 @@ func TestRoute_AdaptationCharactersUseSharedAnalyzeAndReviewRuns(t *testing.T) {
 	review := Route(state)
 	if review == nil || review.Agent != "character" ||
 		!strings.Contains(review.Task, `"mode":"review"`) ||
-		!strings.Contains(review.Task, `"project_mode":"adaptation"`) {
+		!strings.Contains(review.Task, `"project_mode":"adaptation"`) ||
+		!strings.Contains(review.Task, "source/target protagonist conflation") {
 		t.Fatalf("adaptation review route = %+v", review)
 	}
 

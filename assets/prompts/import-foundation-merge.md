@@ -15,6 +15,16 @@ Markdown. Start with a single H1 title line. Summarize the core premise,
 central conflict, protagonist pressure, tone, and source-book direction.
 
 === CHARACTERS ===
+This is the formal adaptable cast, not a list of every person mentioned in the
+reports. Include only protagonists, core characters, major antagonists, and
+major supporting characters who keep changing the main causal line. Do not
+create formal cards for one-scene occupations, walk-ons, crowd labels,
+appearance-only labels, merely mentioned people, or titles whose independent
+identity is not established. Merge an identity title with its later real name
+as aliases when evidence supports that identity. When a personality, dream
+identity, or mistaken identity is evidenced as the same person, keep one card
+and record the internal conflict or knowledge boundary instead of splitting it.
+
 JSON array of objects compatible with:
 {
   "id": "stable source character ID; distinguish same-name people",
@@ -96,6 +106,8 @@ Rules:
 - Choose tiers by evidence and narrative load. Core and important characters
   should receive the fullest report-supported profile; do not promote a thinly
   evidenced walk-on merely to make the schema look complete.
+- A batch-local `major_characters` signal is evidence about that source range,
+  not whole-book permission to create a formal card.
 - RELATIONSHIPS contains source facts, not adaptation plans. Keep only
   relationships with two stable character IDs and report evidence. Do not
   invent a relationship to connect isolated characters.

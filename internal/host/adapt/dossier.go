@@ -33,7 +33,7 @@ Return one JSON object with this shape:
   "plot_threads": ["active or resolved plot thread, antagonist move, mystery, war/political arc, cultivation/business/legal arc, etc."],
   "character_arcs": ["important character change, motivation, role shift, betrayal, alliance, growth, downfall, or supporting-character hook"],
   "world_constraints": ["setting, faction, power-system, timeline, geography, legal, political, family, or continuity constraint"],
-  "major_characters": ["names that matter in this range"],
+  "major_characters": ["names that matter in this source range; batch-local evidence only, never whole-book formal-card eligibility"],
   "relationship_signals": [{"chapters":[1],"characters":["A","B"],"type":"trust/conflict/family/political/mentor/rival/romance/etc","summary":"what changed","evidence":"chapter evidence"}],
   "heroine_signals": [{"chapters":[1],"characters":["lead","heroine"],"type":"interaction/status/milestone","summary":"heroine-relevant beat when supported by source evidence","evidence":"chapter evidence"}],
   "ambiguity_risks": [{"chapters":[1],"characters":["lead","side character"],"risk":"relationship ambiguity, audience-confusion, harem/body-contact risk, or other source-supported ambiguity/continuity risk","evidence":"chapter evidence","severity":"low|medium|high"}],
@@ -45,7 +45,8 @@ Rules:
 - Be neutral and reusable for many adaptation goals: main plot, supporting characters, factions, relationships, pacing, mysteries, world rules, and romance are all valid.
 - Do not let heroine/romance concerns crowd out important non-romance plot or supporting-character material.
 - Do not invent romance. Record heroine/couple/ambiguity items only when supported by reports.
-- Keep each array compact: usually 3-8 items, prioritizing facts useful across future user requests.`
+- Keep each array compact: usually 3-8 items, prioritizing facts useful across future user requests.
+- major_characters is local to this batch. It does not declare whole-book protagonist status or grant permission to create a formal character card.`
 
 func coCreateDossierBatchJSONSchema() map[string]any {
 	stringArray := map[string]any{

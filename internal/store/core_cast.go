@@ -164,11 +164,48 @@ func (s *CoreCastStore) RequireConfirmedGate(expected CoreCastGateBinding, sourc
 		contract.SourceSignature != binding.SourceSignature || contract.AdaptationIntentHash != binding.AdaptationIntentHash {
 		return domain.CoreCastContract{}, fmt.Errorf("core cast contract is stale for the persisted gate binding")
 	}
+	if binding.Mode == domain.CoreCastModeAdaptation &&
+		len(sourceCharacters) == 0 && len(sourceMajor) == 0 &&
+		len(contract.SourceDispositions) > 0 {
+		var source domain.AdaptationSourceFoundation
+		if sourceErr := s.io.ReadJSON(adaptationSourceFoundationFile, &source); sourceErr == nil {
+			sourceCharacters = domain.ResolveSourceCharacters(source)
+			sourceMajor = coreCastDispositionSourceCharacters(sourceCharacters, *contract)
+		} else if !os.IsNotExist(sourceErr) {
+			return domain.CoreCastContract{}, fmt.Errorf(
+				"load adaptation SourceFoundation for core cast gate: %w",
+				sourceErr,
+			)
+		}
+	}
 	completion := mergeCoreCastCompletion(domain.CoreCastCompletion(*contract, sourceCharacters, sourceMajor), sourceResolutionMissing)
-	if !completion.Complete || contract.ConfirmedSignature != contract.ContentSignature {
-		return domain.CoreCastContract{}, fmt.Errorf("core cast confirmation gate is not satisfied")
+	if !completion.Complete {
+		return domain.CoreCastContract{}, fmt.Errorf(
+			"core cast confirmation gate is not satisfied: %s",
+			strings.Join(completion.BlockingReasons, "; "),
+		)
+	}
+	if contract.ConfirmedSignature != contract.ContentSignature {
+		return domain.CoreCastContract{}, fmt.Errorf("core cast confirmation gate is not satisfied: confirmed signature is stale")
 	}
 	return *contract, nil
+}
+
+func coreCastDispositionSourceCharacters(
+	sourceCharacters []domain.SourceMajorCharacter,
+	contract domain.CoreCastContract,
+) []domain.SourceMajorCharacter {
+	disposed := make(map[string]struct{}, len(contract.SourceDispositions))
+	for _, disposition := range contract.SourceDispositions {
+		disposed[disposition.SourceCharacterID] = struct{}{}
+	}
+	out := make([]domain.SourceMajorCharacter, 0, len(disposed))
+	for _, source := range sourceCharacters {
+		if _, exists := disposed[source.ID]; exists {
+			out = append(out, source)
+		}
+	}
+	return out
 }
 
 func (s *CoreCastStore) SaveCAS(candidate domain.CoreCastContract, expectedRevision int64) (domain.CoreCastContract, error) {
@@ -457,8 +494,14 @@ func (s *CoreCastStore) publishConfirmed(foundation *FoundationStore, sourceChar
 		return domain.CoreCastContract{}, err
 	}
 	completion := mergeCoreCastCompletion(domain.CoreCastCompletion(*current, sourceCharacters, sourceMajor), sourceResolutionMissing)
-	if !completion.Complete || current.ConfirmedSignature == "" || current.ConfirmedSignature != current.ContentSignature {
-		return domain.CoreCastContract{}, fmt.Errorf("core cast confirmation gate is not satisfied")
+	if !completion.Complete {
+		return domain.CoreCastContract{}, fmt.Errorf(
+			"core cast confirmation gate is not satisfied: %s",
+			strings.Join(completion.BlockingReasons, "; "),
+		)
+	}
+	if current.ConfirmedSignature == "" || current.ConfirmedSignature != current.ContentSignature {
+		return domain.CoreCastContract{}, fmt.Errorf("core cast confirmation gate is not satisfied: confirmed signature is stale")
 	}
 	formal, err := foundation.Load()
 	if err != nil {

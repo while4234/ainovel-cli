@@ -133,6 +133,11 @@ func characterCardMissing(
 			missing = appendCharacterCardMissing(missing, "initial_state_required", "initial_state", "需要说明故事开始时的身份、处境、情绪、资源或主要关系")
 		}
 	}
+	requireKnowledgeBoundary := func() {
+		if character.KnowledgeBoundary == nil {
+			missing = appendCharacterCardMissing(missing, "knowledge_boundary_required", "knowledge_boundary", "核心与重要角色需要明确已知、未知、误解或禁用信息，避免越界知情")
+		}
+	}
 	requireRelationship := func(allowReviewedNone bool) {
 		if !hasRelationship && !(allowReviewedNone && noRelationshipReviewed) {
 			missing = appendCharacterCardMissing(missing, "relationship_required", "relationships", "需要规范关系，或明确确认没有核心关系")
@@ -152,6 +157,7 @@ func characterCardMissing(
 			missing = appendCharacterCardMissing(missing, "traits_or_voice_required", "traits", "核心角色至少需要一项特质或明确语言风格")
 		}
 		requireInitialState()
+		requireKnowledgeBoundary()
 		if len(character.Constraints) == 0 {
 			missing = appendCharacterCardMissing(missing, "constraints_required", "constraints", "核心角色至少需要一条约束")
 		}
@@ -168,6 +174,7 @@ func characterCardMissing(
 			missing = appendCharacterCardMissing(missing, "distinguishing_feature_required", "traits", "重要角色需要语言或行为特征")
 		}
 		requireInitialState()
+		requireKnowledgeBoundary()
 		requireRelationship(false)
 	case CharacterTierSecondary:
 		requireIdentity()
@@ -565,11 +572,10 @@ func ProjectCharacterCandidateCoreCast(
 		relationshipCount[relationship.SourceCharacterID]++
 		relationshipCount[relationship.TargetCharacterID]++
 	}
-	for index, id := range ids {
+	for _, id := range ids {
 		character := core[id]
 		importance := CoreCastImportanceMajorSupport
-		role := strings.ToLower(character.Role)
-		if strings.Contains(role, "主角") || strings.Contains(role, "protagonist") || index == 0 {
+		if characterRoleIsProtagonist(character.Role) {
 			importance = CoreCastImportanceProtagonist
 		}
 		member := CoreCastMember{
@@ -582,6 +588,9 @@ func ProjectCharacterCandidateCoreCast(
 		}
 		if existingMember, ok := existingMembers[id]; ok {
 			member.Importance = existingMember.Importance
+			if characterRoleIsProtagonist(character.Role) {
+				member.Importance = CoreCastImportanceProtagonist
+			}
 			member.Origin = existingMember.Origin
 			member.MainlineFunction = existingMember.MainlineFunction
 			member.InclusionRationale = existingMember.InclusionRationale
@@ -609,6 +618,16 @@ func ProjectCharacterCandidateCoreCast(
 	}
 	projected, err := NormalizeCoreCastContract(projectedValue)
 	return projected, findings, err
+}
+
+func characterRoleIsProtagonist(role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	return strings.Contains(role, "主角") ||
+		strings.Contains(role, "男主") ||
+		strings.Contains(role, "女主") ||
+		strings.Contains(role, "主视角") ||
+		strings.Contains(role, "protagonist") ||
+		strings.Contains(role, "lead")
 }
 
 func CharacterCardBindingFromFoundation(
@@ -818,6 +837,79 @@ func ProjectCoreCastSourceMappings(contract CoreCastContract) ([]CharacterSource
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// ApplyCharacterSourceMappingsToCoreCast projects the reviewed full-cast
+// mapping decisions back into the smaller CoreCast compatibility contract.
+// formalSourceIDs must come from the reviewed SourceFoundation formal-card
+// projection; evidence-only source identities intentionally remain outside
+// CoreCast while still retaining their Character lifecycle decisions.
+func ApplyCharacterSourceMappingsToCoreCast(
+	contract CoreCastContract,
+	mappings []CharacterSourceMapping,
+	formalSourceIDs []string,
+) (CoreCastContract, error) {
+	out := cloneCoreCastContract(contract)
+	allowedSources := make(map[string]struct{}, len(formalSourceIDs))
+	for _, sourceID := range normalizedStrings(formalSourceIDs) {
+		allowedSources[sourceID] = struct{}{}
+	}
+	memberIndexes := make(map[string]int, len(out.Members))
+	for index, member := range out.Members {
+		memberIndexes[member.Character.ID] = index
+	}
+	out.SourceDispositions = nil
+	claimed := make(map[string]struct{}, len(allowedSources))
+	for _, value := range mappings {
+		mapping := value
+		normalizeCharacterSourceMapping(&mapping)
+		if err := validateCharacterSourceMapping(mapping); err != nil {
+			return CoreCastContract{}, err
+		}
+		if mapping.Action == CharacterSourceTargetOriginal {
+			continue
+		}
+		for _, sourceID := range mapping.SourceCharacterIDs {
+			if _, formal := allowedSources[sourceID]; !formal {
+				continue
+			}
+			if _, duplicate := claimed[sourceID]; duplicate {
+				return CoreCastContract{}, fmt.Errorf("formal source character %q has conflicting mappings", sourceID)
+			}
+			claimed[sourceID] = struct{}{}
+			disposition := SourceCharacterDisposition{
+				SourceCharacterID:  sourceID,
+				Action:             SourceDispositionAction(mapping.Action),
+				TargetCharacterIDs: append([]string(nil), mapping.TargetCharacterIDs...),
+				Rationale:          mapping.Rationale,
+			}
+			out.SourceDispositions = append(out.SourceDispositions, disposition)
+			if disposition.Action == SourceDispositionExclude {
+				continue
+			}
+			for _, targetID := range disposition.TargetCharacterIDs {
+				index, exists := memberIndexes[targetID]
+				if !exists {
+					return CoreCastContract{}, fmt.Errorf(
+						"formal source character %q maps to non-core target %q",
+						sourceID,
+						targetID,
+					)
+				}
+				out.Members[index].Origin = CoreCastOriginSource
+				out.Members[index].SourceCharacterIDs = append(
+					out.Members[index].SourceCharacterIDs,
+					sourceID,
+				)
+			}
+		}
+	}
+	for sourceID := range allowedSources {
+		if _, exists := claimed[sourceID]; !exists {
+			return CoreCastContract{}, fmt.Errorf("formal source character %q requires a mapping", sourceID)
+		}
+	}
+	return NormalizeCoreCastContract(out)
 }
 
 // ValidateCharacterSourceCoverage verifies that every relevant source

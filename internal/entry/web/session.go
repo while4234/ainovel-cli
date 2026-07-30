@@ -1076,7 +1076,7 @@ func (s *ProjectSession) Resume() (string, error) {
 			return "", fmt.Errorf("%w: %s", storepkg.ErrActiveRevisionBlocksNormalFlow, active.ID)
 		}
 		if !cocreate.coreCastResumeExempt() {
-			if err := host.RequireManagedCoreCastGate(st, true); err != nil {
+			if err := host.RequireResumeCoreCastGate(st, true); err != nil {
 				return "", err
 			}
 		}

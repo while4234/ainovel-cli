@@ -1065,7 +1065,7 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	if err := h.ensureContinuationWritingAllowed(); err != nil {
 		return "", err
 	}
-	if err := RequireManagedCoreCastGate(h.store, true); err != nil {
+	if err := RequireResumeCoreCastGate(h.store, true); err != nil {
 		return "", err
 	}
 	if !keepNormalFlowLease {

@@ -53,7 +53,13 @@ func loadAdaptationFoundationContext(st *storepkg.Store) (*adaptationFoundationC
 	if err != nil || gate == nil || gate.Mode != domain.CoreCastModeAdaptation {
 		return nil, fmt.Errorf("adaptation CoreCast gate is unavailable: %w", err)
 	}
-	contract, err := st.CoreCast.RequireConfirmedGate(*gate, nil, nil, nil)
+	currentContract, err := st.CoreCast.Load()
+	if err != nil || currentContract == nil {
+		return nil, fmt.Errorf("adaptation CoreCast contract is unavailable: %w", err)
+	}
+	sourceCharacters := domain.ResolveSourceCharacters(*source)
+	sourceMajor := coreCastDispositionSources(sourceCharacters, *currentContract)
+	contract, err := st.CoreCast.RequireConfirmedGate(*gate, sourceCharacters, sourceMajor, nil)
 	if err != nil {
 		return nil, fmt.Errorf("adaptation CoreCast confirmation is stale: %w", err)
 	}

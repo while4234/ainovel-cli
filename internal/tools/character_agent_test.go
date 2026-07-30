@@ -348,15 +348,39 @@ func TestCharacterToolsRejectModeDuplicateStaleAndUnknownFields(t *testing.T) {
 
 func TestCharacterContextIsBoundedAndNeverLoadsRawAdaptationText(t *testing.T) {
 	st := characterToolStore(t)
+	rawOutlineMarker := "RAW-OUTLINE-MUST-NOT-REACH-CHARACTER-" + strings.Repeat("x", 200_000)
 	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{
-		Version:         1,
-		SourceSignature: strings.Repeat("a", 64),
+		Version:            1,
+		SourceSignature:    strings.Repeat("a", 64),
+		SourceChapterCount: 20,
 		Characters: []domain.Character{{
 			ID: "source-hero", Name: "原著主角", Role: "主角", Description: "source fact",
 			Arc: "source arc", Traits: []string{"冷静"},
 		}},
+		Volumes: []domain.VolumeOutline{{
+			Index: 1,
+			Title: rawOutlineMarker,
+			Theme: rawOutlineMarker,
+		}},
 	}); err != nil {
 		t.Fatal(err)
+	}
+	reports := make([]domain.AdaptationSourceReport, 0, 20)
+	for chapter := 1; chapter <= 20; chapter++ {
+		reports = append(reports, domain.AdaptationSourceReport{
+			Chapter:        chapter,
+			Title:          strings.Repeat("large report title", 500),
+			Characters:     []string{"source-hero"},
+			CharacterFacts: []string{strings.Repeat("large character fact", 500)},
+		})
+	}
+	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
+		t.Fatal(err)
+	}
+	for _, report := range reports {
+		if err := st.Adaptation.SaveSourceReport(report); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := st.Adaptation.SaveCoCreateIntent(domain.AdaptationCoCreateIntent{
 		Version: 1, RawRequest: "保留主线", IntentHash: strings.Repeat("b", 64),
@@ -401,10 +425,17 @@ func TestCharacterContextIsBoundedAndNeverLoadsRawAdaptationText(t *testing.T) {
 	if strings.Contains(text, "raw_source") && !strings.Contains(text, `"raw_source_included":false`) {
 		t.Fatalf("context exposed raw source marker: %s", text)
 	}
+	if strings.Contains(text, "RAW-OUTLINE-MUST-NOT-REACH-CHARACTER") {
+		t.Fatal("context exposed the source outline instead of bounded character evidence")
+	}
 	if !strings.Contains(text, `"project_mode":"adaptation"`) ||
 		!strings.Contains(text, `"source_foundation"`) ||
-		!strings.Contains(text, `"chapter_reports"`) {
+		!strings.Contains(text, `"chapter_reports_omitted":true`) ||
+		!strings.Contains(text, `"source_character_index"`) {
 		t.Fatalf("adaptation evidence missing: %s", text)
+	}
+	if len(raw) > characterContextMaxBytes+2_048 {
+		t.Fatalf("bounded context = %d bytes, want <= %d", len(raw), characterContextMaxBytes+2_048)
 	}
 }
 

@@ -52,7 +52,13 @@ func GenerateTargetFoundation(_ context.Context, deps Deps, opts TargetFoundatio
 	if err != nil || gate == nil {
 		return nil, fmt.Errorf("load adaptation core cast gate: %w", err)
 	}
-	contract, err := deps.Store.CoreCast.RequireConfirmedGate(*gate, nil, nil, nil)
+	currentContract, err := deps.Store.CoreCast.Load()
+	if err != nil || currentContract == nil {
+		return nil, fmt.Errorf("load adaptation core cast contract: %w", err)
+	}
+	sourceCharacters := domain.ResolveSourceCharacters(*source)
+	sourceMajor := targetFoundationDispositionSources(sourceCharacters, *currentContract)
+	contract, err := deps.Store.CoreCast.RequireConfirmedGate(*gate, sourceCharacters, sourceMajor, nil)
 	if err != nil {
 		return nil, fmt.Errorf("confirmed adaptation core cast is required: %w", err)
 	}
@@ -108,6 +114,23 @@ func GenerateTargetFoundation(_ context.Context, deps Deps, opts TargetFoundatio
 		}
 	}
 	return review, nil
+}
+
+func targetFoundationDispositionSources(
+	sourceCharacters []domain.SourceMajorCharacter,
+	contract domain.CoreCastContract,
+) []domain.SourceMajorCharacter {
+	disposed := make(map[string]struct{}, len(contract.SourceDispositions))
+	for _, disposition := range contract.SourceDispositions {
+		disposed[disposition.SourceCharacterID] = struct{}{}
+	}
+	out := make([]domain.SourceMajorCharacter, 0, len(disposed))
+	for _, source := range sourceCharacters {
+		if _, exists := disposed[source.ID]; exists {
+			out = append(out, source)
+		}
+	}
+	return out
 }
 
 func rebindPublishedAdaptationCharacters(

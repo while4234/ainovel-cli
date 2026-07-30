@@ -119,8 +119,8 @@ func loadCharacterWorkflowState(state *State, st *storepkg.Store) {
 	adaptationPending := false
 	if workflow, err := st.Adaptation.LoadPlanningWorkflow(); err == nil && workflow != nil &&
 		workflow.Stage == domain.AdaptationPlanningStageTargetFoundationGenerating {
-		if coreCast, coreErr := st.CoreCast.Load(); coreErr == nil && coreCast != nil &&
-			coreCast.Mode == domain.CoreCastModeAdaptation {
+		if gate, gateErr := st.CoreCast.LoadGateBinding(); gateErr == nil && gate != nil &&
+			gate.Mode == domain.CoreCastModeAdaptation {
 			adaptationPending = true
 		}
 	}

@@ -65,8 +65,13 @@ func TestAdaptationSourceCharacterIndexAndCoverageIncludeNonCoreCast(t *testing.
 		t.Fatalf("mentor evidence = %+v", mentor)
 	}
 	passerby := indexedSourceCharacter(t, index, "src-passerby")
-	if passerby.Named {
+	if passerby.Named || passerby.CardEligible {
 		t.Fatalf("generic passerby treated as named: %+v", passerby)
+	}
+	for _, id := range []string{"src-hero", "src-villain", "src-friend", "src-mentor"} {
+		if entry := indexedSourceCharacter(t, index, id); !entry.CardEligible {
+			t.Fatalf("formal character %s was rejected: %+v", id, entry)
+		}
 	}
 
 	mappings := []CharacterSourceMapping{
@@ -103,6 +108,104 @@ func TestAdaptationSourceCharacterIndexAndCoverageIncludeNonCoreCast(t *testing.
 	}
 }
 
+func TestFormalSourceCharacterPolicyKeepsEvidenceButFiltersWalkOnsAndUncertainIdentity(t *testing.T) {
+	source := AdaptationSourceFoundation{
+		SourceChapterCount: 3,
+		Premise:            "A source story.",
+		Characters: []Character{
+			{ID: "an", Name: "安少廷", Role: "原作男主", Tier: "core", Goal: "查明真相", Motivation: "摆脱失控", Arc: "逐步面对自我"},
+			{ID: "yuan", Name: "袁可欣", Aliases: []string{"黄裙女孩", "梦中女孩", "女孩", "奴儿"}, Role: "原作女主", Tier: "core", Goal: "寻求安全", Motivation: "摆脱控制", Arc: "尝试恢复主体性"},
+			{ID: "doctor", Name: "王医生", Role: "医生", Tier: "secondary"},
+			{ID: "postman", Name: "邮递员", Role: "邮递员", Tier: "secondary"},
+			{ID: "master", Name: "真主人", Role: "身份不明的主人称谓", Tier: "important", Goal: "控制袁可欣"},
+		},
+		Relationships: []CharacterRelationship{
+			{ID: "main", SourceCharacterID: "an", TargetCharacterID: "yuan", Type: RelationshipTypeOther, Direction: RelationshipDirectionDirected, Status: RelationshipStatusActive},
+			{ID: "walk-on", SourceCharacterID: "doctor", TargetCharacterID: "an", Type: RelationshipTypeProfessional, Direction: RelationshipDirectionDirected, Status: RelationshipStatusResolved},
+			{ID: "uncertain", SourceCharacterID: "master", TargetCharacterID: "yuan", Type: RelationshipTypeOther, Direction: RelationshipDirectionDirected, Status: RelationshipStatusActive},
+		},
+	}
+	reports := []AdaptationSourceReport{
+		{Chapter: 1, Characters: []string{"安少廷", "黄裙女孩", "王医生"}, KeyEvents: []string{"安少廷寻找黄裙女孩"}},
+		{Chapter: 2, Characters: []string{"安少廷", "梦中女孩", "真主人"}, KeyEvents: []string{"安少廷的梦游身份与真主人称谓重叠"}},
+		{Chapter: 3, Characters: []string{"安少廷", "袁可欣", "邮递员"}, KeyEvents: []string{"袁可欣作出改变关系的选择"}, StateChanges: []StateChange{{Entity: "袁可欣", Field: "立场", NewValue: "反抗"}}},
+	}
+
+	filtered, index, err := ApplyAdaptationSourceCharacterPolicy(source, reports)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Characters) != 5 {
+		t.Fatalf("complete evidence index lost entries: %+v", index.Characters)
+	}
+	if got := characterIDs(filtered.Characters); !reflect.DeepEqual(got, []string{"an", "yuan"}) {
+		t.Fatalf("formal source cast = %v, want [an yuan]", got)
+	}
+	if len(filtered.Relationships) != 1 || filtered.Relationships[0].ID != "main" {
+		t.Fatalf("filtered relationships = %+v", filtered.Relationships)
+	}
+	if indexedSourceCharacter(t, index, "doctor").CardEligible ||
+		indexedSourceCharacter(t, index, "postman").CardEligible ||
+		indexedSourceCharacter(t, index, "master").CardEligible {
+		t.Fatalf("walk-on or uncertain identity entered formal cast: %+v", index.Characters)
+	}
+	yuan := indexedSourceCharacter(t, index, "yuan")
+	if yuan.AppearanceCount != 3 {
+		t.Fatalf("cross-chapter aliases were not aggregated: %+v", yuan)
+	}
+}
+
+func TestAdaptationCharacterEligibilityRejectsWalkOnCardsAndRequiresSubstantiveTargetOriginal(t *testing.T) {
+	index := AdaptationSourceCharacterIndex{
+		Version:        AdaptationSourceCharacterIndexVersion,
+		InputSignature: strings.Repeat("a", 64),
+		Characters: []AdaptationSourceCharacterIndexEntry{
+			{ID: "hero", CardEligible: true},
+			{ID: "hero-alias", CardEligible: false},
+			{ID: "doctor", CanonicalName: "王医生", CardEligible: false},
+		},
+	}
+	targets := []Character{
+		{ID: "hero-target", Name: "原作主角", Role: "主角", Tier: "core", Goal: "查明真相", Motivation: "责任", Conflict: "证据不足", Arc: "承担代价"},
+		{ID: "doctor-target", Name: "王医生", Role: "医生", Tier: "secondary"},
+	}
+	mappings := []CharacterSourceMapping{
+		sourceMappingForTest("hero-map", CharacterSourceKeep, []string{"hero"}, []string{"hero-target"}),
+		sourceMappingForTest("doctor-map", CharacterSourceKeep, []string{"doctor"}, []string{"doctor-target"}),
+	}
+	if err := ValidateAdaptationCharacterCardEligibility(index, mappings, targets); err == nil ||
+		!strings.Contains(err.Error(), "evidence-only") {
+		t.Fatalf("walk-on keep mapping was accepted: %v", err)
+	}
+
+	targets = append(targets, Character{
+		ID: "new-lead", Name: "沈砚", Role: "新男主（主视角）", Gender: "male", Tier: "core",
+		Goal: "取得证据并救出女主", Motivation: "弥补过去的失职", Conflict: "必须在不惊动原作男主的情况下调查",
+		Arc: "从职业旁观转为承担救援后果",
+	})
+	mappings = []CharacterSourceMapping{
+		sourceMappingForTest("hero-map", CharacterSourceKeep, []string{"hero"}, []string{"hero-target"}),
+		sourceMappingForTest("hero-alias-map", CharacterSourceMerge, []string{"hero-alias"}, []string{"hero-target"}),
+		sourceMappingForTest("doctor-map", CharacterSourceExclude, []string{"doctor"}, nil),
+		{
+			ID: "new-lead-map", Action: CharacterSourceTargetOriginal, TargetCharacterIDs: []string{"new-lead"},
+			Rationale: "承担原作无人能够替代的调查、主视角与最终救援主线",
+			Evidence:  []CharacterSourceEvidence{{Kind: CharacterSourceOriginalAddition, Reference: "adaptation.intent"}},
+		},
+	}
+	if err := ValidateAdaptationCharacterCardEligibility(index, mappings, targets); err != nil {
+		t.Fatalf("substantive target-original character rejected: %v", err)
+	}
+}
+
+func characterIDs(characters []Character) []string {
+	ids := make([]string, 0, len(characters))
+	for _, character := range characters {
+		ids = append(ids, character.ID)
+	}
+	return ids
+}
+
 func TestAdaptationSourceCharacterIndexKeepsLegacyEvidenceAsUncertain(t *testing.T) {
 	index, err := BuildAdaptationSourceCharacterIndex(&AdaptationSourceFoundation{
 		Characters: []Character{{Name: "旧角色", Role: "配角", Traits: []string{}}},
@@ -115,7 +218,7 @@ func TestAdaptationSourceCharacterIndexKeepsLegacyEvidenceAsUncertain(t *testing
 	}
 }
 
-func TestAdaptationSourceCharacterIndexMergesIDLessProfilesButKeepsExplicitHomonymsDistinct(t *testing.T) {
+func TestAdaptationSourceCharacterIndexMergesUniqueReportIdentityButKeepsExplicitHomonymsDistinct(t *testing.T) {
 	index, err := BuildAdaptationSourceCharacterIndex(
 		&AdaptationSourceFoundation{Characters: []Character{
 			{ID: "source-lin", Name: "Lin", Role: "investigator", Traits: []string{"careful"}},
@@ -123,7 +226,7 @@ func TestAdaptationSourceCharacterIndexMergesIDLessProfilesButKeepsExplicitHomon
 		[]AdaptationSourceReport{{
 			Chapter: 1, SourceSHA256: strings.Repeat("1", 64),
 			CharacterProfiles: []Character{{
-				Name: "Lin", Goal: "Recover the archive.", Traits: []string{"persistent"},
+				ID: "chapter-lin", Name: "Lin", Goal: "Recover the archive.", Traits: []string{"persistent"},
 			}},
 			Characters: []string{"Lin"},
 			KeyEvents:  []string{"Lin recovers the archive."},

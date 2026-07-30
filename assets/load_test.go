@@ -99,6 +99,10 @@ func TestCharacterPromptDefinesIndependentAnalyzeAndReviewRuns(t *testing.T) {
 		"source_fact",
 		"adaptation_decision",
 		"target_original_addition",
+		"Non-negotiable quality floor",
+		"new male lead",
+		"新男主（主视角）",
+		"separate quality-control run",
 		"raw source",
 	} {
 		if !strings.Contains(prompt, want) {

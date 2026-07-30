@@ -7,6 +7,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host/adapt"
 	"github.com/voocel/ainovel-cli/internal/store"
+	"github.com/voocel/ainovel-cli/internal/tools"
 )
 
 // RequireCoreCastGate revalidates the durable semantic binding and, for
@@ -79,6 +80,32 @@ func RequireCoreCastGate(st *store.Store, mode domain.CoreCastMode, publish bool
 		}
 		sourceCharacters = domain.ResolveSourceCharacters(*sourceFoundation)
 		sourceMajor, sourceMissing = domain.ResolveSourceMajorCharacters(*sourceFoundation, *dossier)
+		if contract, contractErr := st.CoreCast.Load(); contractErr == nil && contract != nil {
+			candidate, candidateErr := st.CharacterCards.LoadCandidate()
+			if candidateErr == nil && candidate != nil &&
+				candidate.ProjectedCast.ContentSignature == contract.ContentSignature &&
+				contract.ConfirmedSignature == contract.ContentSignature {
+				sourceMajor = coreCastDispositionSources(sourceCharacters, *contract)
+				sourceMissing = nil
+			} else {
+				currentCandidate, lifecycle, _, characterErr := tools.CurrentCharacterWorkflow(st)
+				if characterErr == nil && currentCandidate != nil && lifecycle != nil &&
+					lifecycle.Mode == domain.CharacterCardProjectAdaptation &&
+					lifecycle.AnalysisStatus == domain.CharacterCardAnalysisCandidateReady &&
+					lifecycle.ReviewStatus == domain.CharacterCardReviewPassed &&
+					lifecycle.ConfirmationStatus == domain.CharacterCardConfirmed {
+					characterSourceMajor, sourceErr := adaptationCoreSourceCharacters(
+						st,
+						lifecycle.SourceMappings,
+						*contract,
+					)
+					if sourceErr == nil {
+						sourceMajor = characterSourceMajor
+						sourceMissing = nil
+					}
+				}
+			}
+		}
 		expected.SourceSignature = sourceSignature
 		expected.AdaptationIntentHash = intentHash
 	} else {
@@ -96,6 +123,23 @@ func RequireCoreCastGate(st *store.Store, mode domain.CoreCastMode, publish bool
 	return nil
 }
 
+func coreCastDispositionSources(
+	sourceCharacters []domain.SourceMajorCharacter,
+	contract domain.CoreCastContract,
+) []domain.SourceMajorCharacter {
+	disposed := make(map[string]struct{}, len(contract.SourceDispositions))
+	for _, disposition := range contract.SourceDispositions {
+		disposed[disposition.SourceCharacterID] = struct{}{}
+	}
+	out := make([]domain.SourceMajorCharacter, 0, len(disposed))
+	for _, source := range sourceCharacters {
+		if _, exists := disposed[source.ID]; exists {
+			out = append(out, source)
+		}
+	}
+	return out
+}
+
 func RequireManagedCoreCastGate(st *store.Store, publish bool) error {
 	binding, err := st.CoreCast.LoadGateBinding()
 	if err != nil {
@@ -105,4 +149,42 @@ func RequireManagedCoreCastGate(st *store.Store, publish bool) error {
 		return fmt.Errorf("core cast gate binding does not exist; formal resume requires a current explicitly confirmed core cast")
 	}
 	return RequireCoreCastGate(st, binding.Mode, publish)
+}
+
+// RequireResumeCoreCastGate permits the Character Agent to create or review
+// the staged cast before the CoreCast contract exists. Every later resume
+// still requires the ordinary confirmed gate.
+func RequireResumeCoreCastGate(st *store.Store, publish bool) error {
+	pending, err := AdaptationCharacterWorkflowPending(st)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return nil
+	}
+	return RequireManagedCoreCastGate(st, publish)
+}
+
+// AdaptationCharacterWorkflowPending reports only the pre-confirmation states
+// that the Character Agent can advance. A passed review intentionally returns
+// false so Resume remains blocked until explicit user confirmation.
+func AdaptationCharacterWorkflowPending(st *store.Store) (bool, error) {
+	binding, err := st.CoreCast.LoadGateBinding()
+	if err != nil {
+		return false, err
+	}
+	workflow, workflowErr := st.Adaptation.LoadPlanningWorkflow()
+	if workflowErr != nil {
+		return false, workflowErr
+	}
+	if binding != nil && binding.Mode == domain.CoreCastModeAdaptation &&
+		workflow != nil && workflow.Stage == domain.AdaptationPlanningStageTargetFoundationGenerating {
+		candidate, lifecycle, _, characterErr := tools.CurrentCharacterWorkflow(st)
+		if characterErr != nil || candidate == nil || lifecycle == nil ||
+			lifecycle.AnalysisStatus != domain.CharacterCardAnalysisCandidateReady ||
+			lifecycle.ReviewStatus != domain.CharacterCardReviewPassed {
+			return true, nil
+		}
+	}
+	return false, nil
 }

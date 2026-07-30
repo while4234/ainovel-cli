@@ -27,8 +27,12 @@ const (
 )
 
 const (
-	characterContextReportLimit = 120
-	characterContextListLimit   = 80
+	characterContextReportLimit = 4
+	characterContextListLimit   = 12
+	characterContextTextLimit   = 600
+	characterContextFactLimit   = 3
+	characterContextAliasLimit  = 6
+	characterContextMaxBytes    = 40 * 1024
 )
 
 // CharacterRunRegistry binds every run ID to one mode and to the exact
@@ -345,6 +349,13 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 		if coverageErr != nil {
 			return nil, fmt.Errorf("evaluate adaptation character coverage: %w", coverageErr)
 		}
+		if eligibilityErr := domain.ValidateAdaptationCharacterCardEligibility(
+			index,
+			request.SourceMappings,
+			normalized.Characters,
+		); eligibilityErr != nil {
+			return nil, fmt.Errorf("adaptation formal character eligibility: %w: %w", errs.ErrToolArgs, eligibilityErr)
+		}
 		coverage = &evaluated
 	}
 	expectedCandidateRevision := int64(0)
@@ -502,6 +513,23 @@ func (t *SaveCharacterReviewTool) Execute(_ context.Context, args json.RawMessag
 		}
 		coverage = &evaluated
 		findings = appendCoverageFindings(findings, evaluated)
+		if eligibilityErr := domain.ValidateAdaptationCharacterCardEligibility(
+			index,
+			lifecycle.SourceMappings,
+			foundation.Characters,
+		); eligibilityErr != nil {
+			findings = append(findings, domain.CharacterCardReviewFinding{
+				ID:              "adaptation:formal_character_eligibility",
+				Scope:           domain.CharacterCardFindingGlobal,
+				Location:        "source_mappings",
+				Severity:        domain.CharacterCardSeverityBlocking,
+				IssueType:       "formal_character_eligibility",
+				Description:     eligibilityErr.Error(),
+				EvidenceSummary: "deterministic whole-book formal character policy",
+				Suggestion:      "exclude evidence-only entries, merge proven aliases into an eligible identity, or strengthen the target-original mainline contract",
+				Blocking:        true,
+			})
+		}
 	}
 	finalStatus := domain.CharacterCardReviewPassed
 	if request.Verdict != "pass" || hasBlockingCharacterFinding(findings) {
@@ -671,16 +699,20 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 		"candidate_digest":       binding.Candidate.CharacterContentDigest,
 		"input_digest":           binding.InputDigest,
 		"input_signatures":       binding.Inputs,
-		"premise":                foundation.Premise,
-		"world_rules":            foundation.WorldRules,
+		"premise":                compactCharacterText(foundation.Premise),
+		"world_rules":            compactCharacterJSON(foundation.WorldRules),
 		"current_characters":     foundation.Characters,
 		"current_relationships":  foundation.Relationships,
 		"relationships_reviewed": foundation.RelationshipsReviewed,
-		"lifecycle":              lifecycle,
+		"lifecycle":              compactCharacterLifecycle(lifecycle),
 		"evidence_policy": map[string]any{
 			"raw_source_included": false,
 			"review_must_reread":  mode == CharacterRunReview,
 		},
+	}
+	if mode == CharacterRunAnalyze {
+		packet["current_characters"] = compactCharacterProfiles(foundation.Characters)
+		packet["current_relationships"] = compactCharacterSourceRelationships(foundation.Relationships)
 	}
 	if workspaceRun != nil {
 		packet["workspace_request"] = map[string]any{
@@ -692,9 +724,9 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 		}
 	}
 	if projectMode == domain.CharacterCardProjectAdaptation {
-		packet["core_cast"] = coreCast
+		packet["core_cast"] = compactCharacterCoreCast(coreCast)
 		if userRules != nil {
-			packet["user_constraints"] = userRules.Payload()
+			packet["user_constraints"] = compactCharacterJSON(userRules.Payload())
 		}
 		adaptation, adaptationErr := buildAdaptationCharacterEvidence(st)
 		if adaptationErr != nil {
@@ -716,6 +748,9 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 				"authoritative":     false,
 			}
 		}
+	}
+	if err := validateCharacterContextBudget(packet); err != nil {
+		return nil, domain.CharacterCardBinding{}, err
 	}
 	return packet, binding, nil
 }
@@ -1059,16 +1094,16 @@ func buildAdaptationCharacterEvidence(st *store.Store) (map[string]any, error) {
 		return nil, fmt.Errorf("evaluate adaptation source character coverage: %w", err)
 	}
 	return map[string]any{
-		"source_foundation":         sourceFoundation,
-		"source_character_index":    index,
-		"source_character_coverage": coverage,
+		"source_foundation":         compactCharacterSourceFoundation(sourceFoundation),
+		"source_character_index":    compactCharacterSourceIndex(index),
+		"source_character_coverage": compactCharacterCoverage(coverage),
 		"dossier":                   compactCharacterDossier(dossier),
-		"intent":                    intent,
+		"intent":                    compactCharacterIntent(intent),
 		"briefing":                  compactCharacterBriefing(briefing),
-		"adaptation_brief":          characterBrief,
-		"chapter_reports":           compactCharacterReports(reports),
+		"adaptation_brief":          compactCharacterAdaptationBrief(characterBrief),
 		"report_count":              len(reports),
-		"reports_truncated":         len(reports) > characterContextReportLimit,
+		"chapter_reports_omitted":   true,
+		"report_evidence_note":      "all completed reports are deterministically aggregated into source_character_index",
 	}, nil
 }
 
@@ -1088,10 +1123,10 @@ func compactCharacterReports(reports []domain.AdaptationSourceReport) []characte
 	for _, report := range reports {
 		out = append(out, characterSourceReport{
 			Chapter:        report.Chapter,
-			Title:          report.Title,
-			Characters:     limitStrings(report.Characters, characterContextListLimit),
-			CharacterFacts: limitStrings(report.CharacterFacts, characterContextListLimit),
-			Relationships:  limitSlice(report.Relationships, characterContextListLimit),
+			Title:          compactCharacterText(report.Title),
+			Characters:     compactCharacterStrings(report.Characters, characterContextListLimit),
+			CharacterFacts: compactCharacterStrings(report.CharacterFacts, characterContextFactLimit),
+			Relationships:  compactCharacterRelationshipEntries(report.Relationships, characterContextFactLimit),
 		})
 	}
 	return out
@@ -1101,48 +1136,371 @@ func compactCharacterDossier(value *domain.AdaptationCoCreateDossier) any {
 	if value == nil {
 		return nil
 	}
-	return struct {
-		SourceSignature  string                                `json:"source_signature"`
-		Overview         string                                `json:"overview"`
-		CharacterArcs    []string                              `json:"character_arcs"`
-		RelationshipMap  []domain.AdaptationRelationshipSignal `json:"relationship_map"`
-		AmbiguityRisks   []domain.AdaptationRelationshipRisk   `json:"ambiguity_risks"`
-		CoupleMilestones []domain.AdaptationRelationshipSignal `json:"couple_milestones"`
-		AdaptationNotes  []string                              `json:"adaptation_notes"`
-	}{
-		value.SourceSignature,
-		value.Overview,
-		limitStrings(value.CharacterArcs, characterContextListLimit),
-		limitSlice(value.RelationshipMap, characterContextListLimit),
-		limitSlice(value.AmbiguityRisks, characterContextListLimit),
-		limitSlice(value.CoupleMilestones, characterContextListLimit),
-		limitStrings(value.AdaptationNotes, characterContextListLimit),
-	}
+	return compactCharacterJSON(map[string]any{
+		"source_signature": value.SourceSignature,
+		"overview":         compactCharacterText(value.Overview),
+		"ambiguity_risks":  limitSlice(value.AmbiguityRisks, 1),
+		"details_omitted":  true,
+	})
 }
 
 func compactCharacterBriefing(value *domain.AdaptationCoCreateBriefing) any {
 	if value == nil {
 		return nil
 	}
-	return struct {
-		SourceSignature       string                              `json:"source_signature"`
-		IntentHash            string                              `json:"intent_hash"`
-		Overview              string                              `json:"overview"`
-		ConfirmedFacts        []string                            `json:"confirmed_facts"`
-		IntentRelevantRisks   []domain.AdaptationBriefingRisk     `json:"intent_relevant_risks"`
-		AdaptationSuggestions []string                            `json:"adaptation_suggestions"`
-		Decisions             []domain.AdaptationBriefingDecision `json:"decisions"`
-		ResolvedDecisions     []domain.AdaptationResolvedDecision `json:"resolved_decisions"`
-	}{
-		value.SourceSignature,
-		value.IntentHash,
-		value.Overview,
-		limitStrings(value.ConfirmedFacts, characterContextListLimit),
-		limitSlice(value.IntentRelevantRisks, characterContextListLimit),
-		limitStrings(value.AdaptationSuggestions, characterContextListLimit),
-		limitSlice(value.Decisions, characterContextListLimit),
-		limitSlice(value.ResolvedDecisions, characterContextListLimit),
+	return compactCharacterJSON(map[string]any{
+		"source_signature":      value.SourceSignature,
+		"intent_hash":           value.IntentHash,
+		"overview":              compactCharacterText(value.Overview),
+		"intent_relevant_risks": limitSlice(value.IntentRelevantRisks, 1),
+		"decisions":             limitSlice(value.Decisions, 1),
+		"details_omitted":       true,
+	})
+}
+
+func compactCharacterSourceFoundation(value *domain.AdaptationSourceFoundation) any {
+	if value == nil {
+		return nil
 	}
+	characters := make([]map[string]any, 0, len(value.Characters))
+	for _, character := range value.Characters {
+		characters = append(characters, map[string]any{
+			"id":   character.ID,
+			"name": compactCharacterText(character.Name),
+			"role": compactCharacterText(character.Role),
+			"tier": character.Tier,
+		})
+	}
+	return map[string]any{
+		"version":               value.Version,
+		"source_signature":      value.SourceSignature,
+		"source_chapter_count":  value.SourceChapterCount,
+		"premise":               compactCharacterText(value.Premise),
+		"formal_characters":     characters,
+		"relationships_omitted": true,
+		"world_rules_omitted":   true,
+		"outline_omitted":       true,
+	}
+}
+
+type compactCharacterIndexEntry struct {
+	ID                 string            `json:"id"`
+	CanonicalName      string            `json:"canonical_name"`
+	Aliases            []string          `json:"aliases,omitempty"`
+	Profile            *domain.Character `json:"profile,omitempty"`
+	Chapters           []int             `json:"chapters,omitempty"`
+	AppearanceCount    int               `json:"appearance_count"`
+	CausalEventCount   int               `json:"causal_event_count"`
+	DossierMajor       bool              `json:"dossier_major"`
+	CoreCast           bool              `json:"core_cast"`
+	Named              bool              `json:"named"`
+	CardEligible       bool              `json:"card_eligible"`
+	IdentityUncertain  bool              `json:"identity_uncertain"`
+	EligibilityReasons []string          `json:"eligibility_reasons,omitempty"`
+	Facts              []string          `json:"facts,omitempty"`
+	Conflicts          []string          `json:"conflicts,omitempty"`
+	Uncertainties      []string          `json:"uncertainties,omitempty"`
+}
+
+func compactCharacterSourceIndex(value domain.AdaptationSourceCharacterIndex) map[string]any {
+	characters := make([]compactCharacterIndexEntry, 0, len(value.Characters))
+	for _, entry := range value.Characters {
+		var profile *domain.Character
+		var facts []string
+		var eligibilityReasons []string
+		var conflicts []string
+		var uncertainties []string
+		if entry.CardEligible {
+			compacted := compactCharacterProfile(entry.Profile)
+			profile = &compacted
+			facts = compactCharacterStrings(entry.Facts, characterContextFactLimit)
+			eligibilityReasons = compactCharacterStrings(entry.EligibilityReasons, characterContextFactLimit)
+			conflicts = compactCharacterStrings(entry.Conflicts, characterContextFactLimit)
+			uncertainties = compactCharacterStrings(entry.Uncertainties, characterContextFactLimit)
+		} else {
+			eligibilityReasons = compactCharacterStrings(entry.EligibilityReasons, 1)
+		}
+		characters = append(characters, compactCharacterIndexEntry{
+			ID:                 entry.ID,
+			CanonicalName:      compactCharacterText(entry.CanonicalName),
+			Aliases:            compactCharacterStrings(entry.Aliases, characterContextAliasLimit),
+			Profile:            profile,
+			Chapters:           limitSlice(entry.Chapters, characterContextListLimit),
+			AppearanceCount:    entry.AppearanceCount,
+			CausalEventCount:   entry.CausalEventCount,
+			DossierMajor:       entry.DossierMajor,
+			CoreCast:           entry.CoreCast,
+			Named:              entry.Named,
+			CardEligible:       entry.CardEligible,
+			IdentityUncertain:  entry.IdentityUncertain,
+			EligibilityReasons: eligibilityReasons,
+			Facts:              facts,
+			Conflicts:          conflicts,
+			Uncertainties:      uncertainties,
+		})
+	}
+	return map[string]any{
+		"version":         value.Version,
+		"input_signature": value.InputSignature,
+		"source_chapters": value.SourceChapters,
+		"characters":      characters,
+		"evidence_policy": "all source IDs are listed; detailed chapter evidence is omitted from this bounded packet",
+	}
+}
+
+func compactCharacterCoverage(value domain.AdaptationCharacterCoverage) map[string]any {
+	return map[string]any{
+		"source_total":        value.SourceTotal,
+		"decision_required":   value.DecisionRequired,
+		"mapped":              value.Mapped,
+		"explicitly_excluded": value.ExplicitlyExcluded,
+		"pending":             value.Pending,
+		"blocking_gaps":       value.BlockingGaps,
+		"decisions_omitted":   true,
+		"decision_source":     "source_character_index plus lifecycle.source_mappings",
+	}
+}
+
+func compactCharacterIntent(value *domain.AdaptationCoCreateIntent) any {
+	if value == nil {
+		return nil
+	}
+	return map[string]any{
+		"raw_request":        compactCharacterText(value.RawRequest),
+		"granularity":        compactCharacterText(value.Granularity),
+		"rewrite_policy":     compactCharacterText(value.RewritePolicy),
+		"goals":              compactCharacterStrings(value.Goals, characterContextListLimit),
+		"heroine_names":      compactCharacterStrings(value.HeroineNames, characterContextListLimit),
+		"restricted_names":   compactCharacterStrings(value.RestrictedNames, characterContextListLimit),
+		"relationship_rules": compactCharacterStrings(value.RelationshipRules, characterContextListLimit),
+		"preserve_rules":     compactCharacterStrings(value.PreserveRules, characterContextListLimit),
+		"intent_hash":        value.IntentHash,
+	}
+}
+
+func compactCharacterAdaptationBrief(value *domain.AdaptationCharacterBrief) any {
+	if value == nil {
+		return nil
+	}
+	return map[string]any{
+		"brief":               compactCharacterText(value.Brief),
+		"source_signature":    value.SourceSignature,
+		"intent_hash":         value.IntentHash,
+		"core_cast_signature": value.CoreCastSignature,
+	}
+}
+
+func compactCharacterCoreCast(value *domain.CoreCastContract) any {
+	if value == nil {
+		return nil
+	}
+	members := make([]map[string]any, 0, len(value.Members))
+	for _, member := range value.Members {
+		members = append(members, map[string]any{
+			"id":                   member.Character.ID,
+			"name":                 compactCharacterText(member.Character.Name),
+			"aliases":              compactCharacterStrings(member.Character.Aliases, characterContextAliasLimit),
+			"role":                 compactCharacterText(member.Character.Role),
+			"gender":               member.Character.Gender,
+			"tier":                 member.Character.Tier,
+			"description":          compactCharacterText(member.Character.Description),
+			"goal":                 compactCharacterText(member.Character.Goal),
+			"conflict":             compactCharacterText(member.Character.Conflict),
+			"importance":           member.Importance,
+			"origin":               member.Origin,
+			"mainline_function":    compactCharacterText(member.MainlineFunction),
+			"source_character_ids": member.SourceCharacterIDs,
+		})
+	}
+	return compactCharacterJSON(map[string]any{
+		"mode":                   value.Mode,
+		"members":                members,
+		"planned_relationships":  compactCharacterSourceRelationships(value.PlannedRelationships),
+		"source_dispositions":    value.SourceDispositions,
+		"content_signature":      value.ContentSignature,
+		"source_signature":       value.SourceSignature,
+		"adaptation_intent_hash": value.AdaptationIntentHash,
+	})
+}
+
+func compactCharacterLifecycle(value *domain.CharacterCardLifecycle) any {
+	if value == nil {
+		return nil
+	}
+	mappings := make([]map[string]any, 0, len(value.SourceMappings))
+	for _, mapping := range value.SourceMappings {
+		mappings = append(mappings, map[string]any{
+			"id":                   mapping.ID,
+			"action":               mapping.Action,
+			"source_character_ids": mapping.SourceCharacterIDs,
+			"target_character_ids": mapping.TargetCharacterIDs,
+			"rationale":            compactCharacterShortText(mapping.Rationale),
+			"evidence_omitted":     len(mapping.Evidence) > 0,
+		})
+	}
+	return map[string]any{
+		"version":              value.Version,
+		"revision":             value.Revision,
+		"mode":                 value.Mode,
+		"candidate":            value.Candidate,
+		"input_digest":         value.InputDigest,
+		"analysis_summary":     compactCharacterText(value.AnalysisSummary),
+		"completeness":         value.Completeness,
+		"analysis_status":      value.AnalysisStatus,
+		"review_status":        value.ReviewStatus,
+		"reviewed_candidate":   value.ReviewedCandidate,
+		"review_summary":       compactCharacterText(value.ReviewSummary),
+		"findings":             compactCharacterJSON(value.Findings),
+		"confirmation_status":  value.ConfirmationStatus,
+		"error":                value.Error,
+		"source_mappings":      mappings,
+		"coverage":             compactCharacterCoverageValue(value.Coverage),
+		"source_evidence_note": "mapping evidence bodies omitted; independently review against source_character_index",
+	}
+}
+
+func compactCharacterCoverageValue(value *domain.AdaptationCharacterCoverage) any {
+	if value == nil {
+		return nil
+	}
+	return compactCharacterCoverage(*value)
+}
+
+func compactCharacterProfiles(values []domain.Character) []domain.Character {
+	out := make([]domain.Character, 0, len(values))
+	for _, value := range values {
+		out = append(out, compactCharacterProfile(value))
+	}
+	return out
+}
+
+func compactCharacterProfile(value domain.Character) domain.Character {
+	value.Name = compactCharacterText(value.Name)
+	value.Aliases = compactCharacterStrings(value.Aliases, characterContextAliasLimit)
+	value.Role = compactCharacterText(value.Role)
+	value.Description = compactCharacterText(value.Description)
+	value.Arc = compactCharacterText(value.Arc)
+	value.Traits = compactCharacterStrings(value.Traits, characterContextFactLimit)
+	value.Goal = compactCharacterText(value.Goal)
+	value.Motivation = compactCharacterText(value.Motivation)
+	value.Conflict = compactCharacterText(value.Conflict)
+	value.Voice = compactCharacterText(value.Voice)
+	value.Constraints = compactCharacterStrings(value.Constraints, characterContextFactLimit)
+	value.ContrastDetails = nil
+	value.KeyBackstory = nil
+	value.InitialState = nil
+	value.KnowledgeBoundary = nil
+	value.Notes = ""
+	return value
+}
+
+func compactCharacterSourceRelationships(values []domain.CharacterRelationship) []domain.CharacterRelationship {
+	values = limitSlice(values, characterContextListLimit)
+	for i := range values {
+		values[i].Label = compactCharacterText(values[i].Label)
+		values[i].Description = compactCharacterText(values[i].Description)
+		values[i].Since = compactCharacterText(values[i].Since)
+		values[i].Tags = compactCharacterStrings(values[i].Tags, characterContextFactLimit)
+		values[i].Constraints = compactCharacterStrings(values[i].Constraints, characterContextFactLimit)
+	}
+	return values
+}
+
+func compactCharacterRelationshipEntries(values []domain.RelationshipEntry, limit int) []domain.RelationshipEntry {
+	values = limitSlice(values, limit)
+	for i := range values {
+		values[i].CharacterA = compactCharacterText(values[i].CharacterA)
+		values[i].CharacterB = compactCharacterText(values[i].CharacterB)
+		values[i].Relation = compactCharacterText(values[i].Relation)
+	}
+	return values
+}
+
+func compactCharacterStrings(values []string, limit int) []string {
+	values = limitStrings(values, limit)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = compactCharacterText(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func compactCharacterText(value string) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) <= characterContextTextLimit {
+		return value
+	}
+	return string(runes[:characterContextTextLimit]) + "…"
+}
+
+func compactCharacterShortText(value string) string {
+	value = strings.TrimSpace(value)
+	const limit = 180
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
+}
+
+func compactCharacterJSON(value any) any {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return value
+	}
+	return compactCharacterJSONValue(decoded)
+}
+
+func compactCharacterJSONValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return compactCharacterText(typed)
+	case []any:
+		if len(typed) > characterContextListLimit {
+			typed = typed[:characterContextListLimit]
+		}
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, compactCharacterJSONValue(item))
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = compactCharacterJSONValue(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func validateCharacterContextBudget(packet map[string]any) error {
+	data, err := json.Marshal(packet)
+	if err != nil {
+		return fmt.Errorf("marshal bounded Character context: %w", err)
+	}
+	if len(data) > characterContextMaxBytes {
+		return fmt.Errorf(
+			"bounded Character context is %d bytes (budget %d); source character evidence must be compacted further: %w",
+			len(data),
+			characterContextMaxBytes,
+			errs.ErrToolPrecondition,
+		)
+	}
+	packet["context_budget"] = map[string]any{
+		"bytes":     len(data),
+		"max_bytes": characterContextMaxBytes,
+		"bounded":   true,
+	}
+	return nil
 }
 
 func limitStrings(values []string, limit int) []string {

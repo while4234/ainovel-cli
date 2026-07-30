@@ -73,7 +73,7 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 			if strings.TrimSpace(manifest.OutputDir) == "" {
 				return blockedAutoResume("core_cast_gate_blocked", fmt.Errorf("project output directory is required for core cast gate")), nil
 			}
-			if err := host.RequireManagedCoreCastGate(storepkg.NewStore(manifest.OutputDir), false); err != nil {
+			if err := host.RequireResumeCoreCastGate(storepkg.NewStore(manifest.OutputDir), false); err != nil {
 				return blockedAutoResume("core_cast_gate_blocked", err), nil
 			}
 		}
@@ -104,8 +104,16 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 			"正文修订等待签名审核或人工确认",
 		), nil
 	}
-	if err := host.RequireManagedCoreCastGate(st, false); err != nil {
+	if err := host.RequireResumeCoreCastGate(st, false); err != nil {
 		return blockedAutoResume("core_cast_gate_blocked", err), nil
+	}
+	if pending, pendingErr := host.AdaptationCharacterWorkflowPending(st); pendingErr != nil {
+		return blockedAutoResume("character_workflow_read_failed", pendingErr), nil
+	} else if pending {
+		return makeAutoResumeDecision(
+			autoResumeState{Disposition: AutoResumeActionable, Action: AutoResumeActionHost, Reason: "adaptation_character_pending"},
+			"恢复改编角色卡分析与独立审核",
+		), nil
 	}
 	if err := st.RequireManuscriptWriteReady(); err != nil {
 		recovery := st.ManuscriptRecoveryState()
@@ -242,7 +250,7 @@ func (s *ProjectSession) ExecuteAutoResume(ctx context.Context, expectedFingerpr
 	if !cocreate.coreCastResumeExempt() {
 		if strings.TrimSpace(outputDir) != "" {
 			st := storepkg.NewStore(outputDir)
-			if gateErr := host.RequireManagedCoreCastGate(st, true); gateErr != nil {
+			if gateErr := host.RequireResumeCoreCastGate(st, true); gateErr != nil {
 				return blockedAutoResume("core_cast_gate_blocked", gateErr), nil
 			}
 			if review, reviewErr := st.RunMeta.PlanningReview(); reviewErr != nil {

@@ -73,6 +73,26 @@ func TestResolveSourceMajorCharactersUsesIDNameAndAliasAndBlocksAmbiguity(t *tes
 	assertMissingCode(t, result, "source_major_unresolved")
 }
 
+func TestResolveSourceMajorCharactersUsesReviewedFormalCastForV4(t *testing.T) {
+	source := AdaptationSourceFoundation{
+		Version: 4,
+		Characters: []Character{
+			{ID: "source-lead", Name: "Lead"},
+			{ID: "source-important", Name: "Important Support"},
+		},
+	}
+	dossier := AdaptationCoCreateDossier{Batches: []AdaptationCoCreateDossierBatch{{
+		MajorCharacters: []string{"Lead", "Important Support", "evidence-only label"},
+	}}}
+	resolved, missing := ResolveSourceMajorCharacters(source, dossier)
+	if len(missing) != 0 {
+		t.Fatalf("v4 formal cast produced legacy dossier gaps: %+v", missing)
+	}
+	if len(resolved) != 2 || resolved[0].ID != "source-important" || resolved[1].ID != "source-lead" {
+		t.Fatalf("resolved formal cast = %+v", resolved)
+	}
+}
+
 func TestCoreCastSignatureBindsDraftSourceIntentAndSemanticContent(t *testing.T) {
 	base, err := NormalizeCoreCastContract(completeAdaptationCoreCast())
 	if err != nil {

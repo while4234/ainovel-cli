@@ -251,6 +251,44 @@ func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	}
 }
 
+func TestProjectSessionResumeAllowsPendingAdaptationCharacterWorkflow(t *testing.T) {
+	outputDir := t.TempDir()
+	st := storepkg.NewStore(outputDir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	signature := strings.Repeat("a", 64)
+	if _, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
+		Mode:                 domain.CoreCastModeAdaptation,
+		DraftRevision:        1,
+		DraftHash:            "adaptation-character-draft",
+		SourceSignature:      signature,
+		AdaptationIntentHash: signature,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(
+		domain.AdaptationPlanningStageTargetFoundationGenerating,
+		-1,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	fake := newFakeProjectHost()
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: outputDir}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	if _, err := session.Resume(); err != nil {
+		t.Fatalf("pending adaptation Character workflow was blocked before Host resume: %v", err)
+	}
+	if fake.resumeCalls != 1 {
+		t.Fatalf("host resume calls = %d, want 1", fake.resumeCalls)
+	}
+}
+
 func TestProjectSessionAllowsModelSwitchDuringAction(t *testing.T) {
 	fake := newFakeProjectHost()
 	fake.resumeStarted = make(chan struct{})

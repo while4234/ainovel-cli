@@ -72,7 +72,8 @@ func TestCharacterCardCompletenessByTierAndCoreCastDeclaration(t *testing.T) {
 			ID: "important", Name: "I", Role: "investigator", Gender: "female", Tier: "important",
 			Description: "uncovers the main conspiracy", Goal: "find proof", Motivation: "clear a name",
 			Conflict: "the witness lies", Arc: "trusts allies", Voice: "precise",
-			InitialState: &CharacterInitialState{Situation: "isolated"},
+			InitialState:      &CharacterInitialState{Situation: "isolated"},
+			KnowledgeBoundary: &CharacterKnowledgeBoundary{Unknown: []string{"who framed the suspect"}},
 		},
 		Character{
 			ID: "secondary", Name: "S", Role: "courier", Gender: "male", Tier: "secondary",
@@ -126,6 +127,17 @@ func TestCharacterCardCompletenessByTierAndCoreCastDeclaration(t *testing.T) {
 	if results[0].Status != CharacterCardIncomplete ||
 		!hasCharacterCardMissingCode(results[0].Missing, "gender_required") {
 		t.Fatalf("missing gender was not blocking: %+v", results[0])
+	}
+
+	missingKnowledge := CloneStoryFoundation(foundation)
+	missingKnowledge.Characters[0].KnowledgeBoundary = nil
+	results, err = EvaluateCharacterCardCompleteness(missingKnowledge, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Status != CharacterCardIncomplete ||
+		!hasCharacterCardMissingCode(results[0].Missing, "knowledge_boundary_required") {
+		t.Fatalf("missing knowledge boundary was not blocking: %+v", results[0])
 	}
 
 	noRelationships := completeCharacterCardFoundation()
@@ -354,6 +366,63 @@ func TestProjectCharacterCandidateCoreCastReportsConfirmedConflict(t *testing.T)
 	if len(findings) == 0 || !findings[0].Blocking ||
 		findings[0].IssueType != "confirmed_core_cast_conflict" {
 		t.Fatalf("confirmed conflict findings = %+v", findings)
+	}
+}
+
+func TestProjectCharacterCandidateCoreCastMarksExplicitNewMaleLeadAsProtagonist(t *testing.T) {
+	foundation := completeCharacterCardFoundation()
+	lead := CloneCharacter(foundation.Characters[0])
+	lead.ID = "new-male-lead"
+	lead.Name = "Gu Heng"
+	lead.Role = "新男主（主视角）"
+	foundation.Characters = []Character{lead}
+
+	projected, findings, err := ProjectCharacterCandidateCoreCast(foundation, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if got := projected.Members[0].Importance; got != CoreCastImportanceProtagonist {
+		t.Fatalf("new male lead importance = %q", got)
+	}
+}
+
+func TestApplyCharacterSourceMappingsToCoreCastUsesOnlyFormalSourceIDs(t *testing.T) {
+	contract := completeCharacterCardCoreCast(completeCharacterCardFoundation().Characters[0])
+	contract.Mode = CoreCastModeAdaptation
+	contract.SourceSignature = "source"
+	contract.AdaptationIntentHash = "intent"
+	mappings := []CharacterSourceMapping{
+		{
+			ID: "formal", Action: CharacterSourceKeep,
+			SourceCharacterIDs: []string{"source-hero"}, TargetCharacterIDs: []string{"core"},
+			Rationale: "preserve the reviewed source lead",
+			Evidence: []CharacterSourceEvidence{{
+				Kind: CharacterSourceAdaptationDecision, Reference: "reviewed source index",
+			}},
+		},
+		{
+			ID: "evidence", Action: CharacterSourceExclude,
+			SourceCharacterIDs: []string{"evidence-only"}, Rationale: "not a formal card",
+			Evidence: []CharacterSourceEvidence{{
+				Kind: CharacterSourceAdaptationDecision, Reference: "reviewed source index",
+			}},
+		},
+	}
+	projected, err := ApplyCharacterSourceMappingsToCoreCast(contract, mappings, []string{"source-hero"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projected.SourceDispositions) != 1 ||
+		projected.SourceDispositions[0].SourceCharacterID != "source-hero" {
+		t.Fatalf("source dispositions = %+v", projected.SourceDispositions)
+	}
+	if projected.Members[0].Origin != CoreCastOriginSource ||
+		len(projected.Members[0].SourceCharacterIDs) != 1 ||
+		projected.Members[0].SourceCharacterIDs[0] != "source-hero" {
+		t.Fatalf("source member projection = %+v", projected.Members[0])
 	}
 }
 

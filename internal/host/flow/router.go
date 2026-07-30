@@ -714,7 +714,7 @@ func routeAdaptationCharacters(state State) *Instruction {
 		return &Instruction{
 			Agent: "character",
 			Task: fmt.Sprintf(
-				`{"run_id":"character-adaptation-analyze-%s","mode":"%s","project_mode":"adaptation","instruction":"Generate the complete source-mapped core and non-core target cast from the persisted adaptation brief and bounded source character index. Do not publish StoryFoundation."}`,
+				`{"run_id":"character-adaptation-analyze-%s","mode":"%s","project_mode":"adaptation","instruction":"Generate a high-standard, complete source-mapped core and non-core target cast from the persisted adaptation brief and bounded source character index. Preserve every user-requested target-original narrative identity explicitly in role, tier, gender, viewpoint responsibility, arc, relationships, and target_original mapping. When the brief requests a new male lead as main viewpoint, label the role 新男主（主视角） and keep him separate from the source male lead. Do not publish StoryFoundation."}`,
 				routing.RunSuffix,
 				tools.CharacterRunAnalyze,
 			),
@@ -724,7 +724,7 @@ func routeAdaptationCharacters(state State) *Instruction {
 		return &Instruction{
 			Agent: "character",
 			Task: fmt.Sprintf(
-				`{"run_id":"character-adaptation-review-%s","mode":"%s","project_mode":"adaptation","instruction":"Independently review source coverage, mapping fidelity, complete character cards, knowledge boundaries, and planned relationships. Re-read character_context and do not modify the candidate."}`,
+				`{"run_id":"character-adaptation-review-%s","mode":"%s","project_mode":"adaptation","instruction":"Independently review source coverage, mapping fidelity, complete character cards, knowledge boundaries, planned relationships, and every user-requested target-original narrative identity. Treat a missing or ambiguous 新男主（主视角） label, source/target protagonist conflation, thin target-original card, or incomplete target_original mapping as blocking. Re-read character_context and do not modify the candidate."}`,
 				routing.RunSuffix,
 				tools.CharacterRunReview,
 			),
@@ -742,7 +742,7 @@ func routeOriginalCharacters(state State) *Instruction {
 		return &Instruction{
 			Agent: "character",
 			Task: fmt.Sprintf(
-				`{"run_id":"character-analyze-%s","mode":"%s","project_mode":"original","instruction":"Generate one complete staged character candidate and planned relationships from the persisted creative brief. Do not publish StoryFoundation."}`,
+				`{"run_id":"character-analyze-%s","mode":"%s","project_mode":"original","instruction":"Generate one high-standard, complete staged character candidate and planned relationships from the persisted creative brief. Every core and important card must have a causal goal/motivation/conflict/arc chain, usable initial state, non-empty knowledge boundary, distinctive voice or behavior constraints, and reviewed relationships. Do not publish StoryFoundation."}`,
 				routing.RunSuffix,
 				tools.CharacterRunAnalyze,
 			),
@@ -752,7 +752,7 @@ func routeOriginalCharacters(state State) *Instruction {
 		return &Instruction{
 			Agent: "character",
 			Task: fmt.Sprintf(
-				`{"run_id":"character-review-%s","mode":"%s","project_mode":"original","instruction":"Independently review the current persisted candidate. Re-read character_context and save findings without modifying the candidate."}`,
+				`{"run_id":"character-review-%s","mode":"%s","project_mode":"original","instruction":"Independently review the current persisted candidate against the same high-standard completeness floor used for adaptation: causal character design, knowledge boundaries, distinct voice and behavior, relationship integrity, non-core independence, user constraints, and duplication. Re-read character_context and save findings without modifying the candidate."}`,
 				routing.RunSuffix,
 				tools.CharacterRunReview,
 			),
