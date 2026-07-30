@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: declutter foundation settings workspace`:
+  hides the creative workflow while StoryFoundation is open, treats an empty
+  read-only revision-zero Foundation as an in-progress state instead of a red
+  validation failure, and gives the character directory and editor independent
+  scrolling with compact filters and Agent controls. Focused Foundation tests,
+  the Vite production build, live asset checks, and visible-Chrome checks on
+  both original and adaptation projects passed.
 - 2026-07-30 `c059ea6` `fix: simplify creative stage model settings`:
   moves 角色分析 and 角色审核 directly after 资料分析, removes the user-facing
   Agent advanced-route editor and provider-role selector, and keeps internal

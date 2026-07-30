@@ -250,6 +250,7 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
   const displayedRelationships = showingSourceOnly ? state.server.sourceFoundation?.relationships || [] : state.draft.relationships;
   const displayedWorldRules = showingSourceOnly ? state.server.sourceFoundation?.world_rules || [] : state.draft.world_rules;
   const displayedRelationshipCharacters = showingSourceOnly ? state.server.sourceFoundation?.characters || [] : state.draft.characters;
+  const validationNotice = foundationValidationPresentation(state.server, state.validation);
 
   return <div className="foundation-center">
     <header className="foundation-header"><div><span className="eyebrow">StoryFoundation</span><h1>设定中心</h1><p>统一管理原创与改编的目标故事设定；SourceFoundation 始终只读。</p></div><button className="tool-button" type="button" onClick={requestClose}>返回创作</button></header>
@@ -257,9 +258,11 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     {state.error ? <div className="error-banner" role="alert"><strong>{state.error.code}</strong><span>{state.error.message}</span></div> : null}
     {state.illegalAction ? <div className="warning-note" role="status">{state.illegalAction}</div> : null}
     {state.status === 'stale' ? <div className="foundation-stale" role="alert"><strong>服务器基线已变化，草稿仍完整保留。</strong><span>先加载最新基线，再用当前草稿重新生成 preview。</span><button className="tool-button" disabled={!state.staleServer} type="button" onClick={() => dispatch({ type: 'rebase_stale', ...requestContext() })}>以最新基线重新对比</button></div> : null}
-    {!showingSourceOnly && state.validation.summary.length ? <div aria-live="assertive" className="foundation-validation-summary" role="alert"><strong>请处理 {state.validation.summary.length} 个字段问题</strong><ul>{state.validation.summary.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
+    {!showingSourceOnly && validationNotice.kind === 'actionable' ? <div aria-live="assertive" className="foundation-validation-summary" role="alert"><strong>请处理 {validationNotice.messages.length} 个字段问题</strong><ul>{validationNotice.messages.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
+    {!showingSourceOnly && validationNotice.kind === 'generating' ? <div aria-live="polite" className="foundation-generation-status" role="status"><strong>设定正在生成，当前无需手动处理</strong><span>StoryFoundation 尚未发布，故事前提、角色和世界规则会由当前规划流程补齐；发布后页面会自动重新校验。</span></div> : null}
+    {!showingSourceOnly && validationNotice.kind === 'readonly' ? <div aria-live="polite" className="foundation-readonly-validation" role="status"><strong>当前设定只读，暂不能处理校验项</strong><span>恢复到可编辑阶段后再处理以下内容：{validationNotice.messages.join('；')}</span></div> : null}
     <nav aria-label="设定中心区域" className="foundation-tabs" role="tablist">{tabs.map(([id, label], index) => <button aria-controls={`foundation-panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} id={`foundation-tab-${id}`} key={id} role="tab" tabIndex={tab === id ? 0 : -1} type="button" onClick={() => setTab(id)} onKeyDown={(event) => moveTab(event, index, setTab)}>{label}</button>)}</nav>
-    <main aria-labelledby={`foundation-tab-${tab}`} className="foundation-panel" id={`foundation-panel-${tab}`} role="tabpanel">
+    <main aria-labelledby={`foundation-tab-${tab}`} className={`foundation-panel foundation-panel-${tab}`} id={`foundation-panel-${tab}`} role="tabpanel">
       {tab === 'overview' ? <FoundationOverview server={state.server} draft={state.draft} disabled={disabled} premiseError={state.validation.fields.premise} onPremiseChange={(premise) => edit({ premise })} onOpenCoreCast={onOpenCoreCast} /> : null}
       {tab === 'characters' ? <CharacterEditor
         value={state.draft.characters} coreCast={state.server.coreCast}
@@ -300,6 +303,16 @@ function moveTab(event, index, setTab) {
 }
 function statusLabel(status) { return ({ loading: '加载中', clean: '已同步', dirty: '有修改', previewing: '正在预览', preview_ready: '预览就绪', applying: '正在应用', auditing: '正在审查', regenerating: '正在重新生成', awaiting_outline_approval: '等待大纲 / 提案确认', completed: '已完成', failed: '修订失败', stale: '基线已过期', readonly: '只读' })[status] || status; }
 function hasUnpublishedFoundationDraft(status) { return ['dirty', 'previewing', 'preview_ready'].includes(status); }
+
+export function foundationValidationPresentation(server, validation) {
+  const messages = Array.isArray(validation?.summary) ? validation.summary : [];
+  if (!messages.length) return { kind: 'none', messages };
+  if (server?.editable) return { kind: 'actionable', messages };
+  if (server?.readonlyReason === 'planning_stage_not_editable' && Number(server?.baseRevision || 0) === 0) {
+    return { kind: 'generating', messages: [] };
+  }
+  return { kind: 'readonly', messages };
+}
 
 function legacyFoundationTab() {
   const location = globalThis.location;

@@ -3,10 +3,23 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { CoreCastEditor } from '../components/CoreCastEditor.jsx';
 import { FoundationOverview } from './FoundationOverview.jsx';
-import { FoundationLoadFailure } from './FoundationCenter.jsx';
+import { foundationValidationPresentation, FoundationLoadFailure } from './FoundationCenter.jsx';
 import { CharacterEditor } from './CharacterEditor.jsx';
 
 describe('foundation components', () => {
+  it('只读生成阶段把空基线校验解释为暂态，而不是可操作 warning', () => {
+    const validation = { summary: ['故事前提不能为空', '至少需要一个角色', '至少需要一条世界规则'] };
+    expect(foundationValidationPresentation({
+      editable: false,
+      readonlyReason: 'planning_stage_not_editable',
+      baseRevision: 0
+    }, validation)).toEqual({ kind: 'generating', messages: [] });
+    expect(foundationValidationPresentation({ editable: true, baseRevision: 0 }, validation)).toEqual({
+      kind: 'actionable',
+      messages: validation.summary
+    });
+  });
+
   it('renders a recoverable error instead of an endless loading state', () => {
     const markup = renderToStaticMarkup(<FoundationLoadFailure error={{ message: 'signature mismatch' }} onRetry={() => {}} />);
     expect(markup).toContain('StoryFoundation 加载失败');
@@ -101,6 +114,8 @@ describe('foundation components', () => {
     />);
     expect(markup).toContain('沈辞');
     expect(markup).toContain('男主心腹助理');
+    expect(markup).toContain('角色目录');
+    expect(markup).toContain('显示 1 / 共 1');
     expect(markup).toMatch(/<button class="tool-button accent" type="button"><svg[^>]*>[\s\S]*确认本轮角色候选<\/button>/);
   });
 

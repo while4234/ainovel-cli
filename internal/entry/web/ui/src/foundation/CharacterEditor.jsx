@@ -28,11 +28,13 @@ export function CharacterEditor({
 }) {
   const [selectedID, setSelectedID] = useState('');
   const [query, setQuery] = useState('');
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [filters, setFilters] = useState({ tier: 'all', core: 'all', completeness: 'all', review: 'all', source: 'all', sort: 'core' });
   const [modifiedByID, setModifiedByID] = useState({});
   const [expanded, setExpanded] = useState(() => new Set(['identity', 'core']));
   const [instruction, setInstruction] = useState('');
   const [allowSupporting, setAllowSupporting] = useState(false);
+  const [agentExpanded, setAgentExpanded] = useState(false);
   const [pendingDialog, setPendingDialog] = useState(null);
   const fieldRefs = useRef({});
   const addRef = useRef(null);
@@ -68,6 +70,14 @@ export function CharacterEditor({
     if (selectedID && displayCharacters.some((character) => character.id === selectedID)) return;
     setSelectedID(visible[0]?.id || displayCharacters[0]?.id || '');
   }, [selectedID, displayCharacters, visible]);
+
+  useEffect(() => {
+    if (!workspace) return;
+    const runStatus = workspace.run?.status;
+    if (['queued', 'running', 'failed', 'interrupted'].includes(runStatus) || !workspace.candidate) {
+      setAgentExpanded(true);
+    }
+  }, [workspace?.candidate?.digest, workspace?.run?.status]);
 
   const updateSelected = (updater) => {
     if (!selected) return;
@@ -161,36 +171,43 @@ export function CharacterEditor({
   const empty = !displayCharacters.length;
   const noMatch = !empty && !visible.length;
   return <section aria-labelledby="foundation-character-heading" className="character-workspace">
-    <div className="foundation-section-head character-workspace-head">
-      <div><h2 id="foundation-character-heading">角色卡工作台</h2><p>{showingSourceOnly ? '当前完整展示原著 SourceFoundation 角色设定（只读）；共创仅用于生成可编辑的目标改编角色卡。' : '核心与非核心角色共享同一份 Foundation 草稿；Agent 候选不会自动覆盖编辑。'}</p></div>
-      <div className="inline-actions">
-        <button ref={addRef} className="tool-button" disabled={disabled || showingSourceOnly} type="button" onClick={add}><Plus size={16} />新增角色</button>
-        <button className="tool-button" disabled={disabled || !selected || showingSourceOnly} type="button" onClick={duplicate}><Copy size={16} />复制为新角色</button>
+    <div className="character-workspace-top">
+      <div className="foundation-section-head character-workspace-head">
+        <div><h2 id="foundation-character-heading">角色卡工作台</h2><p>{showingSourceOnly ? '当前完整展示原著 SourceFoundation 角色设定（只读）；共创仅用于生成可编辑的目标改编角色卡。' : '核心与非核心角色共享同一份 Foundation 草稿；Agent 候选不会自动覆盖编辑。'}</p></div>
+        <div className="inline-actions">
+          <button ref={addRef} className="tool-button" disabled={disabled || showingSourceOnly} type="button" onClick={add}><Plus size={16} />新增角色</button>
+          <button className="tool-button" disabled={disabled || !selected || showingSourceOnly} type="button" onClick={duplicate}><Copy size={16} />复制为新角色</button>
+        </div>
       </div>
+      {showingSourceOnly ? <div className="warning-note source-only-character-note" role="status"><FileSearch size={16} />原著角色设定已按正文证据展示；只读表示不可在此改写，并不表示必须共创后才能完整查看。</div> : null}
+      {workspace?.reviewStale ? <div className="warning-note" role="status"><AlertTriangle size={16} />草稿已修改，旧角色审核立即标记为 stale；请在当前草稿上重新审核。</div> : null}
+      {workspaceLoading ? <div className="character-workspace-skeleton" aria-live="polite" role="status">正在加载角色完整度与审核状态…</div> : null}
+      <CharacterAgentPanel
+        selected={selected} workspace={workspace} disabled={agentBusy || showingSourceOnly} dirty={dirty}
+        instruction={instruction} allowSupporting={allowSupporting} expanded={agentExpanded && !showingSourceOnly}
+        onExpandedChange={setAgentExpanded}
+        onInstructionChange={setInstruction} onAllowSupportingChange={setAllowSupporting}
+        onAnalyze={onAnalyze} onReview={onReview} onRetry={onRetry} onDiscard={onDiscard} onConfirm={onConfirm}
+      />
+      {workspace?.error ? <div className="error-banner" role="alert"><strong>{workspace.error.code}</strong><span>{workspace.error.message}</span></div> : null}
+      {mode === 'adaptation' && !showingSourceOnly ? <SourceCoverage coverage={workspace?.coverage} onFilterPending={() => setFilters({ ...filters, source: 'unmapped' })} /> : null}
     </div>
-    {showingSourceOnly ? <div className="warning-note source-only-character-note" role="status"><FileSearch size={16} />原著角色设定已按正文证据展示；只读表示不可在此改写，并不表示必须共创后才能完整查看。</div> : null}
-    {workspace?.reviewStale ? <div className="warning-note" role="status"><AlertTriangle size={16} />草稿已修改，旧角色审核立即标记为 stale；请在当前草稿上重新审核。</div> : null}
-    {workspaceLoading ? <div className="character-workspace-skeleton" aria-live="polite" role="status">正在加载角色完整度与审核状态…</div> : null}
-    <CharacterAgentPanel
-      selected={selected} workspace={workspace} disabled={agentBusy || showingSourceOnly} dirty={dirty}
-      instruction={instruction} allowSupporting={allowSupporting}
-      onInstructionChange={setInstruction} onAllowSupportingChange={setAllowSupporting}
-      onAnalyze={onAnalyze} onReview={onReview} onRetry={onRetry} onDiscard={onDiscard} onConfirm={onConfirm}
-    />
-    {workspace?.error ? <div className="error-banner" role="alert"><strong>{workspace.error.code}</strong><span>{workspace.error.message}</span></div> : null}
-    {mode === 'adaptation' && !showingSourceOnly ? <SourceCoverage coverage={workspace?.coverage} onFilterPending={() => setFilters({ ...filters, source: 'unmapped' })} /> : null}
     <div className="character-layout">
       <aside aria-label="角色列表" className="character-list-pane">
         <div className="character-list-toolbar">
-          <label className="character-search"><span className="sr-only">搜索角色</span><Search aria-hidden="true" size={16} /><input placeholder="搜索姓名、别名、职责、阵营" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
-          <div className="character-filter-grid">
+          <div className="character-list-summary">
+            <strong>角色目录</strong>
+            <div><span>显示 {visible.length} / 共 {displayCharacters.length}</span><button aria-expanded={filtersExpanded} className="character-filter-toggle" type="button" onClick={() => setFiltersExpanded((current) => !current)}>{filtersExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}筛选</button></div>
+          </div>
+          <label className="character-search"><Search aria-hidden="true" size={16} /><input aria-label="搜索角色" placeholder="搜索姓名、别名、职责、阵营" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+          {filtersExpanded ? <div className="character-filter-grid">
             <Filter label="层级" value={filters.tier} onChange={(tier) => setFilters({ ...filters, tier })} options={[['all', '全部层级'], ...foundationOptions.characterTiers.map((item) => [item, tierLabels[item]])]} />
             <Filter label="核心" value={filters.core} onChange={(core) => setFilters({ ...filters, core })} options={[['all', '核心与非核心'], ['core', '仅核心'], ['non-core', '仅非核心']]} />
             <Filter label="完整度" value={filters.completeness} onChange={(completeness) => setFilters({ ...filters, completeness })} options={[['all', '全部完整度'], ['complete', '完整'], ['incomplete', '有缺口']]} />
             <Filter label="审核" value={filters.review} onChange={(review) => setFilters({ ...filters, review })} options={[['all', '全部审核'], ['passed', '通过'], ['needs_revision', '需修订'], ['stale', '已过期']]} />
             {mode === 'adaptation' ? <Filter label="来源" value={filters.source} onChange={(source) => setFilters({ ...filters, source })} options={[['all', '全部来源'], ...foundationOptions.sourceMappingActions.map((item) => [item, sourceLabels[item]]), ['unmapped', '未映射']]} /> : null}
             <Filter label="排序" value={filters.sort} onChange={(sort) => setFilters({ ...filters, sort })} options={[['core', '核心优先'], ['tier', '按层级'], ['name', '按姓名'], ['gaps', '缺口优先'], ['recent', '最近修改']]} />
-          </div>
+          </div> : null}
         </div>
         {empty ? <div className="empty-state"><UserRound size={24} /><strong>还没有角色</strong><span>添加第一张角色卡，或运行角色分析。</span></div> : null}
         {noMatch ? <div className="empty-state"><Search size={24} /><strong>没有匹配角色</strong><button className="tool-button" type="button" onClick={() => { setQuery(''); setFilters({ tier: 'all', core: 'all', completeness: 'all', review: 'all', source: 'all', sort: 'core' }); }}>清除筛选</button></div> : null}
@@ -242,15 +259,15 @@ export function CharacterEditor({
             onAcceptCharacter={acceptCharacter} onAcceptAll={acceptAllSafe}
           /> : null}
         </>}
+        {!showingSourceOnly ? <FindingPanel findings={workspace?.findings} characters={displayCharacters} completeness={workspace?.completeness} stale={workspace?.reviewStale} onFocus={focusFinding} /> : null}
       </article>
     </div>
-    {!showingSourceOnly ? <FindingPanel findings={workspace?.findings} characters={displayCharacters} completeness={workspace?.completeness} stale={workspace?.reviewStale} onFocus={focusFinding} /> : null}
     {pendingDialog ? <ModalDialog {...pendingDialog} onClose={() => setPendingDialog(null)} /> : null}
   </section>;
 }
 
 function CharacterAgentPanel({
-  selected, workspace, disabled, dirty, instruction, allowSupporting,
+  selected, workspace, disabled, dirty, instruction, allowSupporting, expanded, onExpandedChange,
   onInstructionChange, onAllowSupportingChange, onAnalyze, onReview, onRetry, onDiscard, onConfirm
 }) {
   const run = workspace?.run;
@@ -259,9 +276,27 @@ function CharacterAgentPanel({
   const canAnalyze = workspace?.allowedOperations?.includes('analyze') && !disabled && !running;
   const canReview = workspace?.allowedOperations?.includes('review') && !disabled && !running;
   const canConfirm = workspace?.allowedOperations?.includes('confirm') && !disabled && !running;
-  return <section className="character-agent-panel" aria-labelledby="character-agent-heading">
-    <div className="character-agent-copy"><Bot size={20} /><div><h3 id="character-agent-heading">Character Agent</h3><p>分析/补全创建候选；审核只产生状态与 finding。两者都不会静默改写当前草稿；重新分析会创建新候选，本轮拒绝项不会自动接受。</p></div></div>
-    <div className="character-agent-controls">
+  const statusText = running
+    ? `${run.mode === 'review' ? '角色审核' : '角色分析'}进行中`
+    : workspace?.candidate
+      ? '候选已生成，等待确认'
+      : '可分析并补全角色';
+  return <section className={`character-agent-panel ${expanded ? 'expanded' : 'collapsed'}`} aria-labelledby="character-agent-heading">
+    <div className="character-agent-summary">
+      <button aria-expanded={expanded} className="character-agent-toggle" type="button" onClick={() => onExpandedChange?.(!expanded)}>
+        <Bot size={20} />
+        <span><strong id="character-agent-heading">Character Agent</strong><small>{statusText}</small></span>
+        {expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}
+      </button>
+      <div className="inline-actions character-agent-actions">
+        <button className="tool-button accent" disabled={!canAnalyze} type="button" onClick={() => onAnalyze?.({ characterIDs: [], instruction, allowSupportingCharacters: allowSupporting })}><Sparkles size={16} />分析并补全全部角色</button>
+        <button className="tool-button" disabled={!canAnalyze || !selected} type="button" onClick={() => onAnalyze?.({ characterIDs: [selected.id], instruction, allowSupportingCharacters: allowSupporting })}><UserRound size={16} />分析当前角色</button>
+        <button className="tool-button" disabled={!canReview} type="button" onClick={() => onReview?.()}><FileSearch size={16} />审核全部角色</button>
+        <button className="tool-button accent" disabled={!canConfirm} type="button" onClick={() => onConfirm?.()}><Check size={16} />确认本轮角色候选</button>
+      </div>
+    </div>
+    {expanded ? <><div className="character-agent-controls">
+      <p className="character-agent-explanation">分析/补全创建候选；审核只产生状态与 finding。两者都不会静默改写当前草稿；重新分析会创建新候选，本轮拒绝项不会自动接受。</p>
       <label className="character-instruction"><span>本轮补充要求（可选）</span><input maxLength={1200} disabled={disabled || running} value={instruction} onChange={(event) => onInstructionChange(event.target.value)} placeholder="例如：强化配角与主角的利益冲突" /></label>
       <label className="check-row"><input checked={allowSupporting} disabled={disabled || running} type="checkbox" onChange={(event) => onAllowSupportingChange(event.target.checked)} /><span>允许新增非核心配角</span></label>
       <dl className="character-run-meta">
@@ -269,12 +304,6 @@ function CharacterAgentPanel({
         <div><dt>模式</dt><dd>{workspace?.mode === 'adaptation' ? '改编' : '原创'}</dd></div>
         <div><dt>草稿</dt><dd>{dirty ? '含未保存修改（会作为输入）' : '与基线一致'}</dd></div>
       </dl>
-      <div className="inline-actions">
-        <button className="tool-button accent" disabled={!canAnalyze} type="button" onClick={() => onAnalyze?.({ characterIDs: [], instruction, allowSupportingCharacters: allowSupporting })}><Sparkles size={16} />分析并补全全部角色</button>
-        <button className="tool-button" disabled={!canAnalyze || !selected} type="button" onClick={() => onAnalyze?.({ characterIDs: [selected.id], instruction, allowSupportingCharacters: allowSupporting })}><UserRound size={16} />分析当前角色</button>
-        <button className="tool-button" disabled={!canReview} type="button" onClick={() => onReview?.()}><FileSearch size={16} />审核全部角色</button>
-        <button className="tool-button accent" disabled={!canConfirm} type="button" onClick={() => onConfirm?.()}><Check size={16} />确认本轮角色候选</button>
-      </div>
     </div>
     {run ? <div className={`character-run-status ${run.status}`} aria-live="polite" role="status">
       <div><strong>{run.mode === 'review' ? '角色审核' : '角色分析'} · {runLabel(run.status)}</strong><span>阶段：{run.stage || '—'} · attempt {run.attempt || 1}</span></div>
@@ -286,7 +315,7 @@ function CharacterAgentPanel({
         {failed ? <button className="tool-button" type="button" onClick={onRetry}><RefreshCw size={16} />安全重试</button> : null}
         {workspace?.allowedOperations?.includes('discard') && !running ? <button className="tool-button danger-ghost" type="button" onClick={onDiscard}><X size={16} />丢弃本轮候选</button> : null}
       </div>
-    </div> : null}
+    </div> : null}</> : null}
   </section>;
 }
 

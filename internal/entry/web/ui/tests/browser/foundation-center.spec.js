@@ -9,7 +9,7 @@ test.beforeEach(async ({ page }) => {
 
 test('原创完整 candidate → 服务端 preview → apply 使用持久化 preview ID 与 idempotency key', async ({ page }) => {
   await page.getByRole('tab', { name: '角色卡' }).click();
-  await expect(page.getByLabel('姓名')).toHaveValue('林舟');
+  await expect(page.getByLabel('姓名', { exact: true })).toHaveValue('林舟');
   await page.getByRole('tab', { name: '概览' }).click();
   await page.getByRole('tab', { name: '角色卡' }).press('Home');
   await expect(page.getByRole('tab', { name: '概览' })).toBeFocused();
@@ -49,7 +49,7 @@ test('改编 SourceFoundation 只读并展示映射、source-fidelity 与 Adapta
   await expect(page.getByText('改编影响与 source-fidelity')).toBeVisible();
   await expect(page.getByText('重确认 AdaptationPlan').locator('..')).toContainText('需要');
   await page.getByRole('tab', { name: '角色卡' }).click();
-  await page.getByLabel('姓名').fill('林舟（目标修订）');
+  await page.getByLabel('姓名', { exact: true }).fill('林舟（目标修订）');
   await page.getByRole('button', { name: '预览差异与影响' }).click();
   await expect(page.getByText('影响 CoreCast')).toBeVisible();
   await expect(page.getByText('重确认 CoreCast').locator('..').first()).toContainText('需要');
@@ -61,30 +61,45 @@ test('仅有来源分析时统一角色卡显示只读来源证据且固定栏�
   await page.reload();
   await page.getByRole('tab', { name: '角色卡' }).click();
   await expect(page.getByRole('heading', { name: '原著林舟' })).toBeVisible();
-  await expect(page.getByText('来源角色（只读，尚未转为目标角色）')).toBeVisible();
+  await expect(page.getByText('这是原著分析得到的只读角色，不是改编目标角色。')).toBeVisible();
   await expect(page.getByRole('heading', { name: '来源映射与证据（只读）' })).toBeVisible();
-  await expect(page.getByText('原著林舟')).toBeVisible();
-  await expect(page.getByText('旧王继承人')).toBeVisible();
-  await expect(page.getByText('背负流亡王庭的秘密，追查城市灾变。')).toBeVisible();
-  await expect(page.getByText('原著角色在灾变中守城。')).toBeVisible();
+  const sourceEvidence = page.locator('.source-character-grid article');
+  await expect(sourceEvidence.getByText('原著林舟', { exact: true })).toBeVisible();
+  await expect(sourceEvidence.getByText('旧王继承人', { exact: true })).toBeVisible();
+  await expect(sourceEvidence.getByText('背负流亡王庭的秘密，追查城市灾变。', { exact: true })).toBeVisible();
 
   const layout = await page.locator('.foundation-center').evaluate((center) => {
     const header = center.querySelector('.foundation-header').getBoundingClientRect();
     const tabs = center.querySelector('.foundation-tabs').getBoundingClientRect();
     const tabButtons = [...center.querySelectorAll('.foundation-tabs button')].map((button) => button.getBoundingClientRect());
     const panel = center.querySelector('.foundation-panel');
+    const list = center.querySelector('.character-list-pane');
+    const detail = center.querySelector('.character-detail-pane');
     const actions = center.querySelector('.foundation-actions').getBoundingClientRect();
-    panel.scrollTop = panel.scrollHeight;
     const panelBox = panel.getBoundingClientRect();
-    const lastCard = panel.querySelector('.finding-panel').getBoundingClientRect();
+    const listBox = list.getBoundingClientRect();
+    const detailBox = detail.getBoundingClientRect();
+    const listScrollBefore = list.scrollTop;
+    detail.scrollTop = detail.scrollHeight;
     return {
       headerVisible: header.top >= center.getBoundingClientRect().top,
       tabsFullyVisible: tabButtons.every((button) => button.top >= tabs.top && button.bottom <= tabs.bottom),
       panelEndsBeforeActions: panelBox.bottom <= actions.top + 1,
-      lastCardEndsInsidePanel: lastCard.bottom <= panelBox.bottom + 1
+      panesDoNotOverlapActions: listBox.bottom <= actions.top + 1 && detailBox.bottom <= actions.top + 1,
+      panelOwnsNoVerticalScroll: getComputedStyle(panel).overflowY === 'hidden',
+      detailOwnsVerticalScroll: getComputedStyle(detail).overflowY === 'auto' && detail.scrollTop > 0,
+      detailScrollKeepsListStable: list.scrollTop === listScrollBefore
     };
   });
-  expect(layout).toEqual({ headerVisible: true, tabsFullyVisible: true, panelEndsBeforeActions: true, lastCardEndsInsidePanel: true });
+  expect(layout).toEqual({
+    headerVisible: true,
+    tabsFullyVisible: true,
+    panelEndsBeforeActions: true,
+    panesDoNotOverlapActions: true,
+    panelOwnsNoVerticalScroll: true,
+    detailOwnsVerticalScroll: true,
+    detailScrollKeepsListStable: true
+  });
 });
 
 test('角色分析候选按字段接受、审核 finding 定位并在继续编辑后 stale', async ({ page }) => {
@@ -102,7 +117,9 @@ test('角色分析候选按字段接受、审核 finding 定位并在继续编�
   await expect(page.getByRole('heading', { name: 'Agent 候选比较' })).toBeVisible();
   const voiceCompare = page.locator('.candidate-field-list article').filter({ hasText: '语言风格' });
   await expect(voiceCompare).toContainText('克制、精确');
-  await voiceCompare.getByRole('button', { name: '接受此字段' }).click();
+  const acceptVoice = voiceCompare.getByRole('button', { name: '接受此字段' });
+  await page.locator('.character-detail-pane').evaluate((pane) => { pane.scrollTop = pane.scrollHeight; });
+  await acceptVoice.click();
   const acceptDialog = page.getByRole('alertdialog', { name: '接受核心角色字段？' });
   await expect(acceptDialog).toBeVisible();
   await acceptDialog.getByRole('button', { name: '接受此字段' }).click();
@@ -119,11 +136,11 @@ test('角色分析候选按字段接受、审核 finding 定位并在继续编�
 
 test('核心角色在统一工作区可编辑并由高风险 preview 门控；离开时保护草稿', async ({ page }) => {
   await page.getByRole('tab', { name: '角色卡' }).click();
-  await page.getByLabel('姓名').fill('林舟（新身份）');
+  await page.getByLabel('姓名', { exact: true }).fill('林舟（新身份）');
   await page.getByRole('button', { name: '返回创作' }).click();
   await expect(page.getByRole('alertdialog', { name: '离开并保留未发布草稿？' })).toBeVisible();
   await page.getByRole('button', { name: '继续编辑' }).click();
-  await expect(page.getByLabel('姓名')).toHaveValue('林舟（新身份）');
+  await expect(page.getByLabel('姓名', { exact: true })).toHaveValue('林舟（新身份）');
   await page.getByRole('button', { name: '预览差异与影响' }).click();
   await expect(page.getByText('影响 CoreCast')).toBeVisible();
   await expect(page.getByRole('button', { name: '应用当前 preview ID' })).toBeDisabled();
