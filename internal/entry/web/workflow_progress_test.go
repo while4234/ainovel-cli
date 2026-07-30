@@ -80,8 +80,9 @@ func TestNormalWorkflowProgressPresentsFoundationCheckpointBeforeFormalOutline(t
 
 func TestNormalWorkflowProgressPlanningReviewSupersedesStaleCoCreateFailure(t *testing.T) {
 	snapshot := host.UISnapshot{PlanningReview: &host.PlanningReviewSummary{
-		Status: domain.PlanningReviewStatusPending,
-		Kind:   domain.PlanningReviewKindChapterOutline,
+		Status:           domain.PlanningReviewStatusPending,
+		Kind:             domain.PlanningReviewKindChapterOutline,
+		TargetTotalWords: 8_000,
 	}}
 	coCreate := &webCoCreateState{
 		Kind:   webCoCreateKindNormal,
@@ -98,6 +99,28 @@ func TestNormalWorkflowProgressPlanningReviewSupersedesStaleCoCreateFailure(t *t
 	}
 	if progress.Error != "" || progress.Recoverable {
 		t.Fatalf("stale co-create failure leaked into planning progress: %+v", progress)
+	}
+	if workflowStepByID(progress.Steps, "volume_plan") != nil {
+		t.Fatalf("short original workflow unexpectedly includes volume planning: %+v", progress.Steps)
+	}
+}
+
+func TestNormalWorkflowProgressKeepsVolumeAndChapterReviewsSeparateForLongForm(t *testing.T) {
+	progress := normalWorkflowProgress("project-long", host.UISnapshot{
+		PlanningReview: &host.PlanningReviewSummary{
+			Status:           domain.PlanningReviewStatusPending,
+			Kind:             domain.PlanningReviewKindVolumeSplit,
+			TargetTotalWords: 100_000,
+		},
+	}, nil)
+
+	volume := workflowStepByID(progress.Steps, "volume_plan")
+	chapter := workflowStepByID(progress.Steps, "chapter_outline")
+	if progress.CurrentStep != "volume_plan" || volume == nil || chapter == nil {
+		t.Fatalf("long workflow does not expose both planning gates: %+v", progress)
+	}
+	if volume.Status != WorkflowStatusWaitingConfirmation || chapter.Status != WorkflowStatusIdle {
+		t.Fatalf("volume/chapter status = %q/%q, want waiting/idle", volume.Status, chapter.Status)
 	}
 }
 
@@ -385,13 +408,13 @@ func TestAdaptationWorkflowProgressPrioritizesRunningProposalOverReviewArtifacts
 		[]string{projectActionKindAdaptationProposal},
 	)
 
-	if progress.Status != WorkflowStatusRunning || progress.CurrentStep != "proposal_review" {
-		t.Fatalf("status/step = %q/%q, want running/proposal_review", progress.Status, progress.CurrentStep)
+	if progress.Status != WorkflowStatusRunning || progress.CurrentStep != "chapter_outline" {
+		t.Fatalf("status/step = %q/%q, want running/chapter_outline", progress.Status, progress.CurrentStep)
 	}
 	if progress.NextAction != nil {
 		t.Fatalf("running proposal unexpectedly requires confirmation: %+v", progress.NextAction)
 	}
-	step := workflowStepByID(progress.Steps, "proposal_review")
+	step := workflowStepByID(progress.Steps, "chapter_outline")
 	if step == nil || step.Status != WorkflowStatusRunning || step.Message != "正在生成并逐批审核章节细纲" {
 		t.Fatalf("proposal step = %+v", step)
 	}
@@ -401,6 +424,11 @@ func TestAdaptationWorkflowProgressKeepsDetailAuditFailureInProposalStage(t *tes
 	snapshot := host.UISnapshot{
 		AdaptationVolumeReview: &domain.AdaptationVolumeReview{
 			Status: domain.AdaptationPlanStatusVolumeReview,
+		},
+		AdaptationPlanningWorkflow: &domain.AdaptationPlanningWorkflow{
+			Version:  domain.AdaptationPlanningWorkflowVersion,
+			Stage:    domain.AdaptationPlanningStageDetailsGenerating,
+			Revision: 4,
 		},
 	}
 	latest := &APIHostEvent{
@@ -414,10 +442,10 @@ func TestAdaptationWorkflowProgressKeepsDetailAuditFailureInProposalStage(t *tes
 	}
 	progress := adaptationWorkflowProgress("project-adaptation", snapshot, nil, latest, nil)
 
-	if progress.Status != WorkflowStatusFailed || progress.CurrentStep != "proposal_review" {
-		t.Fatalf("status/step=%q/%q, want failed/proposal_review", progress.Status, progress.CurrentStep)
+	if progress.Status != WorkflowStatusFailed || progress.CurrentStep != "chapter_outline" {
+		t.Fatalf("status/step=%q/%q, want failed/chapter_outline", progress.Status, progress.CurrentStep)
 	}
-	step := workflowStepByID(progress.Steps, "proposal_review")
+	step := workflowStepByID(progress.Steps, "chapter_outline")
 	if step == nil || step.Status != WorkflowStatusFailed || step.Current != 123 || step.Total != 370 {
 		t.Fatalf("proposal step=%+v", step)
 	}
@@ -426,6 +454,78 @@ func TestAdaptationWorkflowProgressKeepsDetailAuditFailureInProposalStage(t *tes
 	}
 	if progress.Error != latest.Detail {
 		t.Fatalf("error=%q, want %q", progress.Error, latest.Detail)
+	}
+}
+
+func TestAdaptationWorkflowProgressSeparatesVolumeReviewFromChapterOutlineReview(t *testing.T) {
+	snapshot := host.UISnapshot{
+		AdaptationVolumeReview: &domain.AdaptationVolumeReview{
+			Status:             domain.AdaptationPlanStatusVolumeReview,
+			Granularity:        domain.AdaptationGranularityFree,
+			TargetChapterCount: 24,
+		},
+		AdaptationPlanningWorkflow: &domain.AdaptationPlanningWorkflow{
+			Version:  domain.AdaptationPlanningWorkflowVersion,
+			Stage:    domain.AdaptationPlanningStageVolumeReviewPending,
+			Revision: 3,
+		},
+	}
+	progress := adaptationWorkflowProgress("project-adaptation", snapshot, nil, nil, nil)
+
+	volume := workflowStepByID(progress.Steps, "volume_plan")
+	chapter := workflowStepByID(progress.Steps, "chapter_outline")
+	if progress.CurrentStep != "volume_plan" || progress.Status != WorkflowStatusWaitingConfirmation {
+		t.Fatalf("volume review progress = %+v", progress)
+	}
+	if volume == nil || volume.Status != WorkflowStatusWaitingConfirmation || chapter == nil || chapter.Status != WorkflowStatusIdle {
+		t.Fatalf("volume/chapter status = %+v/%+v", volume, chapter)
+	}
+	if progress.NextAction == nil || progress.NextAction.Label != "审核分卷并生成章节细纲" {
+		t.Fatalf("volume next action = %+v", progress.NextAction)
+	}
+}
+
+func TestAdaptationWorkflowProgressKeepsVolumeGateForLongSourceBeforePlanning(t *testing.T) {
+	snapshot := host.UISnapshot{
+		AdaptationSourceFoundation: &domain.AdaptationSourceFoundation{SourceChapterCount: 17},
+		AdaptationFoundationReview: &domain.AdaptationFoundationReview{State: domain.AdaptationFoundationReviewPending},
+		AdaptationPlanningWorkflow: &domain.AdaptationPlanningWorkflow{
+			Version:  domain.AdaptationPlanningWorkflowVersion,
+			Stage:    domain.AdaptationPlanningStageFoundationReviewPending,
+			Revision: 2,
+		},
+	}
+	progress := adaptationWorkflowProgress("project-long-adaptation", snapshot, nil, nil, nil)
+
+	if workflowStepByID(progress.Steps, "volume_plan") == nil || workflowStepByID(progress.Steps, "chapter_outline") == nil {
+		t.Fatalf("long adaptation does not expose both planning gates: %+v", progress.Steps)
+	}
+	if progress.CurrentStep != "target_foundation" {
+		t.Fatalf("current step = %q, want target_foundation", progress.CurrentStep)
+	}
+}
+
+func TestAdaptationWorkflowProgressOmitsVolumeForDirectShortProposal(t *testing.T) {
+	snapshot := host.UISnapshot{
+		AdaptationProposal: &domain.AdaptationPlan{
+			Status:      domain.AdaptationPlanStatusProposal,
+			Granularity: domain.AdaptationGranularityFree,
+			Chapters:    []domain.AdaptationChapterPlan{{Chapter: 1}, {Chapter: 2}},
+		},
+		AdaptationSourceFoundation: &domain.AdaptationSourceFoundation{SourceChapterCount: 2},
+		AdaptationPlanningWorkflow: &domain.AdaptationPlanningWorkflow{
+			Version:  domain.AdaptationPlanningWorkflowVersion,
+			Stage:    domain.AdaptationPlanningStageProposalReviewPending,
+			Revision: 2,
+		},
+	}
+	progress := adaptationWorkflowProgress("project-short-adaptation", snapshot, nil, nil, nil)
+
+	if workflowStepByID(progress.Steps, "volume_plan") != nil {
+		t.Fatalf("direct short adaptation unexpectedly includes volume planning: %+v", progress.Steps)
+	}
+	if progress.CurrentStep != "chapter_outline" || progress.Status != WorkflowStatusWaitingConfirmation {
+		t.Fatalf("direct short adaptation progress = %+v", progress)
 	}
 }
 

@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: split original and adaptation planning flows`:
+  gives adaptation volume review and chapter-outline review independent
+  progress stages, maps them to the durable planning workflow, and removes the
+  volume step for original/direct-adaptation short paths once scale evidence
+  says the backend will skip it. All WorkflowProgress tests and diff checks
+  pass; the full Web suite retains unrelated rollback, library, and action
+  revision lease fixture failures.
 - 2026-07-30 `fc580ca` `fix: complete adaptation character card workflow`:
   removes the circular CoreCast resume gate, bounds Character Agent evidence
   below the structured-call limit, restricts formal source cards to protagonists

@@ -222,16 +222,56 @@ func containsAdaptationAction(kinds []string) bool {
 	return false
 }
 
-func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate *webCoCreateState) WorkflowProgress {
+const (
+	normalLayeredPlanningWordThreshold = 50_000
+	adaptationVolumeMinTargetChapters  = 18
+	adaptationVolumeMinSourceChapters  = 8
+	adaptationVolumeMinSourceRunes     = 40_000
+)
+
+func normalWorkflowSteps(snapshot host.UISnapshot, coCreate *webCoCreateState) []WorkflowStep {
 	steps := []WorkflowStep{
 		{ID: "creative_intent", Label: "创意输入", Status: WorkflowStatusIdle},
 		{ID: "structure", Label: "篇幅与结构", Status: WorkflowStatusIdle},
 		{ID: "clarification", Label: "澄清决策", Status: WorkflowStatusIdle},
 		{ID: "foundation", Label: "完整设定确认", Status: WorkflowStatusIdle},
-		{ID: "volume_plan", Label: "分卷规划与审核", Status: WorkflowStatusIdle},
-		{ID: "chapter_outline", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
-		{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
 	}
+	if normalWorkflowUsesVolumePlan(snapshot, coCreate) {
+		steps = append(steps, WorkflowStep{ID: "volume_plan", Label: "分卷规划与审核", Status: WorkflowStatusIdle})
+	}
+	return append(steps,
+		WorkflowStep{ID: "chapter_outline", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
+		WorkflowStep{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
+	)
+}
+
+func normalWorkflowUsesVolumePlan(snapshot host.UISnapshot, coCreate *webCoCreateState) bool {
+	if snapshot.Layered || len(snapshot.LayeredOutline) > 0 {
+		return true
+	}
+	if review := snapshot.PlanningReview; review != nil {
+		if review.Kind == domain.PlanningReviewKindVolumeSplit {
+			return true
+		}
+		if review.TargetTotalWords > 0 {
+			return review.TargetTotalWords >= normalLayeredPlanningWordThreshold
+		}
+		if review.Kind == domain.PlanningReviewKindChapterOutline {
+			return false
+		}
+	}
+	if coCreate != nil && coCreate.TargetTotalWords > 0 {
+		return coCreate.TargetTotalWords >= normalLayeredPlanningWordThreshold
+	}
+	// Until scale is known, retain the possible long-form gate. Once the user
+	// chooses a short/mid target, the step disappears instead of being shown as
+	// a stage the backend will never execute.
+	return true
+}
+
+func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate *webCoCreateState) WorkflowProgress {
+	usesVolumePlan := normalWorkflowUsesVolumePlan(snapshot, coCreate)
+	steps := normalWorkflowSteps(snapshot, coCreate)
 	revision := normalWorkflowRevision(snapshot, coCreate)
 	progress := WorkflowProgress{
 		Workflow: workflowNormal,
@@ -248,7 +288,7 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 	// even though a reviewed proposal is waiting for confirmation.
 	if review := snapshot.PlanningReview; review != nil &&
 		(review.Status == domain.PlanningReviewStatusPending || review.Status == domain.PlanningReviewStatusCollecting) {
-		progress.CurrentStep, progress.Status, progress.NextAction = normalPlanningReviewProgress(progress, review)
+		progress.CurrentStep, progress.Status, progress.NextAction = normalPlanningReviewProgress(progress, review, usesVolumePlan)
 		if review.Status == domain.PlanningReviewStatusCollecting && !snapshot.IsRunning {
 			progress.Status = WorkflowStatusPaused
 			progress.Recoverable = true
@@ -281,9 +321,12 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 			progress.Steps = setStep(progress.Steps, "clarification", WorkflowStatusFailed, 0, 0, progress.Error)
 			progress.NextAction = nextWorkflowAction(progress, "retry_cocreate", "重试共创", false)
 		case coCreate.CanStart:
-			progress.CurrentStep = "volume_plan"
-			progress.Steps = completeStepsBefore(progress.Steps, "volume_plan")
-			progress.Steps = setStep(progress.Steps, "volume_plan", WorkflowStatusWaitingConfirmation, 0, 0, "共创方向已就绪，确认后保存为详细提案生成点")
+			progress.CurrentStep = "chapter_outline"
+			if usesVolumePlan {
+				progress.CurrentStep = "volume_plan"
+			}
+			progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+			progress.Steps = setStep(progress.Steps, progress.CurrentStep, WorkflowStatusWaitingConfirmation, 0, 0, "共创方向已就绪，确认后保存并进入正式规划")
 			progress.NextAction = nextWorkflowAction(progress, "commit_cocreate", "完成共创", true)
 		default:
 			progress.NextAction = nextWorkflowAction(progress, "continue_cocreate", "继续共创", true)
@@ -300,7 +343,7 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 	return progress
 }
 
-func normalPlanningReviewProgress(progress WorkflowProgress, review *host.PlanningReviewSummary) (string, WorkflowStatus, *WorkflowNextAction) {
+func normalPlanningReviewProgress(progress WorkflowProgress, review *host.PlanningReviewSummary, usesVolumePlan bool) (string, WorkflowStatus, *WorkflowNextAction) {
 	status := WorkflowStatusRunning
 	if review.Status == domain.PlanningReviewStatusPending {
 		status = WorkflowStatusWaitingConfirmation
@@ -317,6 +360,9 @@ func normalPlanningReviewProgress(progress WorkflowProgress, review *host.Planni
 		if status == WorkflowStatusWaitingConfirmation {
 			action = nextWorkflowAction(progress, "confirm_planning", "生成详细提案", true)
 		}
+		if !usesVolumePlan {
+			return "chapter_outline", status, action
+		}
 		return "volume_plan", status, action
 	case domain.PlanningReviewKindVolumeSplit:
 		if status == WorkflowStatusWaitingConfirmation {
@@ -332,6 +378,91 @@ func normalPlanningReviewProgress(progress WorkflowProgress, review *host.Planni
 	}
 }
 
+func adaptationWorkflowSteps(snapshot host.UISnapshot, coCreate *webCoCreateState) []WorkflowStep {
+	steps := []WorkflowStep{
+		{ID: "source", Label: "原文导入", Status: WorkflowStatusIdle},
+		{ID: "analysis", Label: "原文分析", Status: WorkflowStatusIdle},
+		{ID: "contract", Label: "改编契约", Status: WorkflowStatusIdle},
+		{ID: "target_foundation", Label: "目标设定", Status: WorkflowStatusIdle},
+	}
+	if adaptationWorkflowUsesVolumePlan(snapshot, coCreate) {
+		steps = append(steps, WorkflowStep{ID: "volume_plan", Label: "分卷规划与审核", Status: WorkflowStatusIdle})
+	}
+	return append(steps,
+		WorkflowStep{ID: "chapter_outline", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
+		WorkflowStep{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
+		WorkflowStep{ID: "quality_audit", Label: "质量审计", Status: WorkflowStatusIdle},
+	)
+}
+
+func adaptationWorkflowUsesVolumePlan(snapshot host.UISnapshot, coCreate *webCoCreateState) bool {
+	if snapshot.AdaptationVolumeReview != nil {
+		return true
+	}
+	if workflow := snapshot.AdaptationPlanningWorkflow; workflow != nil {
+		switch workflow.Stage {
+		case domain.AdaptationPlanningStageVolumeReviewPending, domain.AdaptationPlanningStageDetailsGenerating:
+			return true
+		}
+	}
+
+	plan := snapshot.AdaptationProposal
+	if plan == nil {
+		plan = snapshot.AdaptationPlan
+	}
+	granularity := ""
+	if plan != nil {
+		granularity = strings.TrimSpace(plan.Granularity)
+	}
+	if granularity == "" && coCreate != nil {
+		granularity = strings.TrimSpace(coCreate.AdaptMode)
+	}
+	if granularity != "" && domain.NormalizeAdaptationGranularity(granularity) == domain.AdaptationGranularityChapter {
+		return false
+	}
+
+	sourceChapterCount := 0
+	if snapshot.AdaptationSourceFoundation != nil {
+		sourceChapterCount = snapshot.AdaptationSourceFoundation.SourceChapterCount
+	}
+	if plan != nil {
+		if len(plan.Chapters) >= adaptationVolumeMinTargetChapters ||
+			plan.SourceTotalRunes >= adaptationVolumeMinSourceRunes ||
+			adaptationPlanSourceChapterCount(plan) >= adaptationVolumeMinSourceChapters {
+			return true
+		}
+	}
+	if sourceChapterCount >= adaptationVolumeMinSourceChapters {
+		return true
+	}
+	if coCreate != nil && coCreate.TargetTotalWords >= normalLayeredPlanningWordThreshold {
+		return true
+	}
+	if plan != nil || sourceChapterCount > 0 || (coCreate != nil && coCreate.TargetTotalWords > 0) {
+		return false
+	}
+	// Legacy or not-yet-sized projects keep the potential checkpoint visible
+	// until source scale and granularity make the direct path explicit.
+	return true
+}
+
+func adaptationPlanSourceChapterCount(plan *domain.AdaptationPlan) int {
+	if plan == nil {
+		return 0
+	}
+	maxChapter := 0
+	for _, event := range plan.SourceEvents {
+		maxChapter = max(maxChapter, event.SourceChapter)
+	}
+	for _, chapter := range plan.Chapters {
+		maxChapter = max(maxChapter, chapter.SourceRange.To)
+		for _, sourceChapter := range chapter.SourceChapters {
+			maxChapter = max(maxChapter, sourceChapter)
+		}
+	}
+	return maxChapter
+}
+
 func adaptationWorkflowProgress(
 	projectID string,
 	snapshot host.UISnapshot,
@@ -339,15 +470,7 @@ func adaptationWorkflowProgress(
 	latest *APIHostEvent,
 	actionKinds []string,
 ) WorkflowProgress {
-	steps := []WorkflowStep{
-		{ID: "source", Label: "原文导入", Status: WorkflowStatusIdle},
-		{ID: "analysis", Label: "原文分析", Status: WorkflowStatusIdle},
-		{ID: "contract", Label: "改编契约", Status: WorkflowStatusIdle},
-		{ID: "target_foundation", Label: "目标设定", Status: WorkflowStatusIdle},
-		{ID: "proposal_review", Label: "章节细纲与审核", Status: WorkflowStatusIdle},
-		{ID: "writing", Label: "正文创作", Status: WorkflowStatusIdle, Current: snapshot.CompletedCount, Total: snapshot.TotalChapters},
-		{ID: "quality_audit", Label: "质量审计", Status: WorkflowStatusIdle},
-	}
+	steps := adaptationWorkflowSteps(snapshot, coCreate)
 	revision := adaptationWorkflowRevision(snapshot, coCreate, latest)
 	progress := WorkflowProgress{
 		Workflow: workflowAdaptation,
@@ -357,7 +480,7 @@ func adaptationWorkflowProgress(
 		Steps:    steps,
 	}
 
-	if currentStep, message, running := adaptationRunningPresentation(actionKinds); running {
+	if currentStep, message, running := adaptationRunningPresentation(actionKinds, snapshot, coCreate); running {
 		progress.Status = WorkflowStatusRunning
 		progress.CurrentStep = currentStep
 		progress.Steps = completeStepsBefore(progress.Steps, currentStep)
@@ -414,16 +537,56 @@ func adaptationWorkflowProgress(
 	if proposal == nil {
 		proposal = snapshot.AdaptationPlan
 	}
-	if latest != nil && snapshot.AdaptationVolumeReview != nil {
+	planningStep := adaptationPlanningStep(snapshot, coCreate)
+	if latest != nil && planningStep != "" {
 		stepStatus := workflowStatusFromAdaptationEvent(*latest)
 		if stepStatus == WorkflowStatusFailed || stepStatus == WorkflowStatusPaused {
-			progress.CurrentStep = "proposal_review"
+			progress.CurrentStep = planningStep
 			progress.Status = stepStatus
 			progress.Steps = completeStepsBefore(steps, progress.CurrentStep)
 			progress.Steps = setStep(progress.Steps, progress.CurrentStep, stepStatus, latest.Current, latest.Total, latest.Summary)
 			progress.Recoverable = true
 			progress.Error = strings.TrimSpace(latest.Detail)
-			progress.NextAction = nextWorkflowAction(progress, "resume_adaptation_proposal_details", "继续章节详细提案", false)
+			actionID, actionLabel := "resume_adaptation_proposal_details", "继续章节详细提案"
+			if planningStep == "volume_plan" {
+				actionID, actionLabel = "resume_adaptation_proposal", "继续分卷规划"
+			}
+			progress.NextAction = nextWorkflowAction(progress, actionID, actionLabel, false)
+			return progress
+		}
+	}
+
+	if workflow := snapshot.AdaptationPlanningWorkflow; workflow != nil {
+		switch workflow.Stage {
+		case domain.AdaptationPlanningStageSkeletonGenerating:
+			progress.CurrentStep = planningStep
+			progress.Status = WorkflowStatusRunning
+			progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+			message := "正在生成分卷规划"
+			if progress.CurrentStep == "chapter_outline" {
+				message = "当前规模无需分卷，正在生成章节细纲"
+			}
+			progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, message)
+			return progress
+		case domain.AdaptationPlanningStageVolumeReviewPending:
+			progress.CurrentStep = "volume_plan"
+			progress.Status = WorkflowStatusWaitingConfirmation
+			progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+			progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "分卷规划已生成，等待审核")
+			progress.NextAction = nextWorkflowAction(progress, "confirm_adaptation_proposal", "审核分卷并生成章节细纲", true)
+			return progress
+		case domain.AdaptationPlanningStageDetailsGenerating:
+			progress.CurrentStep = "chapter_outline"
+			progress.Status = WorkflowStatusRunning
+			progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+			progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "分卷已通过，正在生成并审核章节细纲")
+			return progress
+		case domain.AdaptationPlanningStageProposalReviewPending:
+			progress.CurrentStep = "chapter_outline"
+			progress.Status = WorkflowStatusWaitingConfirmation
+			progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+			progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "章节细纲已生成，等待审核")
+			progress.NextAction = nextWorkflowAction(progress, "confirm_adaptation_proposal", "确认章节细纲", true)
 			return progress
 		}
 	}
@@ -442,12 +605,21 @@ func adaptationWorkflowProgress(
 		}
 	}
 
-	if snapshot.AdaptationVolumeReview != nil || (proposal != nil && proposal.Status != domain.AdaptationPlanStatusConfirmed) {
-		progress.CurrentStep = "proposal_review"
+	if snapshot.AdaptationVolumeReview != nil {
+		progress.CurrentStep = "volume_plan"
 		progress.Status = WorkflowStatusWaitingConfirmation
 		progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
-		progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "改编提案已生成，等待确认")
-		progress.NextAction = nextWorkflowAction(progress, "confirm_adaptation_proposal", "确认改编提案", true)
+		progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "分卷规划已生成，等待审核")
+		progress.NextAction = nextWorkflowAction(progress, "confirm_adaptation_proposal", "审核分卷并生成章节细纲", true)
+		return progress
+	}
+
+	if proposal != nil && proposal.Status != domain.AdaptationPlanStatusConfirmed {
+		progress.CurrentStep = "chapter_outline"
+		progress.Status = WorkflowStatusWaitingConfirmation
+		progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+		progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "章节细纲已生成，等待审核")
+		progress.NextAction = nextWorkflowAction(progress, "confirm_adaptation_proposal", "确认章节细纲", true)
 		return progress
 	}
 
@@ -476,12 +648,44 @@ func adaptationWorkflowProgress(
 	return progress
 }
 
-func adaptationRunningPresentation(actionKinds []string) (string, string, bool) {
+func adaptationPlanningStep(snapshot host.UISnapshot, coCreate *webCoCreateState) string {
+	if workflow := snapshot.AdaptationPlanningWorkflow; workflow != nil {
+		switch workflow.Stage {
+		case domain.AdaptationPlanningStageVolumeReviewPending:
+			return "volume_plan"
+		case domain.AdaptationPlanningStageDetailsGenerating, domain.AdaptationPlanningStageProposalReviewPending:
+			return "chapter_outline"
+		case domain.AdaptationPlanningStageSkeletonGenerating:
+			if adaptationWorkflowUsesVolumePlan(snapshot, coCreate) {
+				return "volume_plan"
+			}
+			return "chapter_outline"
+		}
+	}
+	if snapshot.AdaptationVolumeReview != nil {
+		return "volume_plan"
+	}
+	if snapshot.AdaptationProposal != nil {
+		return "chapter_outline"
+	}
+	return ""
+}
+
+func adaptationRunningPresentation(actionKinds []string, snapshot host.UISnapshot, coCreate *webCoCreateState) (string, string, bool) {
 	switch {
 	case workflowContainsString(actionKinds, projectActionKindAdaptationRevision):
-		return "proposal_review", "正在修订改编提案", true
+		if adaptationPlanningStep(snapshot, coCreate) == "volume_plan" {
+			return "volume_plan", "正在修订分卷规划", true
+		}
+		return "chapter_outline", "正在修订章节细纲", true
 	case workflowContainsString(actionKinds, projectActionKindAdaptationProposal):
-		return "proposal_review", "正在生成并逐批审核章节细纲", true
+		if adaptationPlanningStep(snapshot, coCreate) == "chapter_outline" {
+			return "chapter_outline", "正在生成并逐批审核章节细纲", true
+		}
+		if adaptationWorkflowUsesVolumePlan(snapshot, coCreate) {
+			return "volume_plan", "正在生成分卷规划", true
+		}
+		return "chapter_outline", "当前规模无需分卷，正在生成章节细纲", true
 	case workflowContainsString(actionKinds, projectActionKindAdaptationAnalysis):
 		return "analysis", "正在分析原文", true
 	default:
