@@ -46,6 +46,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `fc580ca` `fix: complete adaptation character card workflow`:
+  removes the circular CoreCast resume gate, bounds Character Agent evidence
+  below the structured-call limit, restricts formal source cards to protagonists
+  and important supporting roles, preserves evidence-only aliases outside the
+  formal cast, and projects reviewed source mappings plus target-original leads
+  into the confirmed CoreCast. Both ordinary and adaptation character prompts
+  now require complete cards and an independent blocking review. Focused
+  domain/tools/adapt/flow/store/host/Web regressions passed; the full Web suite
+  retains unrelated rollback, novel-library, legacy-migration, and adaptation
+  session fixture failures. The rebuilt Web service is healthy on port 9898,
+  and the live `梦中的女孩` project visibly shows three complete reviewed cards,
+  including `顾衡` as `新男主（主视角）` and `目标原创`.
 - 2026-07-30 `this commit` `fix: declutter foundation settings workspace`:
   hides the creative workflow while StoryFoundation is open, treats an empty
   read-only revision-zero Foundation as an in-progress state instead of a red
