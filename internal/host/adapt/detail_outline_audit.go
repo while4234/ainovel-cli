@@ -17,6 +17,7 @@ import (
 
 const (
 	detailOutlineAuditMaxTokens         = 3600
+	detailOutlineGlobalAuditMaxTokens   = 8192
 	detailOutlineAuditFormatMaxAttempts = 3
 )
 
@@ -569,10 +570,11 @@ func callDetailOutlineAuditor(
 	systemPrompt := detailOutlineAuditorSystemPrompt()
 	label := fmt.Sprintf("章节详情第 %d-%d 章独立审核", targetFrom, targetTo)
 	formatAttempts := min(max(1, deps.structureRepairMaxAttempts()), detailOutlineAuditFormatMaxAttempts)
+	maxTokens := detailOutlineAuditOutputMaxTokens(scope)
 	var lastDecodeErr error
 	for attempt := 1; attempt <= formatAttempts; attempt++ {
 		text, err := generatePlannerTextForStage(
-			ctx, StageAudit, model, systemPrompt, string(payload), detailOutlineAuditMaxTokens,
+			ctx, StageAudit, model, systemPrompt, string(payload), maxTokens,
 			emit, current, total, label, deps.modelCallMaxAttempts(),
 		)
 		if err != nil {
@@ -592,6 +594,13 @@ func callDetailOutlineAuditor(
 		}
 	}
 	return detailAuditModelResponse{}, fmt.Errorf("decode detail outline audit response after %d clean attempts: %w", formatAttempts, lastDecodeErr)
+}
+
+func detailOutlineAuditOutputMaxTokens(scope string) int {
+	if scope == "global" {
+		return detailOutlineGlobalAuditMaxTokens
+	}
+	return detailOutlineAuditMaxTokens
 }
 
 func decodeDetailOutlineAuditResponse(text string) (detailAuditModelResponse, error) {

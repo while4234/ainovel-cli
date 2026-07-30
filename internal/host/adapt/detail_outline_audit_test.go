@@ -198,6 +198,18 @@ func TestCallDetailOutlineAuditorRetriesMalformedResponseWithCleanContext(t *tes
 	}
 }
 
+func TestDetailOutlineAuditOutputMaxTokensExpandsGlobalReview(t *testing.T) {
+	if got := detailOutlineAuditOutputMaxTokens("batch"); got != detailOutlineAuditMaxTokens {
+		t.Fatalf("batch audit max tokens=%d, want %d", got, detailOutlineAuditMaxTokens)
+	}
+	if got := detailOutlineAuditOutputMaxTokens("global"); got != detailOutlineGlobalAuditMaxTokens {
+		t.Fatalf("global audit max tokens=%d, want %d", got, detailOutlineGlobalAuditMaxTokens)
+	}
+	if detailOutlineGlobalAuditMaxTokens <= detailOutlineAuditMaxTokens {
+		t.Fatalf("global audit max tokens=%d must exceed scoped audit max tokens=%d", detailOutlineGlobalAuditMaxTokens, detailOutlineAuditMaxTokens)
+	}
+}
+
 func TestLayeredDetailAuditDigestRequiresEveryBatchAndGlobalCheckpoint(t *testing.T) {
 	passed := func(signature string) *domain.AdaptationDetailBatchAudit {
 		return &domain.AdaptationDetailBatchAudit{
