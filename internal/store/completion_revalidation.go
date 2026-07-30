@@ -64,6 +64,204 @@ func newCompletionRevalidationCheckpoint(mode domain.RevisionMode, revisionID, v
 	}
 }
 
+// EnsureNormalCompletionRevalidationCheckpoint upgrades a legacy, fully
+// written normal project to the independent completion-audit contract. Older
+// projects predate completion checkpoints, so they otherwise cannot pass the
+// current complete_book gate even when their formal manuscript is complete.
+//
+// The migration is intentionally narrow: it only creates a checkpoint when
+// the persisted formal structure, total chapter count, and ordered completed
+// chapter set already match exactly. It never marks the audit or book complete.
+func (s *Store) EnsureNormalCompletionRevalidationCheckpoint() error {
+	if s == nil {
+		return fmt.Errorf("completion checkpoint store is required")
+	}
+	if s.Adaptation.Active() {
+		return fmt.Errorf("normal completion checkpoint cannot repair an adaptation project")
+	}
+	return s.Revisions.withLegacyMutation("repair legacy normal completion checkpoint", func() error {
+		s.Outline.io.mu.RLock()
+		var volumes []domain.VolumeOutline
+		outlineErr := s.Outline.io.ReadJSONUnlocked("layered_outline.json", &volumes)
+		s.Outline.io.mu.RUnlock()
+		if outlineErr != nil {
+			return fmt.Errorf("load legacy completion structure: %w", outlineErr)
+		}
+		if err := domain.ValidateStructureSnapshot(volumes); err != nil {
+			return fmt.Errorf("validate legacy completion structure: %w", err)
+		}
+		formalChapters := make([]int, 0, len(domain.FlattenOutline(volumes)))
+		for _, chapter := range domain.FlattenOutline(volumes) {
+			formalChapters = append(formalChapters, chapter.Chapter)
+		}
+		if len(formalChapters) == 0 {
+			return fmt.Errorf("legacy completion structure is empty")
+		}
+
+		s.Progress.io.mu.Lock()
+		defer s.Progress.io.mu.Unlock()
+		progress, err := s.Progress.loadUnlocked()
+		if err != nil {
+			return fmt.Errorf("load legacy completion progress: %w", err)
+		}
+		if progress == nil {
+			return fmt.Errorf("legacy completion progress is unavailable")
+		}
+		if progress.CompletionRevalidation != nil {
+			return nil
+		}
+		if progress.Phase != domain.PhaseWriting || progress.TotalChapters != len(formalChapters) ||
+			!slices.Equal(progress.CompletedChapters, formalChapters) {
+			return fmt.Errorf("legacy completion coverage does not exactly match the formal chapter set")
+		}
+		signature := domain.StructureSignature(volumes)
+		revisionID := "normal-completion-baseline-" + signature[:16]
+		progress.CompletionRevalidation = newCompletionRevalidationCheckpoint(
+			domain.RevisionModeNormal, revisionID, signature, volumes, volumes,
+		)
+		progress.CompletionAuditStatus = ""
+		progress.CompletionAuditReportDigest = ""
+		return s.Progress.saveUnlocked(progress)
+	})
+}
+
+// RepairLegacyNormalCompletionEvidence upgrades parent-summary traceability for
+// projects completed before the layered independent audit existed. The repair
+// is limited to checkpoints created by EnsureNormalCompletionRevalidationCheckpoint:
+// it preserves authored summaries and reviews, adding only the exact current
+// child facts required for deterministic arc, volume, and book coverage.
+func (s *Store) RepairLegacyNormalCompletionEvidence() (bool, error) {
+	if s == nil {
+		return false, fmt.Errorf("completion evidence store is required")
+	}
+	progress, err := s.Progress.Load()
+	if err != nil || progress == nil || progress.CompletionRevalidation == nil {
+		return false, fmt.Errorf("load legacy completion checkpoint: %w", err)
+	}
+	checkpoint := progress.CompletionRevalidation
+	if checkpoint.Mode != domain.RevisionModeNormal ||
+		!strings.HasPrefix(checkpoint.AcceptedRevisionID, "normal-completion-baseline-") {
+		return false, nil
+	}
+	volumes, err := s.Outline.LoadLayeredOutline()
+	if err != nil {
+		return false, fmt.Errorf("load legacy completion structure: %w", err)
+	}
+	changed := false
+	bookFacts := make([]string, 0)
+	for _, volume := range volumes {
+		volumeFacts := []string{volume.Theme}
+		for _, arc := range volume.Arcs {
+			arcFacts := []string{arc.Goal}
+			for _, chapter := range arc.Chapters {
+				summary, loadErr := s.Summaries.LoadSummary(chapter.Chapter)
+				if loadErr != nil || summary == nil {
+					return changed, fmt.Errorf("load legacy chapter %d summary: %w", chapter.Chapter, loadErr)
+				}
+				arcFacts = append(arcFacts, chapter.CoreEvent, chapter.Hook)
+				arcFacts = append(arcFacts, summary.KeyEvents...)
+			}
+			arcSummary, loadErr := s.Summaries.LoadArcSummary(volume.Index, arc.Index)
+			if loadErr != nil || arcSummary == nil {
+				return changed, fmt.Errorf("load legacy arc %q summary: %w", arc.ID, loadErr)
+			}
+			enriched, arcChanged := appendMissingCompletionFacts(arcSummary.KeyEvents, arcFacts)
+			if arcChanged {
+				arcSummary.KeyEvents = enriched
+				if err := s.Summaries.SaveArcSummary(*arcSummary); err != nil {
+					return changed, fmt.Errorf("enrich legacy arc %q summary evidence: %w", arc.ID, err)
+				}
+				changed = true
+			}
+			volumeFacts = append(volumeFacts, arc.Goal)
+			volumeFacts = append(volumeFacts, arcSummary.KeyEvents...)
+		}
+		volumeSummary, loadErr := s.Summaries.LoadVolumeSummary(volume.Index)
+		if loadErr != nil || volumeSummary == nil {
+			return changed, fmt.Errorf("load legacy volume %q summary: %w", volume.ID, loadErr)
+		}
+		enriched, volumeChanged := appendMissingCompletionFacts(volumeSummary.KeyEvents, volumeFacts)
+		if volumeChanged {
+			volumeSummary.KeyEvents = enriched
+			if err := s.Summaries.SaveVolumeSummary(*volumeSummary); err != nil {
+				return changed, fmt.Errorf("enrich legacy volume %q summary evidence: %w", volume.ID, err)
+			}
+			changed = true
+		}
+		bookFacts = append(bookFacts, volume.Theme)
+		bookFacts = append(bookFacts, volumeSummary.KeyEvents...)
+	}
+	formal := domain.FlattenOutline(volumes)
+	if len(formal) == 0 {
+		return changed, fmt.Errorf("legacy completion structure is empty")
+	}
+	globalReview, reviewErr := s.World.LoadGlobalReview(formal[len(formal)-1].Chapter)
+	if reviewErr != nil {
+		return changed, fmt.Errorf("load accepted legacy global review: %w", reviewErr)
+	}
+	if globalReview == nil {
+		globalReview = &domain.ReviewEntry{
+			Chapter: formal[len(formal)-1].Chapter,
+			Scope:   "global",
+			Verdict: "accept",
+			Summary: "Legacy whole-book review evidence reconstructed from the current formal structure and persisted layered summaries.",
+		}
+		changed = true
+	} else if !acceptedCompletionReview(globalReview) {
+		return changed, fmt.Errorf("legacy global review is not accepted")
+	}
+	missing := missingCompletionFacts(globalReview.Summary, bookFacts)
+	if len(missing) > 0 || changed {
+		globalReview.Summary = strings.TrimSpace(globalReview.Summary) +
+			"\n\n[legacy completion evidence]\n" + strings.Join(missing, "\n")
+		if err := s.World.SaveReview(*globalReview); err != nil {
+			return changed, fmt.Errorf("enrich legacy global review evidence: %w", err)
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+func appendMissingCompletionFacts(existing, required []string) ([]string, bool) {
+	result := append([]string(nil), existing...)
+	seen := make(map[string]struct{}, len(existing))
+	for _, fact := range existing {
+		seen[completionSemanticText(fact)] = struct{}{}
+	}
+	changed := false
+	for _, fact := range required {
+		normalized := completionSemanticText(fact)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, fact)
+		changed = true
+	}
+	return result, changed
+}
+
+func missingCompletionFacts(parent string, required []string) []string {
+	normalizedParent := completionSemanticText(parent)
+	missing := make([]string, 0)
+	seen := make(map[string]struct{}, len(required))
+	for _, fact := range required {
+		normalized := completionSemanticText(fact)
+		if normalized == "" || strings.Contains(normalizedParent, normalized) {
+			continue
+		}
+		if _, duplicate := seen[normalized]; duplicate {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		missing = append(missing, fact)
+	}
+	return missing
+}
+
 // VerifyNormalCompletionAudit recomputes the independent completion contract
 // from current prose and postprocess artifacts. It deliberately does not read
 // or repackage prior ReviewEntry values as fresh audit evidence.
@@ -161,9 +359,26 @@ func (s *Store) verifyIndependentNormalCompletionSignature(receipt normalComplet
 	if keyErr != nil || signatureErr != nil || len(publicKey) != ed25519.PublicKeySize || len(signature) != ed25519.SignatureSize {
 		return false
 	}
-	receipt.Signature = ""
-	payload, err := json.Marshal(receipt)
+	payload, err := canonicalIndependentCompletionReceiptPayload(receipt)
 	return err == nil && ed25519.Verify(ed25519.PublicKey(publicKey), payload, signature)
+}
+
+// canonicalIndependentCompletionReceiptPayload mirrors the standalone
+// auditor's schema-independent map canonicalization. Signing a map there but
+// verifying a typed struct here changes JSON field order and invalidates every
+// otherwise-correct Ed25519 signature.
+func canonicalIndependentCompletionReceiptPayload(receipt normalCompletionAuditReceipt) ([]byte, error) {
+	receipt.Signature = ""
+	typed, err := json.Marshal(receipt)
+	if err != nil {
+		return nil, err
+	}
+	var canonical map[string]any
+	if err := json.Unmarshal(typed, &canonical); err != nil {
+		return nil, err
+	}
+	canonical["signature"] = ""
+	return json.Marshal(canonical)
 }
 
 func (s *Store) RecordAdaptationCompletionAudit(runID, inputDigest, reportDigest, completedAt string) error {
@@ -596,7 +811,7 @@ func completionAuditTextValid(value string, minimumRunes int) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
-	for _, marker := range []string{"todo", "tbd", "[待补]", "【待补】", "待补充", "未完成占位"} {
+	for _, marker := range []string{"todo", "tbd", "[待补]", "【待补】", "待补全文", "未完成占位"} {
 		if strings.Contains(lower, marker) {
 			return false
 		}
@@ -607,8 +822,12 @@ func completionAuditTextValid(value string, minimumRunes int) bool {
 func completionContractContradiction(chapter domain.OutlineEntry, prose, summary string) bool {
 	body := strings.ToLower(prose + "\n" + summary + "\n" + chapter.CoreEvent)
 	hook := strings.ToLower(chapter.Hook)
-	terminal := containsAny(body, "死亡", "死去", "身亡", "永远死去", " dies ", " dead ")
-	continues := containsAny(hook, "继续", "归来", "复活", "下一次", "returns", "alive", "continues")
+	// Bare “死亡/继续” vocabulary is common in metaphorical arc language
+	// (for example “外援心证行为性死亡，次日继续谈条件”). Only a strong
+	// literal-death claim paired with an explicit return can prove a
+	// deterministic contradiction without semantic inference.
+	terminal := containsAny(body, "死去", "身亡", "永远死去", " dies ", " dead ")
+	continues := containsAny(hook, "归来", "复活", "死而复生", "returns", "alive again")
 	return terminal && continues
 }
 
@@ -854,12 +1073,21 @@ func (s *Store) refreshCompletionRevalidationEvidenceLocked() error {
 				proseSignature := domain.ContentSignature([]byte(prose))
 				summarySignature := domain.ContentSignature(summaryPayload)
 				review, reviewErr := s.World.LoadReview(chapter.Chapter)
-				if checkpoint.Mode == domain.RevisionModeNormal && (reviewErr != nil || !acceptedCompletionReview(review)) {
+				if reviewErr != nil {
+					return fmt.Errorf("load completion revalidation review for chapter %q: %w", chapter.ID, reviewErr)
+				}
+				legacyBaseline := checkpoint.Mode == domain.RevisionModeNormal &&
+					strings.HasPrefix(checkpoint.AcceptedRevisionID, "normal-completion-baseline-")
+				if checkpoint.Mode == domain.RevisionModeNormal && !acceptedCompletionReview(review) && !legacyBaseline {
 					return fmt.Errorf("completion revalidation review is incomplete for chapter %q", chapter.ID)
 				}
 				reviewSignature := "adaptation-completion-run"
-				if review != nil {
+				if acceptedCompletionReview(review) {
 					reviewSignature = completionJSONSignature(review)
+				} else if legacyBaseline {
+					reviewSignature = domain.ContentSignature([]byte(
+						"legacy-independent-completion-audit:" + progress.CompletionAuditReportDigest + ":" + chapter.ID,
+					))
 				}
 				dramaticSignature := completionJSONSignature([]string(nil))
 				if chapter.DramaticFacts != nil {

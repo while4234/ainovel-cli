@@ -27,6 +27,18 @@ func (g *CompletionGate) EvaluateCompletion() (tools.CompletionAuditResult, erro
 		return tools.CompletionAuditResult{}, fmt.Errorf("completion audit store is required")
 	}
 	if !g.store.Adaptation.Active() {
+		if err := g.store.EnsureNormalCompletionRevalidationCheckpoint(); err != nil {
+			return tools.CompletionAuditResult{
+				Applicable: true, Allowed: false, Status: "incomplete",
+				Warning: "legacy completion checkpoint repair failed",
+			}, nil
+		}
+		if _, err := g.store.RepairLegacyNormalCompletionEvidence(); err != nil {
+			return tools.CompletionAuditResult{
+				Applicable: true, Allowed: false, Status: "incomplete",
+				Warning: "legacy completion evidence repair failed",
+			}, nil
+		}
 		client, err := completionauditorclient.New()
 		if err != nil {
 			return tools.CompletionAuditResult{Applicable: true, Allowed: false, Status: "incomplete", Warning: "independent completion auditor is unavailable"}, nil

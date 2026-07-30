@@ -214,6 +214,88 @@ func TestRebindConfirmedCharacterWorkflowIgnoresPremiseOnlyRevision(t *testing.T
 	}
 }
 
+func TestConfirmedCharacterRebindAllowsOnlyMissingGenderCompletion(t *testing.T) {
+	legacyFoundation := domain.StoryFoundation{
+		SchemaVersion:         domain.StoryFoundationSchemaVersion,
+		Revision:              3,
+		Premise:               "locked premise",
+		Characters:            completeCharacterCandidate(),
+		Relationships:         []domain.CharacterRelationship{},
+		RelationshipsReviewed: true,
+		WorldRules:            []domain.WorldRule{{ID: "rule", Rule: "facts stay stable"}},
+	}
+	legacyFoundation.Characters[0].Gender = ""
+	legacyCore, _, err := domain.ProjectCharacterCandidateCoreCast(legacyFoundation, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyCore, err = domain.NormalizeCoreCastContract(legacyCore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyInputs := domain.CharacterCardInputSignatures{
+		CreativeBrief: strings.Repeat("a", 64),
+		CoreCast:      legacyCore.ContentSignature,
+		Additional: []domain.CharacterCardNamedSignature{{
+			Name:      "user_rules",
+			Signature: strings.Repeat("b", 64),
+		}},
+	}
+	legacyBinding, err := domain.CharacterCardBindingFromFoundation(legacyFoundation, legacyInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	canonical := domain.CloneStoryFoundation(legacyFoundation)
+	canonical.Revision++
+	canonical.Characters[0].Gender = "female"
+	currentCore := cloneCoreCastForCharacterRepair(legacyCore)
+	currentCore.Members[0].Character.Gender = "female"
+	currentCore, err = domain.NormalizeCoreCastContract(currentCore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentInputs := legacyInputs
+	currentInputs.Additional = append([]domain.CharacterCardNamedSignature(nil), legacyInputs.Additional...)
+	currentInputs.CoreCast = currentCore.ContentSignature
+	currentInputs.Additional[0].Signature = strings.Repeat("c", 64)
+	currentBinding, err := domain.CharacterCardBindingFromFoundation(canonical, currentInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := domain.CharacterCardCandidate{
+		Version:       domain.CharacterCardCandidateVersion,
+		Base:          legacyBinding,
+		Foundation:    legacyFoundation,
+		ProjectedCast: legacyCore,
+	}
+	if !confirmedCharacterRebindCompatible(candidate, canonical, currentBinding, &currentCore) {
+		t.Fatal("missing gender completion should be accepted as a metadata-only upgrade")
+	}
+
+	changed := domain.CloneStoryFoundation(canonical)
+	changed.Characters[0].Goal = "Replace the previously confirmed story goal."
+	changedBinding, err := domain.CharacterCardBindingFromFoundation(changed, currentInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmedCharacterRebindCompatible(candidate, changed, changedBinding, &currentCore) {
+		t.Fatal("a real Character content change was accepted as metadata completion")
+	}
+
+	currentInputs.Additional = append(currentInputs.Additional, domain.CharacterCardNamedSignature{
+		Name:      "source_reports",
+		Signature: strings.Repeat("d", 64),
+	})
+	changedEvidenceBinding, err := domain.CharacterCardBindingFromFoundation(canonical, currentInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmedCharacterRebindCompatible(candidate, canonical, changedEvidenceBinding, &currentCore) {
+		t.Fatal("non-user-rules Character evidence change was accepted")
+	}
+}
+
 func TestCharacterReviewPassIsDowngradedByCompleteness(t *testing.T) {
 	st := characterToolStore(t)
 	registry := NewCharacterRunRegistry()

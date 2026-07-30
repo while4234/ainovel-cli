@@ -181,6 +181,57 @@ func TestAutoResumeDecisionContinuationReviewDoesNotAdvance(t *testing.T) {
 	}
 }
 
+func TestAutoResumeDecisionRepairsLegacyCompletionCheckpoint(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		revisionID     string
+		want           AutoResumeDisposition
+		wantAction     string
+		wantReasonCode string
+	}{
+		{"legacy baseline", "normal-completion-baseline-0123456789abcdef", AutoResumeActionable, AutoResumeActionHost, "legacy_completion_revalidation"},
+		{"authored revision", "author-revision-1", AutoResumeWaitUser, "", "completion_revalidation_required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			outputDir := t.TempDir()
+			st := storepkg.NewStore(outputDir)
+			if err := st.Init(); err != nil {
+				t.Fatal(err)
+			}
+			installConfirmedNormalCoreCastGate(t, st)
+			if err := st.Progress.Save(&domain.Progress{
+				Phase: domain.PhaseWriting, Flow: domain.FlowWriting,
+				TotalChapters: 1, CompletedChapters: []int{1},
+				CompletionRevalidation: &domain.CompletionRevalidationCheckpoint{
+					Version: 1, Status: "pending", Mode: domain.RevisionModeNormal,
+					AcceptedRevisionID: test.revisionID,
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			fake := newFakeProjectHost()
+			session, err := NewProjectSession(ProjectManifest{ID: "legacy-completion", OutputDir: outputDir}, fake)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			decision, err := session.AutoResumeDecision()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.Disposition != test.want || decision.Action != test.wantAction || decision.ReasonCode != test.wantReasonCode {
+				t.Fatalf("decision=%+v", decision)
+			}
+			if test.wantReasonCode == "legacy_completion_revalidation" {
+				label, err := session.Resume()
+				if err != nil || label != "resume test label" || fake.resumeCalls != 1 {
+					t.Fatalf("legacy completion resume label=%q calls=%d err=%v", label, fake.resumeCalls, err)
+				}
+			}
+		})
+	}
+}
+
 func installConfirmedNormalCoreCastGate(t *testing.T, st *storepkg.Store) {
 	t.Helper()
 	binding, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{

@@ -22,6 +22,156 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
+func TestEnsureNormalCompletionRevalidationCheckpointMigratesOnlyCompleteLegacyProject(t *testing.T) {
+	root := t.TempDir()
+	st := NewStore(root)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	volumes := []domain.VolumeOutline{{
+		ID: domain.LegacyStructureID(root, domain.StructureKindVolume, "volume"), Index: 1, Title: "Volume", Theme: "theme",
+		Arcs: []domain.ArcOutline{{
+			ID: domain.LegacyStructureID(root, domain.StructureKindArc, "arc"), Index: 1, Title: "Arc", Goal: "goal",
+			Chapters: []domain.OutlineEntry{{
+				ID: domain.LegacyStructureID(root, domain.StructureKindChapter, "chapter"), Chapter: 1, Title: "End",
+				CoreEvent: "event", Hook: "hook", Scenes: []string{"scene"},
+			}},
+		}},
+	}}
+	if err := st.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase: domain.PhaseWriting, Flow: domain.FlowWriting, Layered: true,
+		TotalChapters: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.EnsureNormalCompletionRevalidationCheckpoint(); err == nil {
+		t.Fatal("incomplete legacy project received a completion checkpoint")
+	}
+	progress, err := st.Progress.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress.CompletedChapters = []int{1}
+	if err := st.Progress.Save(progress); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.EnsureNormalCompletionRevalidationCheckpoint(); err != nil {
+		t.Fatal(err)
+	}
+	progress, err = st.Progress.Load()
+	if err != nil || progress.CompletionRevalidation == nil {
+		t.Fatalf("completion checkpoint=%+v err=%v", progress, err)
+	}
+	checkpoint := progress.CompletionRevalidation
+	if checkpoint.Mode != domain.RevisionModeNormal || checkpoint.Status != "pending" ||
+		checkpoint.AcceptedVersionSignature != domain.StructureSignature(volumes) ||
+		!slices.Equal(checkpoint.CurrentStableOrder, stableChapterOrder(volumes)) {
+		t.Fatalf("unexpected migrated checkpoint: %+v", checkpoint)
+	}
+}
+
+func TestRepairLegacyNormalCompletionEvidenceEnrichesOnlyBaselineCheckpoint(t *testing.T) {
+	st := newCompletionAuditFixture(t, completionAuditFixtureOptions{})
+	progress, err := st.Progress.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress.CompletionRevalidation.AcceptedRevisionID = "normal-completion-baseline-0123456789abcdef"
+	if err := st.Progress.Save(progress); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Summaries.SaveArcSummary(domain.ArcSummary{
+		Volume: 1, Arc: 1, Summary: "the arc is resolved", KeyEvents: []string{"a concise event"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Summaries.SaveVolumeSummary(domain.VolumeSummary{
+		Volume: 1, Summary: "the volume is resolved", KeyEvents: []string{"a concise event"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.World.SaveReview(domain.ReviewEntry{
+		Chapter: 1, Scope: "global", Verdict: "accept", Summary: "the book is complete",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.World.DeleteReview(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RunNormalCompletionAudit(); err == nil {
+		t.Fatal("legacy summaries unexpectedly met the current exact coverage contract")
+	}
+	changed, err := st.RepairLegacyNormalCompletionEvidence()
+	if err != nil || !changed {
+		t.Fatalf("repair changed=%v err=%v", changed, err)
+	}
+	if _, err := st.RunNormalCompletionAudit(); err != nil {
+		t.Fatalf("repaired legacy evidence failed current audit: %v", err)
+	}
+	changed, err = st.RepairLegacyNormalCompletionEvidence()
+	if err != nil || changed {
+		t.Fatalf("idempotent repair changed=%v err=%v", changed, err)
+	}
+}
+
+func TestLegacyBaselineCompletionUsesIndependentAuditWhenOldReviewsAreStale(t *testing.T) {
+	st := newCompletionAuditFixture(t, completionAuditFixtureOptions{})
+	progress, err := st.Progress.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress.CompletionRevalidation.AcceptedRevisionID = "normal-completion-baseline-0123456789abcdef"
+	if err := st.Progress.Save(progress); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.World.SaveReview(domain.ReviewEntry{
+		Chapter: 1, Scope: "chapter", Verdict: "polish",
+		Issues: []domain.ConsistencyIssue{{Severity: "error", Description: "stale pre-audit review"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := st.RunNormalCompletionAudit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signNormalCompletionAuditForTest(t, st)
+	if err := st.Progress.SetCompletionAudit("pass", digest); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RefreshCompletionRevalidationEvidence(); err != nil {
+		t.Fatalf("signed independent audit did not supersede stale legacy review: %v", err)
+	}
+}
+
+func TestCompletionAuditTextValidAllowsNarrativeUseOfPendingSupplement(t *testing.T) {
+	if !completionAuditTextValid("第三份是一份待补充的风险告知函草稿，按流程补发。", 8) {
+		t.Fatal("ordinary narrative use of 待补充 was mistaken for an unfinished manuscript marker")
+	}
+	for _, placeholder := range []string{"TODO", "[待补]", "【待补】", "待补全文", "未完成占位"} {
+		if completionAuditTextValid("正文内容 "+placeholder, 4) {
+			t.Fatalf("unfinished placeholder %q was accepted", placeholder)
+		}
+	}
+}
+
+func TestCompletionContractContradictionIgnoresMetaphoricalClosure(t *testing.T) {
+	chapter := domain.OutlineEntry{
+		CoreEvent: "外援心证行为性死亡，幻觉死后进入唯一现实。",
+		Hook:      "次日继续谈条件，完成新的生活安排。",
+	}
+	if completionContractContradiction(chapter, "她确认旧期待已经结束。", "这一夜完成心理收束。") {
+		t.Fatal("metaphorical closure was mistaken for a dead character returning")
+	}
+	chapter.CoreEvent = "hero dies in the terminal battle"
+	chapter.Hook = "hero returns alive next time"
+	if !completionContractContradiction(chapter, "the hero is dead", "the terminal battle ends") {
+		t.Fatal("literal death-and-return contradiction was not detected")
+	}
+}
+
 func TestCompletionRevalidationSurvivesRestartAndFailsClosedUntilEvidence(t *testing.T) {
 	root := t.TempDir()
 	st := NewStore(root)
@@ -940,8 +1090,10 @@ func signNormalCompletionAuditForTest(t *testing.T, st *Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt.Signature = ""
-	payload, _ := json.Marshal(receipt)
+	payload, err := canonicalIndependentCompletionReceiptPayload(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	receipt.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
 	if err := newIO(st.dir).WriteJSON(normalCompletionAuditReceiptFile, receipt); err != nil {
 		t.Fatal(err)

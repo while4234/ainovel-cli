@@ -1065,8 +1065,16 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	if err := h.ensureContinuationWritingAllowed(); err != nil {
 		return "", err
 	}
+	if err := tools.RepairConfirmedCharacterWorkflowForResume(h.store); err != nil {
+		return "", fmt.Errorf("repair confirmed Character workflow before resume: %w", err)
+	}
 	if err := RequireResumeCoreCastGate(h.store, true); err != nil {
 		return "", err
+	}
+	if completed, err := h.finalizeLegacyCompletedBookBeforeResume(); err != nil {
+		return "", err
+	} else if completed {
+		return "整本小说已通过完结审计", nil
 	}
 	if !keepNormalFlowLease {
 		if h.coordinator != nil {
@@ -1160,6 +1168,43 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	ownership.TransferToRun()
 	go h.waitDone()
 	return label, nil
+}
+
+// finalizeLegacyCompletedBookBeforeResume closes the narrow restart gap where
+// every formal chapter is already committed but an old project has not yet
+// passed the newer independent completion contract. It runs before normal-flow
+// lease acquisition because a pending completion checkpoint intentionally
+// fences ordinary writing after a restart.
+func (h *Host) finalizeLegacyCompletedBookBeforeResume() (bool, error) {
+	progress, err := h.store.Progress.Load()
+	if err != nil {
+		return false, fmt.Errorf("load progress before resume completion repair: %w", err)
+	}
+	if progress == nil || h.store.Adaptation.Active() || progress.Phase != domain.PhaseWriting ||
+		progress.TotalChapters <= 0 || len(progress.CompletedChapters) != progress.TotalChapters ||
+		len(progress.PendingRewrites) > 0 {
+		return false, nil
+	}
+	audit, err := adapt.NewCompletionGate(h.store).EvaluateCompletion()
+	if err != nil {
+		_ = h.store.Progress.SetCompletionAudit("error", "")
+		return false, fmt.Errorf("run completion audit before resume: %w", err)
+	}
+	_ = h.store.Progress.SetCompletionAudit(audit.Status, audit.ReportDigest)
+	if !audit.Allowed {
+		warning := strings.TrimSpace(audit.Warning)
+		if warning == "" {
+			warning = "independent completion audit did not pass"
+		}
+		return false, fmt.Errorf("repair completed legacy project before resume: %s", warning)
+	}
+	if err := h.store.RefreshCompletionRevalidationEvidence(); err != nil {
+		return false, fmt.Errorf("refresh repaired completion evidence before resume: %w", err)
+	}
+	if err := h.store.Progress.MarkComplete(); err != nil {
+		return false, fmt.Errorf("mark repaired legacy project complete before resume: %w", err)
+	}
+	return true, nil
 }
 
 // restoreConfiguredModelRoutes starts a new manual or scheduled run from the

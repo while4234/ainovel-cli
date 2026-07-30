@@ -1106,7 +1106,12 @@ func (s *ProjectSession) Resume() (string, error) {
 		return decision.Label, err
 	}
 
-	unlock, err := s.beginAction()
+	var unlock func()
+	if decision.ReasonCode == "legacy_completion_revalidation" {
+		unlock, err = s.beginActionWithoutNormalFlowLease("legacy_completion_revalidation")
+	} else {
+		unlock, err = s.beginAction()
+	}
 	if err != nil {
 		return "", err
 	}
@@ -4268,6 +4273,14 @@ func (s *ProjectSession) beginAction() (func(), error) {
 }
 
 func (s *ProjectSession) beginActionKind(kind string) (func(), error) {
+	return s.beginActionKindWithNormalFlowLease(kind, true)
+}
+
+func (s *ProjectSession) beginActionWithoutNormalFlowLease(kind string) (func(), error) {
+	return s.beginActionKindWithNormalFlowLease(kind, false)
+}
+
+func (s *ProjectSession) beginActionKindWithNormalFlowLease(kind string, acquireLease bool) (func(), error) {
 	kind = strings.TrimSpace(kind)
 	s.mu.Lock()
 	outputDir := strings.TrimSpace(s.manifest.OutputDir)
@@ -4282,7 +4295,7 @@ func (s *ProjectSession) beginActionKind(kind string) (func(), error) {
 			return nil, ErrSessionActionInProgress
 		}
 	}
-	if s.actionRevisionLease == nil && s.actionLeaseRelease == nil {
+	if acquireLease && s.actionRevisionLease == nil && s.actionLeaseRelease == nil {
 		owner := "web:" + kind
 		if kind == "" {
 			owner = "web:action"

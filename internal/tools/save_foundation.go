@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +120,28 @@ func requireConfirmedOriginalCharacterWorkflow(st *store.Store) error {
 	return nil
 }
 
+// RepairConfirmedCharacterWorkflowForResume upgrades metadata on an already
+// reviewed and confirmed Character publication before an old project resumes.
+// It is deliberately a no-op for missing or unconfirmed candidates: those
+// projects must continue through the normal Character review and user gate.
+func RepairConfirmedCharacterWorkflowForResume(st *store.Store) error {
+	if st == nil {
+		return fmt.Errorf("character workflow store is nil")
+	}
+	candidate, err := st.CharacterCards.LoadCandidate()
+	if err != nil || candidate == nil {
+		return err
+	}
+	lifecycle, err := st.CharacterCards.Load(candidate.Base)
+	if err != nil {
+		return err
+	}
+	if lifecycle == nil || lifecycle.ConfirmationStatus != domain.CharacterCardConfirmed {
+		return nil
+	}
+	return rebindConfirmedCharacterWorkflow(st)
+}
+
 // rebindConfirmedCharacterWorkflow advances the Character candidate and
 // lifecycle to a canonical Foundation revision whose character and
 // relationship content is unchanged. Premise/world-rule generation must not
@@ -150,7 +173,12 @@ func rebindConfirmedCharacterWorkflow(st *store.Store) error {
 		lifecycle.ReviewedInputDigest != candidate.Base.InputDigest {
 		return fmt.Errorf("character workflow is not a confirmed publication")
 	}
-	canonical, _, inputs, _, err := CurrentCharacterCanonicalBinding(st)
+	if lifecycle.Mode == domain.CharacterCardProjectOriginal {
+		if err := completeConfirmedCharacterMetadata(st); err != nil {
+			return err
+		}
+	}
+	canonical, _, inputs, coreCast, err := CurrentCharacterCanonicalBinding(st)
 	if err != nil {
 		return err
 	}
@@ -158,13 +186,34 @@ func rebindConfirmedCharacterWorkflow(st *store.Store) error {
 	if err != nil {
 		return err
 	}
-	if rebound.Candidate.CharacterContentDigest != candidate.Base.Candidate.CharacterContentDigest ||
-		rebound.InputDigest != candidate.Base.InputDigest {
+	if !confirmedCharacterRebindCompatible(*candidate, canonical, rebound, coreCast) {
 		return fmt.Errorf("canonical character content or Character inputs changed")
+	}
+	completeness, err := domain.EvaluateCharacterCardCompleteness(canonical, coreCast)
+	if err != nil {
+		return err
+	}
+	for _, result := range completeness {
+		if result.Status != domain.CharacterCardComplete {
+			return fmt.Errorf("confirmed Character metadata upgrade is incomplete for %q", result.CharacterID)
+		}
+	}
+	if candidate.Base.Candidate == rebound.Candidate &&
+		candidate.Base.InputDigest == rebound.InputDigest &&
+		candidate.Foundation.Revision == canonical.Revision &&
+		lifecycle.Candidate == rebound.Candidate &&
+		lifecycle.InputDigest == rebound.InputDigest &&
+		lifecycle.ReviewedCandidate == rebound.Candidate &&
+		lifecycle.ReviewedInputDigest == rebound.InputDigest &&
+		reflect.DeepEqual(lifecycle.Completeness, completeness) {
+		return nil
 	}
 	reboundCandidate := *candidate
 	reboundCandidate.Foundation = canonical
 	reboundCandidate.Base = rebound
+	if coreCast != nil {
+		reboundCandidate.ProjectedCast = cloneCoreCastForCharacterRepair(*coreCast)
+	}
 	savedCandidate, err := st.CharacterCards.SaveCandidateCAS(reboundCandidate, candidate.Revision)
 	if err != nil {
 		return err
@@ -175,11 +224,231 @@ func rebindConfirmedCharacterWorkflow(st *store.Store) error {
 	reboundLifecycle.InputDigest = rebound.InputDigest
 	reboundLifecycle.ReviewedCandidate = rebound.Candidate
 	reboundLifecycle.ReviewedInputDigest = rebound.InputDigest
+	reboundLifecycle.Completeness = completeness
 	if _, err := st.CharacterCards.SaveCAS(reboundLifecycle, lifecycle.Revision, rebound); err != nil {
 		return err
 	}
 	*candidate = savedCandidate
 	return nil
+}
+
+func completeConfirmedCharacterMetadata(st *store.Store) error {
+	canonical, err := st.Foundation.Load()
+	if err != nil {
+		return err
+	}
+	coreCast, err := st.CoreCast.Load()
+	if err != nil {
+		return err
+	}
+	coreGenders := make(map[string]string)
+	if coreCast != nil {
+		for _, member := range coreCast.Members {
+			if gender := validCharacterGender(member.Character.Gender); gender != "" {
+				coreGenders[member.Character.ID] = gender
+			}
+		}
+	}
+	missingFoundationGenders := make(map[string]string)
+	for _, character := range canonical.Characters {
+		if validCharacterGender(character.Gender) != "" {
+			continue
+		}
+		gender := coreGenders[character.ID]
+		if gender == "" {
+			gender = inferLegacyCharacterGender(character)
+		}
+		missingFoundationGenders[character.ID] = gender
+	}
+	if len(missingFoundationGenders) > 0 {
+		canonical, err = st.CompleteMissingCharacterGenders(canonical.Revision, missingFoundationGenders)
+		if err != nil {
+			return fmt.Errorf("complete legacy Foundation character metadata: %w", err)
+		}
+	}
+	if coreCast == nil {
+		return nil
+	}
+	canonicalGenders := make(map[string]string, len(canonical.Characters))
+	for _, character := range canonical.Characters {
+		canonicalGenders[character.ID] = validCharacterGender(character.Gender)
+	}
+	missingCoreGenders := make(map[string]string)
+	for _, member := range coreCast.Members {
+		if validCharacterGender(member.Character.Gender) != "" {
+			continue
+		}
+		gender := canonicalGenders[member.Character.ID]
+		if gender == "" {
+			gender = inferLegacyCharacterGender(member.Character)
+		}
+		missingCoreGenders[member.Character.ID] = gender
+	}
+	if len(missingCoreGenders) == 0 {
+		return nil
+	}
+	if _, err := st.CompleteMissingCoreCastGenders(coreCast.Revision, missingCoreGenders); err != nil {
+		return fmt.Errorf("complete legacy CoreCast character metadata: %w", err)
+	}
+	return nil
+}
+
+func confirmedCharacterRebindCompatible(
+	candidate domain.CharacterCardCandidate,
+	canonical domain.StoryFoundation,
+	current domain.CharacterCardBinding,
+	currentCoreCast *domain.CoreCastContract,
+) bool {
+	if candidate.Base.Candidate.CharacterContentDigest != current.Candidate.CharacterContentDigest {
+		enriched := domain.CloneStoryFoundation(candidate.Foundation)
+		currentGenders := make(map[string]string, len(canonical.Characters))
+		for _, character := range canonical.Characters {
+			currentGenders[character.ID] = character.Gender
+		}
+		for index := range enriched.Characters {
+			legacy := &enriched.Characters[index]
+			gender, exists := currentGenders[legacy.ID]
+			if !exists || !completeCompatibleGender(&legacy.Gender, gender) {
+				return false
+			}
+		}
+		digest, err := domain.CharacterCardContentDigest(enriched)
+		if err != nil || digest != current.Candidate.CharacterContentDigest {
+			return false
+		}
+	}
+	if candidate.Base.InputDigest == current.InputDigest {
+		return true
+	}
+	legacyInputs := candidate.Base.Inputs
+	currentInputs := current.Inputs
+	legacyCoreSignature := legacyInputs.CoreCast
+	legacyInputs.CoreCast = currentInputs.CoreCast
+	if !confirmedCharacterResumeInputsCompatible(legacyInputs, currentInputs) {
+		return false
+	}
+	if legacyCoreSignature == currentInputs.CoreCast {
+		return true
+	}
+	if currentCoreCast == nil || currentInputs.CoreCast != currentCoreCast.ContentSignature {
+		return false
+	}
+	enrichedCore := cloneCoreCastForCharacterRepair(candidate.ProjectedCast)
+	currentMembers := make(map[string]domain.Character, len(currentCoreCast.Members))
+	for _, member := range currentCoreCast.Members {
+		currentMembers[member.Character.ID] = member.Character
+	}
+	for index := range enrichedCore.Members {
+		legacy := &enrichedCore.Members[index].Character
+		currentCharacter, exists := currentMembers[legacy.ID]
+		if !exists || !completeCompatibleGender(&legacy.Gender, currentCharacter.Gender) {
+			return false
+		}
+	}
+	signature, err := domain.CoreCastContentSignature(enrichedCore)
+	return err == nil && signature == currentCoreCast.ContentSignature
+}
+
+// confirmedCharacterResumeInputsCompatible keeps durable story evidence strict
+// while allowing the runtime user-rules snapshot to advance independently.
+// Once the canonical Character content and CoreCast have already proved equal,
+// writing-only rule/schema refreshes must not invalidate the user-confirmed
+// cast. Any other named evidence remains fail-closed.
+func confirmedCharacterResumeInputsCompatible(
+	legacy domain.CharacterCardInputSignatures,
+	current domain.CharacterCardInputSignatures,
+) bool {
+	legacyAdditional := legacy.Additional
+	currentAdditional := current.Additional
+	legacy.Additional = nil
+	current.Additional = nil
+	if !reflect.DeepEqual(legacy, current) {
+		return false
+	}
+	legacyNamed := make(map[string]string, len(legacyAdditional))
+	for _, signature := range legacyAdditional {
+		if name := strings.TrimSpace(signature.Name); name != "" && name != "user_rules" {
+			legacyNamed[name] = strings.TrimSpace(signature.Signature)
+		}
+	}
+	currentNamed := make(map[string]string, len(currentAdditional))
+	for _, signature := range currentAdditional {
+		if name := strings.TrimSpace(signature.Name); name != "" && name != "user_rules" {
+			currentNamed[name] = strings.TrimSpace(signature.Signature)
+		}
+	}
+	return reflect.DeepEqual(legacyNamed, currentNamed)
+}
+
+func completeCompatibleGender(legacy *string, current string) bool {
+	current = validCharacterGender(current)
+	if current == "" {
+		return false
+	}
+	existing := validCharacterGender(*legacy)
+	if existing != "" && existing != current {
+		return false
+	}
+	*legacy = current
+	return true
+}
+
+func validCharacterGender(value string) string {
+	switch value = strings.ToLower(strings.TrimSpace(value)); value {
+	case "male", "female", "nonbinary", "unspecified":
+		return value
+	default:
+		return ""
+	}
+}
+
+func inferLegacyCharacterGender(character domain.Character) string {
+	role := strings.ToLower(strings.TrimSpace(character.Role))
+	female := containsAnyCharacterMarker(role,
+		"女主", "女配", "女性", "未婚妻", "妻子", "母亲", "妈妈", "姐姐", "妹妹",
+		"female", "woman", "wife", "mother", "sister",
+	)
+	male := containsAnyCharacterMarker(role,
+		"男主", "男配", "男性", "未婚夫", "丈夫", "父亲", "爸爸", "哥哥", "弟弟",
+		"male", "man", "husband", "father", "brother",
+	)
+	if female != male {
+		if female {
+			return "female"
+		}
+		return "male"
+	}
+	return "unspecified"
+}
+
+func containsAnyCharacterMarker(value string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneCoreCastForCharacterRepair(value domain.CoreCastContract) domain.CoreCastContract {
+	cloned := value
+	cloned.Members = append([]domain.CoreCastMember(nil), value.Members...)
+	for index := range cloned.Members {
+		cloned.Members[index].Character = domain.CloneCharacter(value.Members[index].Character)
+		cloned.Members[index].SourceCharacterIDs = append(
+			[]string(nil),
+			value.Members[index].SourceCharacterIDs...,
+		)
+	}
+	cloned.PlannedRelationships = append(
+		[]domain.CharacterRelationship(nil),
+		value.PlannedRelationships...,
+	)
+	cloned.SourceDispositions = append(
+		[]domain.SourceCharacterDisposition(nil),
+		value.SourceDispositions...,
+	)
+	return cloned
 }
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }

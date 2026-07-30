@@ -132,6 +132,16 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 		return blockedAutoResume("progress_read_failed", err), nil
 	}
 	if progress != nil && progress.CompletionRevalidation != nil && progress.CompletionRevalidation.Status != "completed" {
+		checkpoint := progress.CompletionRevalidation
+		if checkpoint.Mode == domain.RevisionModeNormal &&
+			strings.HasPrefix(checkpoint.AcceptedRevisionID, "normal-completion-baseline-") &&
+			progress.Phase == domain.PhaseWriting && progress.TotalChapters > 0 &&
+			len(progress.CompletedChapters) == progress.TotalChapters && len(progress.PendingRewrites) == 0 {
+			return makeAutoResumeDecision(
+				autoResumeState{Disposition: AutoResumeActionable, Action: AutoResumeActionHost, Reason: "legacy_completion_revalidation", Phase: string(progress.Phase)},
+				"修复旧项目完结证据并重新执行独立审计",
+			), nil
+		}
 		return makeAutoResumeDecision(
 			autoResumeState{Disposition: AutoResumeWaitUser, Reason: "completion_revalidation_required", Phase: string(progress.Phase)},
 			"完结作品结构已变更，等待正文、后处理与分层审核重新验证",

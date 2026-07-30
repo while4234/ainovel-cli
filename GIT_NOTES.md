@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-31 `this commit` `fix: resume and complete legacy novels`: repairs
+  confirmed Character bindings when only newly required gender metadata or
+  user-rules evidence changed, creates a fail-closed legacy completion
+  checkpoint only for exact 55/55-style formal coverage, enriches old layered
+  completion evidence, makes Web resume execute that migration, aligns
+  independent Ed25519 receipt canonicalization, and removes two deterministic
+  audit false positives. Real validation completed `插翅难飞` at 55/55 chapters
+  and 221,710 words with a signed 132-layer completion audit.
 - 2026-07-31 `this commit` `fix: expose interrupted adaptation planning`:
   marks durable adaptation generation as paused and recoverable when no live
   proposal action exists after a server restart, while preserving the normal
