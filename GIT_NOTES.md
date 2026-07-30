@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-30 `this commit` `fix: unify original character revision feedback`:
+- 2026-07-30 `31d8a34` `fix: unify original character revision feedback`:
   distinguishes the pre-Foundation character-candidate gate from complete
   StoryFoundation review while giving both the same author-facing
   view/revise/review/confirm skeleton. Original candidate review now collects
