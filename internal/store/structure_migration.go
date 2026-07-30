@@ -1104,6 +1104,10 @@ func (m *structureMigration) loadIndexUnlocked() (structureIndex, bool, error) {
 	if err := index.validate(); err != nil {
 		return structureIndex{}, false, err
 	}
+	index = structureIndexWithImplicitVolumeArcs(index)
+	if err := index.validate(); err != nil {
+		return structureIndex{}, false, err
+	}
 	return index, true, nil
 }
 
@@ -1261,6 +1265,41 @@ func structureIndexFromAdaptation(plan *domain.AdaptationPlan) structureIndex {
 			}
 		}
 		index.Chapters = append(index.Chapters, ref)
+	}
+	return structureIndexWithImplicitVolumeArcs(index)
+}
+
+func structureIndexWithImplicitVolumeArcs(index structureIndex) structureIndex {
+	for _, volume := range index.Volumes {
+		hasArc := false
+		for _, arc := range index.Arcs {
+			if arc.VolumeID == volume.ID {
+				hasArc = true
+				break
+			}
+		}
+		if hasArc {
+			continue
+		}
+
+		hasChapter := false
+		for _, chapter := range index.Chapters {
+			if chapter.VolumeID == volume.ID {
+				hasChapter = true
+				break
+			}
+		}
+		if !hasChapter {
+			continue
+		}
+
+		arcID := domain.LegacyStructureID(volume.ID, domain.StructureKindArc, "implicit-volume-arc")
+		index.Arcs = append(index.Arcs, structureArcRef{ID: arcID, VolumeID: volume.ID, Number: 1})
+		for chapterIndex := range index.Chapters {
+			if index.Chapters[chapterIndex].VolumeID == volume.ID && index.Chapters[chapterIndex].ArcID == "" {
+				index.Chapters[chapterIndex].ArcID = arcID
+			}
+		}
 	}
 	return index
 }

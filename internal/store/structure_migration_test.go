@@ -148,6 +148,62 @@ func TestAdaptationIDSavesAreIdempotentAcrossRestartReorderAndAppend(t *testing.
 	}
 }
 
+func TestAdaptationStructureSupportsImplicitArcBatchReviews(t *testing.T) {
+	dir := t.TempDir()
+	st := NewStore(dir)
+	plan := domain.AdaptationPlan{
+		Granularity: domain.AdaptationGranularityChapter,
+		Volumes: []domain.AdaptationVolumePlan{
+			{Index: 1, Title: "volume-one", TargetFrom: 1, TargetTo: 3},
+		},
+		Chapters: []domain.AdaptationChapterPlan{
+			{Chapter: 1, Title: "one"},
+			{Chapter: 2, Title: "two"},
+			{Chapter: 3, Title: "three"},
+		},
+	}
+	if err := st.Adaptation.SavePlan(plan); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	review := domain.ReviewEntry{
+		Chapter: 3, Scope: "arc_batch", Volume: 1, Arc: 1,
+		BatchFrom: 1, BatchTo: 3, Verdict: "accept",
+	}
+	if err := st.World.SaveReview(review); err != nil {
+		t.Fatalf("SaveReview: %v", err)
+	}
+	reviews, err := st.World.LoadArcBatchReviews(1, 1)
+	if err != nil {
+		t.Fatalf("LoadArcBatchReviews: %v", err)
+	}
+	if len(reviews) != 1 || reviews[0].Chapter != 3 || reviews[0].Volume != 1 || reviews[0].Arc != 1 {
+		t.Fatalf("reviews=%+v", reviews)
+	}
+}
+
+func TestLegacyAdaptationStructureLoadsImplicitVolumeArc(t *testing.T) {
+	dir := t.TempDir()
+	io := newIO(dir)
+	legacy := structureIndex{
+		Version: structureSchemaVersion,
+		Volumes: []structureVolumeRef{{ID: "vol_00000000000000000000000000000001", Number: 1}},
+		Chapters: []structureChapterRef{
+			{ID: "ch_00000000000000000000000000000001", Number: 1, VolumeID: "vol_00000000000000000000000000000001"},
+		},
+	}
+	if err := io.WriteJSON(structureIndexFile, legacy); err != nil {
+		t.Fatalf("write legacy index: %v", err)
+	}
+	index, ok, err := newStructureMigration(dir).loadIndex()
+	if err != nil || !ok {
+		t.Fatalf("loadIndex: ok=%t err=%v", ok, err)
+	}
+	arc, ok := index.arcRef(1, 1)
+	if !ok || arc.ID == "" || index.Chapters[0].ArcID != arc.ID {
+		t.Fatalf("implicit arc was not synthesized: index=%+v", index)
+	}
+}
+
 func TestAdaptationProposalAndVolumeReviewIDLessRetriesKeepIDs(t *testing.T) {
 	dir := t.TempDir()
 	review := domain.AdaptationVolumeReview{Volumes: []domain.AdaptationVolumePlan{{Index: 1, Title: "review-volume", TargetFrom: 1, TargetTo: 2, SourceFrom: 1, SourceTo: 2}}}
