@@ -118,6 +118,9 @@ func TestProductionLongArchitectBoundaryAllowsOneFocalVolumeContext(t *testing.T
 }
 
 func TestProductionEditorBoundaryAllowsOneArcReviewPackage(t *testing.T) {
+	if editorAgentInputLimitBytes != 128*1024 {
+		t.Fatalf("editor input limit=%d, want %d", editorAgentInputLimitBytes, 128*1024)
+	}
 	for _, delta := range []int{-1, 1} {
 		t.Run(map[int]string{-1: "under", 1: "over"}[delta], func(t *testing.T) {
 			st := initializedDiagnosticStore(t)

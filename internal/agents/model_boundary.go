@@ -14,7 +14,7 @@ import (
 const (
 	productionAgentInputLimitBytes = 60 * 1024
 	architectLongInputLimitBytes   = 96 * 1024
-	editorAgentInputLimitBytes     = 96 * 1024
+	editorAgentInputLimitBytes     = 128 * 1024
 	characterAgentInputLimitBytes  = 128 * 1024
 	writerAgentInputLimitBytes     = 96 * 1024
 	continuityAuditInputLimitBytes = 128 * 1024
