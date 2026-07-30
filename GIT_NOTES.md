@@ -46,7 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-31 `this commit` `fix: allow bounded editor arc reviews`:
+- 2026-07-31 `this commit` `fix: expose interrupted adaptation planning`:
+  marks durable adaptation generation as paused and recoverable when no live
+  proposal action exists after a server restart, while preserving the normal
+  running presentation for active generation. The workflow panel now exposes
+  the existing volume/detail resume action instead of showing a zombie run.
+- 2026-07-31 `a641c69` `fix: allow bounded editor arc reviews`:
   gives only `agent_editor` a 96 KiB compiled-input boundary so a confirmed
   four-chapter arc package can survive one `novel_context` expansion. A real
   63.2 KiB review passed and saved its arc summary after deployment.

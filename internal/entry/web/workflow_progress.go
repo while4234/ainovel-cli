@@ -588,6 +588,15 @@ func adaptationWorkflowProgress(
 		switch workflow.Stage {
 		case domain.AdaptationPlanningStageSkeletonGenerating:
 			progress.CurrentStep = planningStep
+			if !workflowContainsString(actionKinds, projectActionKindAdaptationProposal) {
+				progress.Status = WorkflowStatusPaused
+				progress.Recoverable = true
+				progress.Error = "adaptation proposal generation was interrupted"
+				progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+				progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "分卷规划生成已中断，可从持久化进度继续")
+				progress.NextAction = nextWorkflowAction(progress, "resume_adaptation_proposal", "继续分卷规划", false)
+				return progress
+			}
 			progress.Status = WorkflowStatusRunning
 			progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
 			message := "正在生成分卷规划"
@@ -605,6 +614,15 @@ func adaptationWorkflowProgress(
 			return progress
 		case domain.AdaptationPlanningStageDetailsGenerating:
 			progress.CurrentStep = "chapter_outline"
+			if !workflowContainsString(actionKinds, projectActionKindAdaptationProposal) {
+				progress.Status = WorkflowStatusPaused
+				progress.Recoverable = true
+				progress.Error = "adaptation proposal detail generation was interrupted"
+				progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
+				progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "章节细纲生成已中断，可从持久化批次继续")
+				progress.NextAction = nextWorkflowAction(progress, "resume_adaptation_proposal_details", "继续章节详细提案", false)
+				return progress
+			}
 			progress.Status = WorkflowStatusRunning
 			progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
 			progress.Steps = setStep(progress.Steps, progress.CurrentStep, progress.Status, 0, 0, "分卷已通过，正在生成并审核章节细纲")
