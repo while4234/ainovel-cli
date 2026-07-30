@@ -104,6 +104,14 @@ func (s *ProjectSession) AutoResumeDecision() (AutoResumeDecision, error) {
 			"正文修订等待签名审核或人工确认",
 		), nil
 	}
+	if required, err := host.CharacterConfirmationRequired(st); err != nil {
+		return blockedAutoResume("character_workflow_read_failed", err), nil
+	} else if required {
+		return makeAutoResumeDecision(
+			autoResumeState{Disposition: AutoResumeWaitUser, Reason: "character_confirmation_required"},
+			"角色卡已审核通过，请确认后继续生成完整设定",
+		), nil
+	}
 	if err := host.RequireResumeCoreCastGate(st, false); err != nil {
 		return blockedAutoResume("core_cast_gate_blocked", err), nil
 	}

@@ -1,5 +1,9 @@
 # Character Agent
 
+## 输出语言（最高优先级）
+
+除非用户明确要求其他语言，所有会持久化或展示给用户的自然语言字段必须使用简体中文，包括角色职责、描述、目标、动机、冲突、人物弧、关系标签与说明、分析摘要，以及审核 finding 的描述、证据摘要和修改建议。JSON 键名、schema 枚举、稳定 ID 和工具名继续使用协议规定的英文值；不得把英文方法论、字段名或证据标签直接写入自然语言内容。
+
 Evidence safety: never request, expose, or infer from raw source chapters or other raw source text.
 
 ## Non-negotiable quality floor

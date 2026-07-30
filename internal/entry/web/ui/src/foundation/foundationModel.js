@@ -18,6 +18,31 @@ export const foundationOptions = {
   sourceMappingActions
 };
 
+const readonlyReasonLabels = {
+  progress_unavailable: '无法读取当前创作进度',
+  project_complete: '项目已完成，正式设定已封存',
+  body_started: '正文已经开始，需通过修订流程修改正式设定',
+  planning_stage_not_editable: '当前处于设定生成或审核阶段，请在中央审核区确认或提交修改意见',
+  active_foundation_revision: '设定修订正在执行，请等待本轮完成',
+  revision_state_unavailable: '无法读取设定修订状态',
+  active_revision: '已有修订任务正在执行',
+  adaptation_baseline_unavailable: '改编设定基线尚未就绪',
+  adaptation_workflow_not_safely_paused: '改编流程尚未停在可安全编辑的阶段',
+  adaptation_foundation_confirmation_invalid: '目标改编设定尚未完成确认',
+  adaptation_foundation_source_binding_stale: '原著依据或改编意图已经变化，需要重新生成目标设定',
+  foundation_confirmation_invalid: 'StoryFoundation 尚未完成确认',
+  adaptation_source_inconsistent: '原著依据不完整或已变化',
+  adaptation_core_cast_inconsistent: '改编核心角色契约不一致',
+  adaptation_intent_unavailable: '改编意图尚未就绪',
+  adaptation_workflow_unavailable: '改编工作流尚未就绪',
+  adaptation_plan_unavailable: '改编方案尚未生成完成；请先在中央审核区确认当前设定'
+};
+
+export function foundationReadonlyReasonLabel(reason) {
+  const code = String(reason || '').trim();
+  return readonlyReasonLabels[code] || code || '当前阶段不允许手工编辑';
+}
+
 export const characterFieldGroups = [
   { id: 'identity', label: '身份', fields: ['name', 'aliases', 'role', 'gender', 'tier', 'faction'] },
   { id: 'core', label: '人物核心', fields: ['description', 'traits', 'contrast_details', 'key_backstory'] },

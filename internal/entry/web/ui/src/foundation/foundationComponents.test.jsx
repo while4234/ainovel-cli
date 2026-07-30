@@ -144,7 +144,7 @@ describe('foundation components', () => {
     expect(markup).toContain('男主心腹助理');
     expect(markup).toContain('角色目录');
     expect(markup).toContain('显示 1 / 共 1');
-    expect(markup).toMatch(/<button class="tool-button accent" type="button"><svg[^>]*>[\s\S]*确认本轮角色候选<\/button>/);
+    expect(markup).toMatch(/<button id="character-confirm-action" class="tool-button accent" type="button"><svg[^>]*>[\s\S]*确认角色卡并继续<\/button>/);
   });
 
   it('已确认角色审核按稳定角色去重统计并显示通过', () => {

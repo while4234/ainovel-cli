@@ -1075,6 +1075,11 @@ func (s *ProjectSession) Resume() (string, error) {
 		if active != nil {
 			return "", fmt.Errorf("%w: %s", storepkg.ErrActiveRevisionBlocksNormalFlow, active.ID)
 		}
+		if required, err := host.CharacterConfirmationRequired(st); err != nil {
+			return "", fmt.Errorf("read Character confirmation state before resume: %w", err)
+		} else if required {
+			return "角色卡已审核通过，请确认后继续生成完整设定", nil
+		}
 		if !cocreate.coreCastResumeExempt() {
 			if err := host.RequireResumeCoreCastGate(st, true); err != nil {
 				return "", err

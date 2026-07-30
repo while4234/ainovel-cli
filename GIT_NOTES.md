@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: make Foundation confirmation discoverable`:
+  moves complete Foundation review into a central tabbed workspace, reduces
+  the right inspector to status plus a direct entry, and provides polished
+  full-height and compact desktop confirmation layouts. Reviewed character
+  candidates now expose an explicit confirmation gate through workflow
+  progress, Resume, Foundation Center, and the character-card workspace.
+  Focused UI tests (88), Go resume/progress regressions, embedded asset tests,
+  production build, HTTP smoke checks, and visible 1920x1080/1440x900 browser
+  checks passed.
 - 2026-07-30 `this commit` `fix: split original and adaptation planning flows`:
   gives adaptation volume review and chapter-outline review independent
   progress stages, maps them to the durable planning workflow, and removes the

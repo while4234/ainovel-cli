@@ -111,7 +111,7 @@ export function workflowRiskText(progress) {
   return '暂无需要处理的风险。';
 }
 
-export function WorkflowProgressPanel({ projectId = '', snapshot }) {
+export function WorkflowProgressPanel({ projectId = '', snapshot, onNextAction }) {
   const progressRef = React.useRef({ projectId: '', progress: null });
   progressRef.current = retainProjectWorkflowProgress(progressRef.current, projectId, snapshot);
   const progress = progressRef.current.progress;
@@ -173,6 +173,11 @@ export function WorkflowProgressPanel({ projectId = '', snapshot }) {
           <span>下一操作</span>
           <strong>{nextAction}</strong>
           {progress.next_action?.requires_confirmation ? <small>需要你确认</small> : null}
+          {progress.next_action && onNextAction ? (
+            <button className="workflow-next-action" type="button" onClick={() => onNextAction(progress.next_action)}>
+              {progress.next_action.label}
+            </button>
+          ) : null}
         </div>
         <div className={progress.error || progress.recoverable ? 'workflow-risk is-warning' : 'workflow-risk'}>
           <span>风险与恢复</span>

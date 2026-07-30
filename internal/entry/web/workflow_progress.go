@@ -281,6 +281,27 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 		Steps:    steps,
 	}
 
+	if characterConfirmationRequired(snapshot.CharacterWorkflow) {
+		progress.CurrentStep = "foundation"
+		progress.Status = WorkflowStatusWaitingConfirmation
+		progress.NextAction = nextWorkflowAction(
+			progress,
+			"confirm_character_candidate",
+			"确认角色卡并继续",
+			true,
+		)
+		progress.Steps = completeStepsBefore(steps, progress.CurrentStep)
+		progress.Steps = setStep(
+			progress.Steps,
+			progress.CurrentStep,
+			progress.Status,
+			0,
+			0,
+			"角色卡已审核通过，确认后才会发布完整设定并进入下一阶段",
+		)
+		return progress
+	}
+
 	// The durable planning checkpoint supersedes stale co-create transport
 	// state. A previous co-create request may have failed or been cancelled
 	// after its accepted brief already advanced into volume/detail planning;
@@ -341,6 +362,13 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 		progress.NextAction = nextWorkflowAction(progress, "begin_cocreate", "开始普通共创", false)
 	}
 	return progress
+}
+
+func characterConfirmationRequired(workflow *host.CharacterWorkflowSummary) bool {
+	return workflow != nil &&
+		workflow.AnalysisStatus == domain.CharacterCardAnalysisCandidateReady &&
+		workflow.ReviewStatus == domain.CharacterCardReviewPassed &&
+		workflow.ConfirmationStatus == domain.CharacterCardUnconfirmed
 }
 
 func normalPlanningReviewProgress(progress WorkflowProgress, review *host.PlanningReviewSummary, usesVolumePlan bool) (string, WorkflowStatus, *WorkflowNextAction) {

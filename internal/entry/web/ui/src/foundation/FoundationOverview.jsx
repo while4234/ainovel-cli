@@ -1,12 +1,19 @@
-import { shortSignature } from './foundationModel.js';
+import { foundationReadonlyReasonLabel, shortSignature } from './foundationModel.js';
 import { sourceDispositionLabels } from '../coreCast.js';
+import { characterConfirmationRequiredFromWorkspace } from './characterConfirmation.js';
 
-export function FoundationOverview({ server, draft, disabled, premiseError, onPremiseChange, onOpenCoreCast }) {
+export function FoundationOverview({ server, draft, workspace, disabled, premiseError, onPremiseChange, onOpenCharacters }) {
   const runtime = server.activeRevision;
   const planning = server.planningReview;
   const confirmedBrief = server.mode === 'normal' ? String(planning?.brief || '').trim() : '';
   const premise = draft.premise || confirmedBrief;
   const showingConfirmedBrief = !draft.premise.trim() && Boolean(confirmedBrief);
+  const characterConfirmationRequired = characterConfirmationRequiredFromWorkspace(workspace);
+  const characterActionLabel = characterConfirmationRequired
+    ? '前往角色卡确认'
+    : workspace?.candidate
+      ? '查看角色卡进度'
+      : '前往角色卡生成';
   return <div className="foundation-overview-grid">
     <section className="foundation-card" aria-labelledby="foundation-overview-target">
       <h3 id="foundation-overview-target">目标 StoryFoundation</h3>
@@ -17,13 +24,13 @@ export function FoundationOverview({ server, draft, disabled, premiseError, onPr
         <Metric label="角色" value={draft.characters.length} />
         <Metric label="计划关系" value={draft.relationships.length} />
         <Metric label="世界规则" value={draft.world_rules.length} />
-        <Metric label="可编辑" value={server.editable ? '是' : `否：${server.readonlyReason || '未说明'}`} />
+        <Metric label="可编辑" value={server.editable ? '是' : `否：${foundationReadonlyReasonLabel(server.readonlyReason)}`} />
         <Metric label="活动修订" value={runtime ? `${runtime.stage} · ${runtime.revision_id || runtime.session_id}` : '无'} />
         <Metric label="规划审核" value={planning ? `${planning.state || planning.status || 'pending'} · rev ${planning.revision || 0}` : '无'} />
         <Metric label="核心角色" value={server.coreCastConfirmed ? '已确认' : '需要确认'} />
       </dl>
       <label className="foundation-premise-field"><span>目标故事前提{showingConfirmedBrief ? '（共创确认稿）' : ''}</span><textarea aria-invalid={Boolean(premiseError && !premise)} disabled={disabled} value={premise} onChange={(event) => onPremiseChange(event.target.value)} />{showingConfirmedBrief ? <small>该内容来自已确认的共创稿；本轮角色确认后会随 StoryFoundation 正式发布。</small> : premiseError ? <small className="field-error">{premiseError}</small> : null}</label>
-      {!server.coreCastConfirmed ? <button className="tool-button" type="button" onClick={onOpenCoreCast}>前往共创工作区确认</button> : null}
+      {!server.coreCastConfirmed ? <button className={`tool-button ${characterConfirmationRequired ? 'accent' : ''}`} type="button" onClick={onOpenCharacters}>{characterActionLabel}</button> : null}
     </section>
 
     {server.mode === 'adaptation' ? <SourceFoundation source={server.sourceFoundation} server={server} /> : null}

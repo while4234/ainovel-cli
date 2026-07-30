@@ -30,6 +30,21 @@ type CharacterCandidateEditRequest struct {
 	RelationshipsReviewed     bool
 }
 
+// CharacterConfirmationRequired reports the explicit user gate after the
+// current Character candidate has passed deterministic and independent review
+// but before it has been published as the canonical StoryFoundation/CoreCast.
+func CharacterConfirmationRequired(st *storepkg.Store) (bool, error) {
+	candidate, lifecycle, binding, err := tools.CurrentCharacterWorkflow(st)
+	if err != nil {
+		return false, err
+	}
+	if candidate == nil || lifecycle == nil ||
+		lifecycle.ConfirmationStatus == domain.CharacterCardConfirmed {
+		return false, nil
+	}
+	return currentCharacterReviewPassed(*lifecycle, binding), nil
+}
+
 // EditOriginalCharacterCandidate changes only staged Character-owned fields
 // and deterministically invalidates the previous independent review.
 func EditOriginalCharacterCandidate(

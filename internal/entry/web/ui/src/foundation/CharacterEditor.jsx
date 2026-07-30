@@ -284,6 +284,10 @@ function CharacterAgentPanel({
       ? '候选已生成，等待确认'
       : '可分析并补全角色';
   return <section className={`character-agent-panel ${expanded ? 'expanded' : 'collapsed'}`} aria-labelledby="character-agent-heading">
+    {canConfirm ? <div className="character-confirmation-gate" role="status">
+      <div><ShieldCheck size={20} /><span><strong>角色卡审核已通过</strong><small>确认后将发布本轮角色候选，并自动继续生成完整设定。</small></span></div>
+      <button id="character-confirm-action" className="tool-button accent" type="button" onClick={() => onConfirm?.()}><Check size={16} />确认角色卡并继续</button>
+    </div> : null}
     <div className="character-agent-summary">
       <button aria-expanded={expanded} className="character-agent-toggle" type="button" onClick={() => onExpandedChange?.(!expanded)}>
         <Bot size={20} />
@@ -294,7 +298,6 @@ function CharacterAgentPanel({
         <button className="tool-button accent" disabled={!canAnalyze} type="button" onClick={() => onAnalyze?.({ characterIDs: [], instruction, allowSupportingCharacters: allowSupporting })}><Sparkles size={16} />分析并补全全部角色</button>
         <button className="tool-button" disabled={!canAnalyze || !selected} type="button" onClick={() => onAnalyze?.({ characterIDs: [selected.id], instruction, allowSupportingCharacters: allowSupporting })}><UserRound size={16} />分析当前角色</button>
         <button className="tool-button" disabled={!canReview} type="button" onClick={() => onReview?.()}><FileSearch size={16} />审核全部角色</button>
-        <button className="tool-button accent" disabled={!canConfirm} type="button" onClick={() => onConfirm?.()}><Check size={16} />确认本轮角色候选</button>
       </div>
     </div>
     {expanded ? <><div className="character-agent-controls">

@@ -4,7 +4,8 @@ import {
   loadCharacterWorkspace, loadFoundation, previewFoundation, retryCharacterWorkspace, retryFoundation, reviewCharacters
 } from './foundationApi.js';
 import { canApplyFoundation, createFoundationState, foundationReducer } from './foundationReducer.js';
-import { cloneFoundation } from './foundationModel.js';
+import { cloneFoundation, foundationReadonlyReasonLabel } from './foundationModel.js';
+import { characterConfirmationRequiredFromWorkspace } from './characterConfirmation.js';
 import { FoundationOverview } from './FoundationOverview.jsx';
 import { CharacterEditor } from './CharacterEditor.jsx';
 import { RelationshipEditor } from './RelationshipEditor.jsx';
@@ -18,7 +19,14 @@ const tabs = [
   ['rules', '世界规则'], ['preview', '差异与影响'], ['revision', '修订状态']
 ];
 
-export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenReview, onDirtyChange }) {
+export function FoundationCenter({
+  projectId,
+  onClose,
+  onOpenReview,
+  onDirtyChange,
+  requestedNavigation,
+  onNavigationHandled
+}) {
   const [state, dispatch] = useReducer(foundationReducer, projectId, createFoundationState);
   const [tab, setTab] = useState('overview');
   const [characterSubmitting, setCharacterSubmitting] = useState(false);
@@ -115,6 +123,37 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
   }, [state.status, onDirtyChange]);
 
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
+  const characterConfirmationRequired = characterConfirmationRequiredFromWorkspace(state.characterWorkspace);
+  useEffect(() => {
+    const requestedTab = requestedNavigation?.tab;
+    const requestId = Number(requestedNavigation?.requestId || 0);
+    if (!requestId ||
+      requestedNavigation?.projectId !== projectId ||
+      !tabs.some(([id]) => id === requestedTab)) {
+      return;
+    }
+    if (requestedNavigation?.anchor === 'character-confirm-action' && !characterConfirmationRequired) {
+      return;
+    }
+    setTab(requestedTab);
+    globalThis.requestAnimationFrame?.(() => {
+      const target = requestedNavigation?.anchor
+        ? globalThis.document?.getElementById(requestedNavigation.anchor)
+        : globalThis.document?.getElementById(`foundation-tab-${requestedTab}`);
+      target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      target?.focus?.();
+      onNavigationHandled?.(requestId);
+    });
+  }, [
+    characterConfirmationRequired,
+    onNavigationHandled,
+    projectId,
+    requestedNavigation?.anchor,
+    requestedNavigation?.projectId,
+    requestedNavigation?.requestId,
+    requestedNavigation?.tab
+  ]);
 
   useEffect(() => {
     if (state.status === 'completed') onOpenReview?.(state.server?.mode);
@@ -262,10 +301,22 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
   const displayedWorldRules = showingSourceOnly ? state.server.sourceFoundation?.world_rules || [] : state.draft.world_rules;
   const displayedRelationshipCharacters = showingSourceOnly ? state.server.sourceFoundation?.characters || [] : state.draft.characters;
   const validationNotice = foundationValidationPresentation(state.server, state.validation);
+  const openCharacterConfirmation = () => {
+    setTab('characters');
+    globalThis.requestAnimationFrame?.(() => {
+      const target = globalThis.document?.getElementById('character-confirm-action');
+      target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      target?.focus?.();
+    });
+  };
 
   return <div className="foundation-center">
     <header className="foundation-header"><div><span className="eyebrow">StoryFoundation</span><h1>设定中心</h1><p>统一管理原创与改编的目标故事设定；SourceFoundation 始终只读。</p></div><button className="tool-button" type="button" onClick={requestClose}>返回创作</button></header>
-    <div className="foundation-state-strip" aria-live="polite" role="status"><strong>{statusLabel(state.status)}</strong><span>target rev {state.server.baseRevision}</span>{state.server.readonlyReason ? <span>只读原因：{state.server.readonlyReason}</span> : null}</div>
+    <div className="foundation-state-strip" aria-live="polite" role="status"><strong>{statusLabel(state.status)}</strong><span>target rev {state.server.baseRevision}</span>{state.server.readonlyReason ? <span>只读原因：{foundationReadonlyReasonLabel(state.server.readonlyReason)}</span> : null}</div>
+    {characterConfirmationRequired ? <section className="foundation-next-action" aria-labelledby="foundation-next-action-title">
+      <div><strong id="foundation-next-action-title">角色卡审核已通过，等待你的确认</strong><span>候选角色尚未发布。确认后才会写入 StoryFoundation，并继续补全关系、世界规则和后续规划。</span></div>
+      <button className="tool-button accent" type="button" onClick={openCharacterConfirmation}>查看并确认角色卡</button>
+    </section> : null}
     {state.error ? <div className="error-banner" role="alert"><strong>{state.error.code}</strong><span>{state.error.message}</span></div> : null}
     {state.illegalAction ? <div className="warning-note" role="status">{state.illegalAction}</div> : null}
     {state.status === 'stale' ? <div className="foundation-stale" role="alert"><strong>服务器基线已变化，草稿仍完整保留。</strong><span>先加载最新基线，再用当前草稿重新生成 preview。</span><button className="tool-button" disabled={!state.staleServer} type="button" onClick={() => dispatch({ type: 'rebase_stale', ...requestContext() })}>以最新基线重新对比</button></div> : null}
@@ -274,7 +325,7 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     {!showingSourceOnly && validationNotice.kind === 'readonly' ? <div aria-live="polite" className="foundation-readonly-validation" role="status"><strong>当前设定只读，暂不能处理校验项</strong><span>恢复到可编辑阶段后再处理以下内容：{validationNotice.messages.join('；')}</span></div> : null}
     <nav aria-label="设定中心区域" className="foundation-tabs" role="tablist">{tabs.map(([id, label], index) => <button aria-controls={`foundation-panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} id={`foundation-tab-${id}`} key={id} role="tab" tabIndex={tab === id ? 0 : -1} type="button" onClick={() => setTab(id)} onKeyDown={(event) => moveTab(event, index, setTab)}>{label}</button>)}</nav>
     <main aria-labelledby={`foundation-tab-${tab}`} className={`foundation-panel foundation-panel-${tab}`} id={`foundation-panel-${tab}`} role="tabpanel">
-      {tab === 'overview' ? <FoundationOverview server={state.server} draft={state.draft} disabled={disabled} premiseError={state.validation.fields.premise} onPremiseChange={(premise) => edit({ premise })} onOpenCoreCast={onOpenCoreCast} /> : null}
+      {tab === 'overview' ? <FoundationOverview server={state.server} draft={state.draft} workspace={characterWorkspace} disabled={disabled} premiseError={state.validation.fields.premise} onPremiseChange={(premise) => edit({ premise })} onOpenCharacters={() => setTab('characters')} /> : null}
       {tab === 'characters' ? <CharacterEditor
         value={state.draft.characters} coreCast={state.server.coreCast}
         mode={state.server.mode} sourceFoundation={state.server.sourceFoundation}

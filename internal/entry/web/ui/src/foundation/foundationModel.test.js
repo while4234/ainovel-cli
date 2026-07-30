@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   acceptAllCharacterCandidates, candidateFingerprint, characterFieldDiff, duplicateFoundationCharacter,
-  filterAndSortCharacters, mergeCharacterField, newFoundationCharacter, normalizeCharacter,
+  filterAndSortCharacters, foundationReadonlyReasonLabel, mergeCharacterField, newFoundationCharacter, normalizeCharacter,
   normalizeCharacterWorkspace, normalizeFoundationResponse, normalizeWorldRule, reviewStatusForCharacter,
   sourceMajorCharacters, validateFoundationDraft
 } from './foundationModel.js';
@@ -14,6 +14,12 @@ const complete = {
 };
 
 describe('foundation model', () => {
+  it('将服务端只读状态码转换为用户可理解的中文原因', () => {
+    expect(foundationReadonlyReasonLabel('planning_stage_not_editable')).toContain('中央审核区');
+    expect(foundationReadonlyReasonLabel('adaptation_plan_unavailable')).toContain('改编方案');
+    expect(foundationReadonlyReasonLabel('')).toBe('当前阶段不允许手工编辑');
+  });
+
   it('非阻塞审核建议不把已通过角色误标为需修订', () => {
     const advisory = [{ character_id: 'hero', severity: 'warning', blocking: false }];
     const blocking = [{ character_id: 'hero', severity: 'blocking', blocking: true }];
