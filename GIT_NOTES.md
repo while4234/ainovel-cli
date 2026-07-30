@@ -46,7 +46,7 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-30 `this commit` `fix: make Foundation confirmation discoverable`:
+- 2026-07-30 `ace4c39` `fix: make Foundation confirmation discoverable`:
   moves complete Foundation review into a central tabbed workspace, reduces
   the right inspector to status plus a direct entry, and provides polished
   full-height and compact desktop confirmation layouts. Reviewed character
