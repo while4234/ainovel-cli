@@ -134,7 +134,7 @@ describe('CharacterEditor workspace', () => {
     });
 
     expect(container.querySelectorAll('[role="option"]')).toHaveLength(1);
-    expect(container.textContent).toContain('来源角色（只读，尚未转为目标角色）');
+    expect(container.textContent).toContain('只读表示不可在此改写，并不表示必须共创后才能完整查看');
     expect(container.textContent).toContain('原著林舟');
     expect(container.textContent).toContain('旧王继承人');
     expect(container.textContent).toContain('背负流亡王庭的秘密，追查城市灾变。');

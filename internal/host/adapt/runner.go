@@ -62,10 +62,13 @@ const (
 	adaptationPlannerAuthorizationMaxAttempts = 3
 	adaptationProposalRuntimeVersion          = 2
 	adaptationProposalRuntimeLegacyVersion    = 1
-	adaptationSourceFoundationVersion         = 1
-	adaptationSourceFoundationPromptVersion   = "source-foundation-merge-v1"
+	adaptationSourceFoundationVersion         = 3
+	adaptationSourceFoundationPromptVersion   = "source-foundation-merge-v2"
+	adaptationSourceAnalyzerVersion           = 2
+	adaptationSourceAnalyzerPromptVersion     = "source-chapter-analyzer-v2"
 	sourceFoundationBatchKindReports          = "reports"
 	sourceFoundationBatchKindSummary          = "summary"
+	sourceFoundationBatchKindAssembled        = "assembled-v2"
 )
 
 const plannerBudgetDeviationAcceptedNote = "budget_deviation_accepted:source_range_capacity_reviewed"
@@ -217,7 +220,7 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 		if err != nil {
 			return fmt.Errorf("load source report %d: %w", chapterNum, err)
 		}
-		if reusableSourceReport(existing, source.SHA256) {
+		if currentSourceReport(existing, source.SHA256, deps.Prompts.Analyzer) {
 			emit(StageChapter, chapterNum, total, fmt.Sprintf("跳过第 %d/%d 章，单章分析已完成：%s", chapterNum, total, ch.Title), nil)
 			continue
 		}
@@ -228,6 +231,8 @@ func PrepareSource(ctx context.Context, deps Deps, sourcePath string, emit func(
 		}
 		report := toSourceReport(chapterNum, ch.Title, analysis)
 		report.SourceSHA256 = source.SHA256
+		report.AnalyzerVersion = adaptationSourceAnalyzerVersion
+		report.AnalyzerSignature = sourceAnalyzerPromptSignature(deps.Prompts.Analyzer)
 		if err := deps.Store.Adaptation.SaveSourceReport(report); err != nil {
 			return fmt.Errorf("save source report %d: %w", chapterNum, err)
 		}
@@ -422,57 +427,33 @@ func mergeSourceFoundationPartialsResumable(
 	if len(partials) == 1 {
 		return partials[0].Result, nil
 	}
-	opts := structuredCallOptionsWithDeps(deps, StageFoundation, totalReports, totalReports, emit)
-	current := partials
-	level := 1
-	for len(current) > 1 {
-		groups := imp.FoundationMergePartialBatchesForPrompt(current, batchRuneLimit, deps.Prompts.FoundationMerge, totalReports)
-		next := make([]imp.FoundationMergePartial, 0, len(groups))
-		for i, group := range groups {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			index := i + 1
-			from := group[0].From
-			to := group[len(group)-1].To
-			inputSignature := sourceFoundationPartialGroupSignature(level, group)
-			existing, err := deps.Store.Adaptation.LoadSourceFoundationBatch(level, index)
-			if err != nil {
-				return nil, fmt.Errorf("load source foundation summary level %d batch %d: %w", level, index, err)
-			}
-			if sourceFoundationBatchCurrent(existing, sourceFoundationBatchKindSummary, level, index, from, to, sourceSignature, inputSignature, promptSignature, batchRuneLimit) {
-				next = append(next, imp.FoundationMergePartial{
-					Index:          index,
-					From:           existing.SourceFrom,
-					To:             existing.SourceTo,
-					InputSignature: existing.InputSignature,
-					Result:         toFoundationResult(&existing.Foundation),
-				})
-				emit(StageFoundation, to, totalReports, fmt.Sprintf("reuse source foundation summary checkpoint L%d %d/%d: chapters %d-%d", level, index, len(groups), from, to), nil)
-				continue
-			}
-
-			emit(StageFoundation, to, totalReports, fmt.Sprintf("merge source foundation summary L%d %d/%d: chapters %d-%d", level, index, len(groups), from, to), nil)
-			result, err := imp.MergeFoundationPartials(ctx, deps.modelForStage("source_analysis"), deps.Prompts.FoundationMerge, group, totalReports, opts)
-			if err != nil {
-				return nil, fmt.Errorf("merge source foundation summary level %d batch %d/%d (chapters %d-%d): %w", level, index, len(groups), from, to, err)
-			}
-			batch := sourceFoundationBatchFromResult(sourceFoundationBatchKindSummary, level, index, from, to, sourceSignature, inputSignature, promptSignature, batchRuneLimit, manifest, result)
-			if err := deps.Store.Adaptation.SaveSourceFoundationBatch(batch); err != nil {
-				return nil, fmt.Errorf("save source foundation summary level %d batch %d: %w", level, index, err)
-			}
-			next = append(next, imp.FoundationMergePartial{
-				Index:          index,
-				From:           from,
-				To:             to,
-				InputSignature: inputSignature,
-				Result:         result,
-			})
-		}
-		current = next
-		level++
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return current[0].Result, nil
+	const level = 1
+	const index = 1
+	from := partials[0].From
+	to := partials[len(partials)-1].To
+	inputSignature := sourceFoundationPartialGroupSignature(level, partials)
+	existing, err := deps.Store.Adaptation.LoadSourceFoundationBatch(level, index)
+	if err != nil {
+		return nil, fmt.Errorf("load assembled source foundation checkpoint: %w", err)
+	}
+	if sourceFoundationBatchCurrent(existing, sourceFoundationBatchKindAssembled, level, index, from, to, sourceSignature, inputSignature, promptSignature, batchRuneLimit) {
+		emit(StageFoundation, to, totalReports, fmt.Sprintf("reuse assembled source foundation checkpoint: chapters %d-%d", from, to), nil)
+		return toFoundationResult(&existing.Foundation), nil
+	}
+
+	emit(StageFoundation, to, totalReports, fmt.Sprintf("assemble %d bounded source foundation batches in code: chapters %d-%d", len(partials), from, to), nil)
+	result, err := imp.MergeFoundationPartialsDeterministic(partials, totalReports)
+	if err != nil {
+		return nil, fmt.Errorf("assemble source foundation checkpoints: %w", err)
+	}
+	batch := sourceFoundationBatchFromResult(sourceFoundationBatchKindAssembled, level, index, from, to, sourceSignature, inputSignature, promptSignature, batchRuneLimit, manifest, result)
+	if err := deps.Store.Adaptation.SaveSourceFoundationBatch(batch); err != nil {
+		return nil, fmt.Errorf("save assembled source foundation checkpoint: %w", err)
+	}
+	return result, nil
 }
 
 func sourceFoundationBatchFromResult(
@@ -562,7 +543,9 @@ func sourceFoundationBatchCurrent(
 	if batch == nil || !sourceFoundationUsable(&batch.Foundation) {
 		return false
 	}
-	return batch.Version == adaptationSourceFoundationVersion &&
+	versionCurrent := batch.Version == adaptationSourceFoundationVersion ||
+		(kind == sourceFoundationBatchKindReports && batch.Version == adaptationSourceFoundationVersion-1)
+	return versionCurrent &&
 		strings.TrimSpace(batch.Kind) == kind &&
 		batch.Level == level &&
 		batch.Index == index &&
@@ -608,6 +591,10 @@ func sourceFoundationUsable(foundation *domain.AdaptationSourceFoundation) bool 
 
 func sourceFoundationPromptSignature(systemPrompt string) string {
 	return adaptationSourceFoundationPromptVersion + ":" + store.TextSHA256(strings.TrimSpace(systemPrompt))
+}
+
+func sourceAnalyzerPromptSignature(systemPrompt string) string {
+	return adaptationSourceAnalyzerPromptVersion + ":" + store.TextSHA256(strings.TrimSpace(systemPrompt))
 }
 
 func sourceReportsSignature(reports []domain.AdaptationSourceReport) string {
@@ -760,6 +747,12 @@ func reusableSourceReport(report *domain.AdaptationSourceReport, sourceSHA256 st
 		strings.TrimSpace(report.SourceSHA256) != "" &&
 		report.SourceSHA256 == sourceSHA256 &&
 		reportHasReusableAnalysis(report)
+}
+
+func currentSourceReport(report *domain.AdaptationSourceReport, sourceSHA256, analyzerPrompt string) bool {
+	return reusableSourceReport(report, sourceSHA256) &&
+		report.AnalyzerVersion == adaptationSourceAnalyzerVersion &&
+		strings.TrimSpace(report.AnalyzerSignature) == sourceAnalyzerPromptSignature(analyzerPrompt)
 }
 
 func repairReusableSourceReports(adaptation *store.AdaptationStore, manifest *domain.AdaptationSourceManifest, emit func(Stage, int, int, string, error)) (bool, error) {
@@ -10022,11 +10015,12 @@ func toSourceFoundation(fr *imp.FoundationResult) domain.AdaptationSourceFoundat
 		return domain.AdaptationSourceFoundation{}
 	}
 	return domain.AdaptationSourceFoundation{
-		Premise:    fr.Premise,
-		Characters: append([]domain.Character(nil), fr.Characters...),
-		WorldRules: append([]domain.WorldRule(nil), fr.WorldRules...),
-		Volumes:    append([]domain.VolumeOutline(nil), fr.Volumes...),
-		Compass:    fr.Compass,
+		Premise:       fr.Premise,
+		Characters:    append([]domain.Character(nil), fr.Characters...),
+		Relationships: append([]domain.CharacterRelationship(nil), fr.Relationships...),
+		WorldRules:    append([]domain.WorldRule(nil), fr.WorldRules...),
+		Volumes:       append([]domain.VolumeOutline(nil), fr.Volumes...),
+		Compass:       fr.Compass,
 	}
 }
 
@@ -10035,11 +10029,12 @@ func toFoundationResult(fr *domain.AdaptationSourceFoundation) *imp.FoundationRe
 		return nil
 	}
 	return &imp.FoundationResult{
-		Premise:    fr.Premise,
-		Characters: append([]domain.Character(nil), fr.Characters...),
-		WorldRules: append([]domain.WorldRule(nil), fr.WorldRules...),
-		Volumes:    append([]domain.VolumeOutline(nil), fr.Volumes...),
-		Compass:    fr.Compass,
+		Premise:       fr.Premise,
+		Characters:    append([]domain.Character(nil), fr.Characters...),
+		Relationships: append([]domain.CharacterRelationship(nil), fr.Relationships...),
+		WorldRules:    append([]domain.WorldRule(nil), fr.WorldRules...),
+		Volumes:       append([]domain.VolumeOutline(nil), fr.Volumes...),
+		Compass:       fr.Compass,
 	}
 }
 

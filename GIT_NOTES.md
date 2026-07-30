@@ -46,6 +46,18 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-30 `this commit` `fix: expose complete source foundation before cocreate`:
+  source chapter analysis now extracts evidence-backed gender and complete
+  character-card fields, while full-book batches preserve source relationships
+  and world rules. SourceFoundation version 3 removes the single final all-book
+  model response: report-sized model batches are assembled deterministically
+  by stable character identity, validated relationship endpoints, and
+  deduplicated rules, so a multi-million-character source scales by checkpoint
+  count rather than final response length. The live “梦中的女孩” analysis
+  completed 17/17 reports, three bounded batches, and code assembly; the
+  Foundation API returns 8 source roles, 10 relationships, and 19 rules before
+  co-create. The UI exposes all three sections read-only and suppresses target
+  completeness/review/mapping warnings while no target foundation exists.
 - 2026-07-30 `403c1d0` `fix: make portable profile import idempotent`:
   importing the exact same portable profile again now keeps its original
   profile/corpus identity and reports every source as skipped instead of

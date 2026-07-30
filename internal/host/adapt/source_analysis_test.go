@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host/imp"
 )
 
@@ -36,5 +37,25 @@ func TestMergeSourceChapterAnalysesKeepsOrderedFacts(t *testing.T) {
 	}
 	if len(merged.Characters) != 2 || merged.HookType != "choice" || merged.DominantStrand != "quest" {
 		t.Fatalf("merged=%+v", merged)
+	}
+}
+
+func TestMergeSourceChapterAnalysesPreservesRichCharacterEvidence(t *testing.T) {
+	merged := mergeSourceChapterAnalyses([]*imp.ChapterAnalysis{
+		{CharacterProfiles: []domain.Character{{
+			ID: "ari", Name: "Ari", Gender: "female",
+			ContrastDetails: []domain.CharacterContrastDetail{{Surface: "reserved", Depth: "decisive"}},
+		}}},
+		{CharacterProfiles: []domain.Character{{
+			ID:           "ari",
+			KeyBackstory: []domain.CharacterBackstory{{Event: "lost a record", Impact: "verifies every lead"}},
+		}}},
+	})
+	if len(merged.CharacterProfiles) != 1 {
+		t.Fatalf("profiles=%+v", merged.CharacterProfiles)
+	}
+	got := merged.CharacterProfiles[0]
+	if got.Gender != "female" || len(got.ContrastDetails) != 1 || len(got.KeyBackstory) != 1 {
+		t.Fatalf("rich source evidence was lost: %+v", got)
 	}
 }

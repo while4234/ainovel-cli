@@ -8,7 +8,7 @@ Goal:
 - Preserve causal order and unresolved narrative pressure.
 - Do not invent chapter bodies, scenes, quotations, or unsupported details.
 
-Output exactly four tagged sections:
+Output exactly five tagged sections:
 
 === PREMISE ===
 Markdown. Start with a single H1 title line. Summarize the core premise,
@@ -21,6 +21,7 @@ JSON array of objects compatible with:
   "name": "string",
   "aliases": ["string"],
   "role": "string",
+  "gender": "male|female|nonbinary|unspecified",
   "description": "string",
   "arc": "changes already evidenced in the reports; never invent a future endpoint",
   "traits": ["string"],
@@ -44,6 +45,22 @@ JSON array of objects compatible with:
   "notes": "uncertainty or evidence boundary"
 }
 
+=== RELATIONSHIPS ===
+JSON array of source-novel relationship objects compatible with:
+{
+  "id": "stable relationship ID",
+  "source_character_id": "an ID from CHARACTERS",
+  "target_character_id": "a different ID from CHARACTERS",
+  "type": "ally|rival|family|romantic|mentor|professional|other",
+  "label": "short source relationship label",
+  "direction": "directed|bidirectional|undirected",
+  "status": "active|strained|broken|resolved",
+  "description": "relationship facts and changes evidenced by the reports",
+  "since": "earliest evidenced source chapter or stage",
+  "tags": ["string"],
+  "constraints": ["evidence boundary or continuity constraint"]
+}
+
 === WORLD_RULES ===
 JSON array of objects compatible with:
 {
@@ -65,8 +82,23 @@ Rules:
 - Return only the tagged sections above.
 - Do not output LAYERED_OUTLINE. It is generated deterministically by code.
 - Use only the Character fields listed above. Never emit legacy `goals` or
-  top-level character `relationships`; chapter relationship evidence remains
-  in the reports and later planned relationships use their own schema.
+  top-level character `relationships`; relationship evidence belongs in the
+  separate RELATIONSHIPS section.
+- Every final character must have a `gender`. Use only explicit source evidence
+  such as self-description, sex/kinship terms, or attributable pronouns. Never
+  infer gender from a name, occupation, personality, or stereotype. Use
+  `unspecified` when the reports do not establish it and add a constraint to
+  keep later references on the name/title instead of inventing a pronoun.
+- Preserve evidenced `contrast_details` and `key_backstory` for core and
+  important characters. A backstory item must state both the past event and its
+  evidenced present impact. A contrast must state observable surface behavior
+  and the less-visible evidenced motive or behavior.
+- Choose tiers by evidence and narrative load. Core and important characters
+  should receive the fullest report-supported profile; do not promote a thinly
+  evidenced walk-on merely to make the schema look complete.
+- RELATIONSHIPS contains source facts, not adaptation plans. Keep only
+  relationships with two stable character IDs and report evidence. Do not
+  invent a relationship to connect isolated characters.
 - Merge aliases into one character only when report evidence supports the
   identity. Keep same-name different people separate with stable IDs. Preserve
   renames as aliases and preserve chapter ranges in compact notes when useful.

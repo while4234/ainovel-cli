@@ -51,6 +51,8 @@ type AdaptationSourceReport struct {
 	Chapter           int                 `json:"chapter"`
 	Title             string              `json:"title"`
 	SourceSHA256      string              `json:"source_sha256,omitempty"`
+	AnalyzerVersion   int                 `json:"analyzer_version,omitempty"`
+	AnalyzerSignature string              `json:"analyzer_signature,omitempty"`
 	Summary           string              `json:"summary"`
 	Characters        []string            `json:"characters,omitempty"`
 	CharacterProfiles []Character         `json:"character_profiles,omitempty"`
@@ -68,19 +70,20 @@ type AdaptationSourceReport struct {
 
 // AdaptationSourceFoundation is the reusable foundation inferred from the source.
 type AdaptationSourceFoundation struct {
-	Version            int             `json:"version,omitempty"`
-	GeneratedAt        string          `json:"generated_at,omitempty"`
-	SourcePath         string          `json:"source_path,omitempty"`
-	SourceChapterCount int             `json:"source_chapter_count,omitempty"`
-	SourceSignature    string          `json:"source_signature,omitempty"`
-	ReportSignature    string          `json:"report_signature,omitempty"`
-	PromptVersion      string          `json:"prompt_version,omitempty"`
-	BatchRuneLimit     int             `json:"batch_rune_limit,omitempty"`
-	Premise            string          `json:"premise"`
-	Characters         []Character     `json:"characters"`
-	WorldRules         []WorldRule     `json:"world_rules"`
-	Volumes            []VolumeOutline `json:"volumes"`
-	Compass            *StoryCompass   `json:"compass,omitempty"`
+	Version            int                     `json:"version,omitempty"`
+	GeneratedAt        string                  `json:"generated_at,omitempty"`
+	SourcePath         string                  `json:"source_path,omitempty"`
+	SourceChapterCount int                     `json:"source_chapter_count,omitempty"`
+	SourceSignature    string                  `json:"source_signature,omitempty"`
+	ReportSignature    string                  `json:"report_signature,omitempty"`
+	PromptVersion      string                  `json:"prompt_version,omitempty"`
+	BatchRuneLimit     int                     `json:"batch_rune_limit,omitempty"`
+	Premise            string                  `json:"premise"`
+	Characters         []Character             `json:"characters"`
+	Relationships      []CharacterRelationship `json:"relationships"`
+	WorldRules         []WorldRule             `json:"world_rules"`
+	Volumes            []VolumeOutline         `json:"volumes"`
+	Compass            *StoryCompass           `json:"compass,omitempty"`
 }
 
 // AdaptationSourceFoundationBatch is a resumable checkpoint for source

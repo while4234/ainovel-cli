@@ -76,7 +76,7 @@ func TestParseAnalyzer_CharacterProfilesUseCanonicalSchema(t *testing.T) {
 		validAnalyzerEnvelope,
 		"=== KEY_EVENTS ===",
 		`=== CHARACTER_PROFILES ===
-[{"id":"source-lin","name":"Lin Wan","aliases":["Editor Lin"],"role":"investigator","description":"Tracks an anonymous lead.","arc":"Learns to share evidence.","traits":["careful"],"tier":"core","goal":"Identify the sender.","motivation":"Protect the missing witnesses.","conflict":"The archive is compromised.","voice":"Evidence-first.","notes":"Bounded chapter observation.","constraints":["Cannot know the sender yet."]}]
+[{"id":"source-lin","name":"Lin Wan","aliases":["Editor Lin"],"role":"investigator","gender":"female","description":"Tracks an anonymous lead.","arc":"Learns to share evidence.","traits":["careful"],"tier":"core","goal":"Identify the sender.","motivation":"Protect the missing witnesses.","conflict":"The archive is compromised.","voice":"Evidence-first.","notes":"Bounded chapter observation.","constraints":["Cannot know the sender yet."]}]
 
 === KEY_EVENTS ===`,
 		1,
@@ -90,10 +90,34 @@ func TestParseAnalyzer_CharacterProfilesUseCanonicalSchema(t *testing.T) {
 	}
 	profile := got.CharacterProfiles[0]
 	if profile.ID != "source-lin" || profile.Name != "Lin Wan" ||
-		profile.Goal != "Identify the sender." ||
+		profile.Gender != "female" || profile.Goal != "Identify the sender." ||
 		profile.Motivation != "Protect the missing witnesses." ||
 		len(profile.Aliases) != 1 || len(profile.Constraints) != 1 {
 		t.Fatalf("canonical profile fields were not preserved: %+v", profile)
+	}
+}
+
+func TestParseAnalyzer_NormalizesCommonSingleValueCharacterFields(t *testing.T) {
+	input := strings.Replace(
+		validAnalyzerEnvelope,
+		"=== KEY_EVENTS ===",
+		`=== CHARACTER_PROFILES ===
+[{"id":"source-lin","name":"Lin Wan","role":"investigator","gender":"female","description":"Tracks a lead.","constraints":"Cannot identify the sender yet.","contrast_details":"appears hesitant → acts decisively","key_backstory":"lost the archive => verifies every lead","initial_state":"working alone in the archive","knowledge_boundary":"does not know the sender"}]
+
+=== KEY_EVENTS ===`,
+		1,
+	)
+	got, err := parseAnalyzerOutput(input)
+	if err != nil {
+		t.Fatalf("parse compatibility profile: %v", err)
+	}
+	profile := got.CharacterProfiles[0]
+	if len(profile.Constraints) != 1 ||
+		len(profile.ContrastDetails) != 1 || profile.ContrastDetails[0].Depth != "acts decisively" ||
+		len(profile.KeyBackstory) != 1 || profile.KeyBackstory[0].Impact != "verifies every lead" ||
+		profile.InitialState == nil || profile.InitialState.Situation != "working alone in the archive" ||
+		profile.KnowledgeBoundary == nil || len(profile.KnowledgeBoundary.Known) != 1 {
+		t.Fatalf("single-value fields were not normalized: %+v", profile)
 	}
 }
 

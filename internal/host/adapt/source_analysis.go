@@ -156,6 +156,7 @@ func richerCharacterProfile(current, incoming domain.Character) domain.Character
 	fill(&out.ID, incoming.ID)
 	fill(&out.Name, incoming.Name)
 	fill(&out.Role, incoming.Role)
+	fill(&out.Gender, incoming.Gender)
 	fill(&out.Description, incoming.Description)
 	fill(&out.Arc, incoming.Arc)
 	fill(&out.Tier, incoming.Tier)

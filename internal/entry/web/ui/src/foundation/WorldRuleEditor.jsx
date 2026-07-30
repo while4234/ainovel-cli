@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { foundationOptions, newFoundationWorldRule, normalizeWorldRule } from './foundationModel.js';
 
-export function WorldRuleEditor({ value, disabled, errors = {}, onChange }) {
+export function WorldRuleEditor({ value, disabled, sourceOnly = false, errors = {}, onChange }) {
   const [warning, setWarning] = useState('');
   const update = (index, field, raw) => {
     const current = value[index];
@@ -13,7 +13,7 @@ export function WorldRuleEditor({ value, disabled, errors = {}, onChange }) {
     onChange(value.filter((_, itemIndex) => itemIndex !== index));
   };
   return <section aria-labelledby="foundation-rule-heading">
-    <div className="foundation-section-head"><div><h2 id="foundation-rule-heading">世界规则</h2><p>前端只提示 hard/soft 风险，不自行决定局部影响。</p></div><button className="tool-button" disabled={disabled} type="button" onClick={() => onChange([...value, newFoundationWorldRule()])}>添加规则</button></div>
+    <div className="foundation-section-head"><div><h2 id="foundation-rule-heading">{sourceOnly ? '原著世界规则（只读）' : '世界规则'}</h2><p>{sourceOnly ? '这些规则来自原著逐章事实分析；共创前可查看，但不会写入目标改编设定。' : '前端只提示 hard/soft 风险，不自行决定局部影响。'}</p></div><button className="tool-button" disabled={disabled} type="button" onClick={() => onChange([...value, newFoundationWorldRule()])}>添加规则</button></div>
     {warning ? <div className="warning-note" role="status">{warning}</div> : null}
     <div className="foundation-editor-list">{value.map((rule, index) => <fieldset className="foundation-editor-card" key={rule.id || index}>
       <legend>{rule.title || `规则 ${index + 1}`} {rule.strength === 'hard' ? <span className="foundation-badge risk">hard</span> : null}</legend>

@@ -14,7 +14,12 @@
 
 本章正文能够支持的结构化角色事实 JSON 数组。旧角色只填写本章新增或更新且有证据的字段；同名异人必须给不同 `id`，改名或称号放入 `aliases`。每项仅使用实际 `domain.Character` 字段：
 
-`{id,name,aliases,role,description,arc,traits,tier,faction,goal,motivation,conflict,voice,constraints,contrast_details,key_backstory,initial_state,knowledge_boundary,notes}`
+`{id,name,aliases,role,gender,description,arc,traits,tier,faction,goal,motivation,conflict,voice,constraints,contrast_details,key_backstory,initial_state,knowledge_boundary,notes}`
+
+- `gender` 仅允许 `male/female/nonbinary/unspecified`。只依据正文中可归属于该角色的自述、性别/亲属称谓或代词；不得按姓名、职业、性格或刻板印象猜测。若本章没有证据则省略，让后续章节继续补充，不要过早写 `unspecified`。
+- 对核心或重要角色，正文若提供了外在表现与深层动机/行为差异，必须写入 `contrast_details`；若过去事件持续影响当前选择、关系或信念，必须写入 `key_backstory`，不得只把它们埋在 description 或 notes 中。
+- `aliases`、`traits`、`constraints` 即使只有一项也必须是 JSON 字符串数组；`contrast_details` 与 `key_backstory` 即使只有一项也必须是 JSON 对象数组，不得缩写成单个字符串。
+- `initial_state` 与 `knowledge_boundary` 必须保持上方定义的 JSON 对象形状，不得缩写成单个字符串。
 
 - `arc` 只总结截至本章已经发生的变化，不臆造未来成长终点。
 - `initial_state` 表示首次可靠出场时的身份、处境、情绪、资源和关系。

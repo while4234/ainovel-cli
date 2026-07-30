@@ -132,7 +132,7 @@ func TestPrepareSourceResumesMissingChapterAndMergesWithoutRawBody(t *testing.T)
 	}
 }
 
-func TestMergeSourceFoundationResumesReportBatchesAfterRestart(t *testing.T) {
+func TestMergeSourceFoundationAssemblesReportBatchesWithoutFinalModelCall(t *testing.T) {
 	st := store.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -160,9 +160,8 @@ func TestMergeSourceFoundationResumesReportBatchesAfterRestart(t *testing.T) {
 		{text: adaptFoundationMergeEnvelope()},
 		{text: adaptFoundationMergeEnvelope()},
 		{text: adaptFoundationMergeEnvelope()},
-		{err: context.Canceled},
 	}}
-	_, err := mergeSourceFoundationResumable(context.Background(), Deps{
+	firstResult, err := mergeSourceFoundationResumable(context.Background(), Deps{
 		Store:                st,
 		LLM:                  first,
 		ModelCallMaxAttempts: 1,
@@ -170,22 +169,23 @@ func TestMergeSourceFoundationResumesReportBatchesAfterRestart(t *testing.T) {
 			FoundationMerge: "merge",
 		},
 	}, manifest, reports, runeLimit, nil)
-	if err == nil {
-		t.Fatal("want first run to fail while merging summaries")
+	if err != nil {
+		t.Fatalf("first merge: %v", err)
 	}
-	if first.calls != 4 {
-		t.Fatalf("first calls=%d, want 3 report batches plus failed summary", first.calls)
+	if first.calls != 3 {
+		t.Fatalf("first calls=%d, want only 3 bounded report batches", first.calls)
+	}
+	if firstResult == nil || len(firstResult.Characters) == 0 {
+		t.Fatalf("assembled foundation missing: %#v", firstResult)
 	}
 	if batch, err := st.Adaptation.LoadSourceFoundationBatch(0, 3); err != nil || batch == nil {
 		t.Fatalf("report checkpoint should be saved: batch=%+v err=%v", batch, err)
 	}
-	if batch, err := st.Adaptation.LoadSourceFoundationBatch(1, 1); err != nil || batch != nil {
-		t.Fatalf("summary checkpoint should not be saved after failed summary: batch=%+v err=%v", batch, err)
+	if batch, err := st.Adaptation.LoadSourceFoundationBatch(1, 1); err != nil || batch == nil || batch.Kind != sourceFoundationBatchKindAssembled {
+		t.Fatalf("assembled checkpoint should be saved: batch=%+v err=%v", batch, err)
 	}
 
-	second := &scriptedAdaptLLM{responses: []adaptLLMResponse{
-		{text: adaptFoundationMergeEnvelope()},
-	}}
+	second := &scriptedAdaptLLM{}
 	got, err := mergeSourceFoundationResumable(context.Background(), Deps{
 		Store:                st,
 		LLM:                  second,
@@ -197,14 +197,14 @@ func TestMergeSourceFoundationResumesReportBatchesAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume merge: %v", err)
 	}
-	if second.calls != 1 {
-		t.Fatalf("resume should only call summary merge, calls=%d", second.calls)
+	if second.calls != 0 {
+		t.Fatalf("resume should reuse report and assembled checkpoints without model calls, calls=%d", second.calls)
 	}
 	if got == nil || len(domain.FlattenOutline(got.Volumes)) != 3 {
 		t.Fatalf("resumed foundation outline mismatch: %+v", got)
 	}
-	if batch, err := st.Adaptation.LoadSourceFoundationBatch(1, 1); err != nil || batch == nil {
-		t.Fatalf("summary checkpoint should be saved on resume: batch=%+v err=%v", batch, err)
+	if batch, err := st.Adaptation.LoadSourceFoundationBatch(1, 1); err != nil || batch == nil || batch.Kind != sourceFoundationBatchKindAssembled {
+		t.Fatalf("assembled checkpoint should be reusable on resume: batch=%+v err=%v", batch, err)
 	}
 }
 
@@ -478,11 +478,13 @@ func TestPrepareSourceBackfillsCompletedDossierBatchesBeforeNewChapter(t *testin
 	var reports []domain.AdaptationSourceReport
 	for chapter := 1; chapter <= 80; chapter++ {
 		report := domain.AdaptationSourceReport{
-			Chapter:      chapter,
-			Title:        fmt.Sprintf("Title %d", chapter),
-			SourceSHA256: manifest.Chapters[chapter-1].SHA256,
-			Summary:      fmt.Sprintf("source chapter %d summary", chapter),
-			KeyEvents:    []string{fmt.Sprintf("event %d", chapter)},
+			Chapter:           chapter,
+			Title:             fmt.Sprintf("Title %d", chapter),
+			SourceSHA256:      manifest.Chapters[chapter-1].SHA256,
+			AnalyzerVersion:   adaptationSourceAnalyzerVersion,
+			AnalyzerSignature: sourceAnalyzerPromptSignature("analyzer"),
+			Summary:           fmt.Sprintf("source chapter %d summary", chapter),
+			KeyEvents:         []string{fmt.Sprintf("event %d", chapter)},
 		}
 		if err := st.Adaptation.SaveSourceReport(report); err != nil {
 			t.Fatalf("SaveSourceReport %d: %v", chapter, err)
@@ -605,6 +607,9 @@ Chapter summary.
 === CHARACTERS ===
 ["Ari"]
 
+=== CHARACTER_PROFILES ===
+[{"id":"ari","name":"Ari","role":"lead","gender":"female","description":"Follows the central case.","traits":["focused"],"tier":"core","contrast_details":[{"surface":"reserved","depth":"acts decisively under pressure"}],"key_backstory":[{"event":"lost access to a trusted record","impact":"verifies every new lead"}]}]
+
 === CHARACTER_FACTS ===
 ["Ari advances chapter facts."]
 
@@ -641,7 +646,10 @@ func adaptFoundationMergeEnvelope() string {
 Ari follows the source causal chain.
 
 === CHARACTERS ===
-[{"name":"Ari","role":"lead","description":"Follows the central case.","arc":"chooses courage","traits":["focused"]}]
+[{"id":"ari","name":"Ari","role":"lead","gender":"female","description":"Follows the central case.","arc":"chooses courage","traits":["focused"],"tier":"core","contrast_details":[{"surface":"reserved","depth":"acts decisively under pressure"}],"key_backstory":[{"event":"lost access to a trusted record","impact":"verifies every new lead"}]}]
+
+=== RELATIONSHIPS ===
+[]
 
 === WORLD_RULES ===
 [{"category":"society","rule":"The city keeps strict records.","boundary":"Records cannot be ignored."}]
@@ -700,4 +708,21 @@ func adaptDossierBatchEnvelope() string {
 		"ambiguity_risks": [],
 		"couple_milestones": []
 	}`
+}
+
+func TestCurrentSourceReportRequiresAnalyzerContractMetadata(t *testing.T) {
+	report := &domain.AdaptationSourceReport{
+		Chapter: 1, SourceSHA256: "sha", Summary: "summary", KeyEvents: []string{"event"},
+	}
+	if currentSourceReport(report, "sha", "analyzer prompt") {
+		t.Fatal("legacy report must be reanalyzed after the analyzer contract changes")
+	}
+	report.AnalyzerVersion = adaptationSourceAnalyzerVersion
+	report.AnalyzerSignature = sourceAnalyzerPromptSignature("analyzer prompt")
+	if !currentSourceReport(report, "sha", "analyzer prompt") {
+		t.Fatal("report with matching source and analyzer metadata should be reusable")
+	}
+	if currentSourceReport(report, "sha", "changed prompt") {
+		t.Fatal("prompt change must invalidate the report")
+	}
 }

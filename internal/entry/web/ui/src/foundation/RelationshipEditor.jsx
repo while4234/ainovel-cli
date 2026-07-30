@@ -5,17 +5,17 @@ import { relationshipDirectionLabels, relationshipStatusLabels, relationshipType
 
 const RelationshipGraph = lazy(() => import('./RelationshipGraph.jsx').then((module) => ({ default: module.RelationshipGraph })));
 
-export function RelationshipEditor({ projectId, auditSignature, coreCast, value, characters, reviewed, disabled, errors = {}, onChange, onReviewedChange }) {
-	const [view, setView] = useState(() => globalThis.matchMedia?.('(max-width: 720px)')?.matches ? 'list' : 'graph');
+export function RelationshipEditor({ projectId, auditSignature, coreCast, value, characters, reviewed, disabled, sourceOnly = false, errors = {}, onChange, onReviewedChange }) {
+	const [view, setView] = useState(() => sourceOnly || globalThis.matchMedia?.('(max-width: 720px)')?.matches ? 'list' : 'graph');
 	const [selectedRelationshipID, setSelectedRelationshipID] = useState('');
 	const update = (index, field, raw) => onChange(value.map((relationship, itemIndex) => itemIndex === index ? normalizeRelationship({ ...relationship, [field]: ['tags', 'constraints'].includes(field) ? splitList(raw) : raw }) : relationship));
 	return <section aria-labelledby="foundation-relationship-heading">
-		<div className="foundation-section-head"><div><h2 id="foundation-relationship-heading">计划关系</h2><p>这里是写作前的关系计划，不是正文 runtime relationship；本页不会调用 relationship_state API。</p></div>
-			<div className="foundation-view-switch" role="group" aria-label="计划关系视图"><button aria-pressed={view === 'list'} className="tool-button" type="button" onClick={() => setView('list')}>关系列表</button><button aria-pressed={view === 'graph'} className="tool-button" type="button" onClick={() => setView('graph')}>关系图谱</button><button className="tool-button" disabled={disabled || characters.length < 2} type="button" onClick={() => onChange([...value, newFoundationRelationship()])}>添加计划关系</button></div>
+		<div className="foundation-section-head"><div><h2 id="foundation-relationship-heading">{sourceOnly ? '原著人物关系（只读）' : '计划关系'}</h2><p>{sourceOnly ? '这些关系来自原著逐章事实分析；共创前可查看，但不会写入目标改编设定。' : '这里是写作前的关系计划，不是正文 runtime relationship；本页不会调用 relationship_state API。'}</p></div>
+			<div className="foundation-view-switch" role="group" aria-label={sourceOnly ? '原著人物关系视图' : '计划关系视图'}><button aria-pressed={view === 'list'} className="tool-button" type="button" onClick={() => setView('list')}>关系列表</button><button aria-pressed={view === 'graph'} className="tool-button" type="button" onClick={() => setView('graph')}>关系图谱</button>{!sourceOnly ? <button className="tool-button" disabled={disabled || characters.length < 2} type="button" onClick={() => onChange([...value, newFoundationRelationship()])}>添加计划关系</button> : null}</div>
 		</div>
-		<label className="foundation-reviewed"><input checked={reviewed} disabled={disabled} type="checkbox" onChange={(event) => onReviewedChange(event.target.checked)} /> 已显式审查关系；当前可为“暂无核心关系”</label>
+		{!sourceOnly ? <label className="foundation-reviewed"><input checked={reviewed} disabled={disabled} type="checkbox" onChange={(event) => onReviewedChange(event.target.checked)} /> 已显式审查关系；当前可为“暂无核心关系”</label> : null}
 		{view === 'graph' ? <FoundationGraphErrorBoundary resetKey={`${projectId}:${auditSignature}`} fallback={<div className="foundation-graph-fallback" role="alert"><strong>关系图谱暂时不可用。</strong><p>草稿仍在统一 Foundation reducer 中，可继续使用关系列表、preview 和 apply。</p><button className="tool-button" type="button" onClick={() => setView('list')}>使用关系列表</button></div>}><Suspense fallback={<div className="foundation-loading" role="status">正在加载计划关系图谱…</div>}><RelationshipGraph projectId={projectId} auditSignature={auditSignature} value={value} characters={characters} coreCast={coreCast} disabled={disabled} selectedRelationshipID={selectedRelationshipID} onSelectRelationship={setSelectedRelationshipID} onChange={onChange} onUseListFallback={() => setView('list')} /></Suspense></FoundationGraphErrorBoundary> : null}
-		{view === 'list' && !value.length ? <div className="empty-state">暂无计划关系。勾选上方状态可显式确认“暂无核心关系”。</div> : null}
+		{view === 'list' && !value.length ? <div className="empty-state">{sourceOnly ? '原著分析未发现具有稳定角色端点和明确证据的关系。' : '暂无计划关系。勾选上方状态可显式确认“暂无核心关系”。'}</div> : null}
 		{view === 'list' && value.length ? <div className="foundation-editor-list">{value.map((relationship, index) => <fieldset aria-current={relationship.id === selectedRelationshipID ? 'true' : undefined} className={`foundation-editor-card${relationship.id === selectedRelationshipID ? ' selected' : ''}`} key={relationship.id || index} onFocus={() => setSelectedRelationshipID(relationship.id)}>
       <legend>{relationship.label || `关系 ${index + 1}`}</legend>
       <label><span>ID（只读）</span><input readOnly value={relationship.id} /></label>

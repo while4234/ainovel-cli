@@ -244,6 +244,12 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
   const characterWorkspace = state.characterWorkspace
     ? { ...state.characterWorkspace, reviewStale: state.characterReviewStale, error: state.characterWorkspaceError || state.characterWorkspace.error }
     : state.characterWorkspaceError ? { error: state.characterWorkspaceError, reviewStale: state.characterReviewStale } : null;
+  const showingSourceOnly = state.server.mode === 'adaptation' &&
+    !state.draft.characters.length &&
+    Boolean(state.server.sourceFoundation?.characters?.length);
+  const displayedRelationships = showingSourceOnly ? state.server.sourceFoundation?.relationships || [] : state.draft.relationships;
+  const displayedWorldRules = showingSourceOnly ? state.server.sourceFoundation?.world_rules || [] : state.draft.world_rules;
+  const displayedRelationshipCharacters = showingSourceOnly ? state.server.sourceFoundation?.characters || [] : state.draft.characters;
 
   return <div className="foundation-center">
     <header className="foundation-header"><div><span className="eyebrow">StoryFoundation</span><h1>设定中心</h1><p>统一管理原创与改编的目标故事设定；SourceFoundation 始终只读。</p></div><button className="tool-button" type="button" onClick={requestClose}>返回创作</button></header>
@@ -251,7 +257,7 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
     {state.error ? <div className="error-banner" role="alert"><strong>{state.error.code}</strong><span>{state.error.message}</span></div> : null}
     {state.illegalAction ? <div className="warning-note" role="status">{state.illegalAction}</div> : null}
     {state.status === 'stale' ? <div className="foundation-stale" role="alert"><strong>服务器基线已变化，草稿仍完整保留。</strong><span>先加载最新基线，再用当前草稿重新生成 preview。</span><button className="tool-button" disabled={!state.staleServer} type="button" onClick={() => dispatch({ type: 'rebase_stale', ...requestContext() })}>以最新基线重新对比</button></div> : null}
-    {state.validation.summary.length ? <div aria-live="assertive" className="foundation-validation-summary" role="alert"><strong>请处理 {state.validation.summary.length} 个字段问题</strong><ul>{state.validation.summary.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
+    {!showingSourceOnly && state.validation.summary.length ? <div aria-live="assertive" className="foundation-validation-summary" role="alert"><strong>请处理 {state.validation.summary.length} 个字段问题</strong><ul>{state.validation.summary.map((message) => <li key={message}>{message}</li>)}</ul></div> : null}
     <nav aria-label="设定中心区域" className="foundation-tabs" role="tablist">{tabs.map(([id, label], index) => <button aria-controls={`foundation-panel-${id}`} aria-selected={tab === id} className={tab === id ? 'active' : ''} id={`foundation-tab-${id}`} key={id} role="tab" tabIndex={tab === id ? 0 : -1} type="button" onClick={() => setTab(id)} onKeyDown={(event) => moveTab(event, index, setTab)}>{label}</button>)}</nav>
     <main aria-labelledby={`foundation-tab-${tab}`} className="foundation-panel" id={`foundation-panel-${tab}`} role="tabpanel">
       {tab === 'overview' ? <FoundationOverview server={state.server} draft={state.draft} disabled={disabled} premiseError={state.validation.fields.premise} onPremiseChange={(premise) => edit({ premise })} onOpenCoreCast={onOpenCoreCast} /> : null}
@@ -266,8 +272,8 @@ export function FoundationCenter({ projectId, onClose, onOpenCoreCast, onOpenRev
         onAnalyze={runCharacterAnalyze} onReview={runCharacterReview}
         onRetry={runCharacterRetry} onDiscard={runCharacterDiscard} onConfirm={runCharacterConfirm}
       /> : null}
-		{tab === 'relationships' ? <RelationshipEditor projectId={projectId} auditSignature={state.server.baseAuditSignature} coreCast={state.server.coreCast} value={state.draft.relationships} characters={state.draft.characters} reviewed={state.draft.relationships_reviewed} disabled={disabled} errors={state.validation.fields} onChange={(relationships) => edit({ relationships })} onReviewedChange={(relationships_reviewed) => edit({ relationships_reviewed })} /> : null}
-      {tab === 'rules' ? <WorldRuleEditor value={state.draft.world_rules} disabled={disabled} errors={state.validation.fields} onChange={(world_rules) => edit({ world_rules })} /> : null}
+		{tab === 'relationships' ? <RelationshipEditor projectId={projectId} auditSignature={state.server.baseAuditSignature} coreCast={state.server.coreCast} value={displayedRelationships} characters={displayedRelationshipCharacters} reviewed={showingSourceOnly || state.draft.relationships_reviewed} disabled={disabled || showingSourceOnly} sourceOnly={showingSourceOnly} errors={showingSourceOnly ? {} : state.validation.fields} onChange={(relationships) => edit({ relationships })} onReviewedChange={(relationships_reviewed) => edit({ relationships_reviewed })} /> : null}
+      {tab === 'rules' ? <WorldRuleEditor value={displayedWorldRules} disabled={disabled || showingSourceOnly} sourceOnly={showingSourceOnly} errors={showingSourceOnly ? {} : state.validation.fields} onChange={(world_rules) => edit({ world_rules })} /> : null}
       {tab === 'preview' ? <FoundationPreview preview={state.preview} dirty={state.status === 'dirty'} disabled={['previewing', 'applying'].includes(state.status)} canApply={canApplyFoundation(state)} onPreview={runPreview} onApply={runApply} /> : null}
       {tab === 'revision' ? <FoundationRevisionStatus server={state.server} status={state.status} busy={['applying', 'auditing', 'regenerating'].includes(state.status)} onRefresh={() => load({ preserveStale: state.status === 'stale' })} onRetry={runRetry} onOpenReview={() => onOpenReview?.(state.server.mode)} /> : null}
     </main>

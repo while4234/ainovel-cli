@@ -14,11 +14,12 @@ import (
 
 // FoundationResult 是 Foundation 反推的结构化产物。
 type FoundationResult struct {
-	Premise    string                 // Markdown 字符串
-	Characters []domain.Character     // 角色档案
-	WorldRules []domain.WorldRule     // 世界规则
-	Volumes    []domain.VolumeOutline // 分层大纲：导入正文作为第一卷（可续写、可扩展）
-	Compass    *domain.StoryCompass   // 续写方向锚点（ending_direction / open_threads / estimated_scale）
+	Premise       string                         // Markdown 字符串
+	Characters    []domain.Character             // 角色档案
+	Relationships []domain.CharacterRelationship // 来源小说中已有证据支持的角色关系
+	WorldRules    []domain.WorldRule             // 世界规则
+	Volumes       []domain.VolumeOutline         // 分层大纲：导入正文作为第一卷（可续写、可扩展）
+	Compass       *domain.StoryCompass           // 续写方向锚点（ending_direction / open_threads / estimated_scale）
 }
 
 // LLMChat 是 imp 包对 ChatModel 的最小依赖：仅需要一次普通文本生成。

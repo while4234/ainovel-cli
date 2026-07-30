@@ -10,7 +10,7 @@ import {
 } from './foundationModel.js';
 
 const tierLabels = { core: '核心', important: '重要', secondary: '次要', decorative: '装饰' };
-const genderLabels = { male: '男', female: '女', nonbinary: '非二元', unspecified: '未设定（正文使用姓名/称谓）' };
+const genderLabels = { male: '男', female: '女', nonbinary: '非二元', unspecified: '原著未明确（正文使用姓名/称谓）' };
 const reviewLabels = { passed: '通过', needs_revision: '需修订', stale: '已过期', not_reviewed: '未审核' };
 const sourceLabels = { keep: '保留', rename: '改名', merge: '合并', split: '拆分', exclude: '排除', target_original: '目标原创', unmapped: '未映射' };
 const fieldLabels = {
@@ -162,13 +162,13 @@ export function CharacterEditor({
   const noMatch = !empty && !visible.length;
   return <section aria-labelledby="foundation-character-heading" className="character-workspace">
     <div className="foundation-section-head character-workspace-head">
-      <div><h2 id="foundation-character-heading">角色卡工作台</h2><p>{showingSourceOnly ? '当前展示原著 SourceFoundation 角色；完成改编共创后才会生成可编辑的目标角色卡。' : '核心与非核心角色共享同一份 Foundation 草稿；Agent 候选不会自动覆盖编辑。'}</p></div>
+      <div><h2 id="foundation-character-heading">角色卡工作台</h2><p>{showingSourceOnly ? '当前完整展示原著 SourceFoundation 角色设定（只读）；共创仅用于生成可编辑的目标改编角色卡。' : '核心与非核心角色共享同一份 Foundation 草稿；Agent 候选不会自动覆盖编辑。'}</p></div>
       <div className="inline-actions">
         <button ref={addRef} className="tool-button" disabled={disabled || showingSourceOnly} type="button" onClick={add}><Plus size={16} />新增角色</button>
         <button className="tool-button" disabled={disabled || !selected || showingSourceOnly} type="button" onClick={duplicate}><Copy size={16} />复制为新角色</button>
       </div>
     </div>
-    {showingSourceOnly ? <div className="warning-note source-only-character-note" role="status"><FileSearch size={16} />来源角色（只读，尚未转为目标角色）；请返回创作完成改编共创与角色取舍。</div> : null}
+    {showingSourceOnly ? <div className="warning-note source-only-character-note" role="status"><FileSearch size={16} />原著角色设定已按正文证据展示；只读表示不可在此改写，并不表示必须共创后才能完整查看。</div> : null}
     {workspace?.reviewStale ? <div className="warning-note" role="status"><AlertTriangle size={16} />草稿已修改，旧角色审核立即标记为 stale；请在当前草稿上重新审核。</div> : null}
     {workspaceLoading ? <div className="character-workspace-skeleton" aria-live="polite" role="status">正在加载角色完整度与审核状态…</div> : null}
     <CharacterAgentPanel
@@ -200,7 +200,7 @@ export function CharacterEditor({
             core={coreIDs.has(character.id) || character.tier === 'core'} dirty={Boolean(modifiedByID[character.id])}
             completeness={workspace?.completenessByID?.[character.id]}
             review={reviewStatusForCharacter(character.id, workspace?.findings, workspace?.reviewStale, reviewCompleted)}
-            mapping={mappingsByTargetID[character.id]} mode={mode}
+            mapping={mappingsByTargetID[character.id]} mode={mode} sourceOnly={showingSourceOnly}
             onSelect={() => setSelectedID(character.id)}
           />)}
         </div>
@@ -213,8 +213,13 @@ export function CharacterEditor({
           </header>
           <div className="character-status-row">
             <StatusBadge icon={<UserRound size={14} />} text={tierLabels[selected.tier] || '重要'} tone={selected.tier === 'core' ? 'risk' : ''} />
-            <CompletenessBadge value={workspace?.completenessByID?.[selected.id]} />
-            <StatusBadge icon={<ShieldCheck size={14} />} text={`审核：${reviewLabels[reviewStatusForCharacter(selected.id, workspace?.findings, workspace?.reviewStale, reviewCompleted)]}`} />
+            {selectedIsSourceOnly ? <>
+              <StatusBadge icon={<FileSearch size={14} />} text="原著证据已提取" />
+              <StatusBadge icon={<ShieldCheck size={14} />} text="只读" />
+            </> : <>
+              <CompletenessBadge value={workspace?.completenessByID?.[selected.id]} />
+              <StatusBadge icon={<ShieldCheck size={14} />} text={`审核：${reviewLabels[reviewStatusForCharacter(selected.id, workspace?.findings, workspace?.reviewStale, reviewCompleted)]}`} />
+            </>}
             {modifiedByID[selected.id] ? <StatusBadge icon={<CircleAlert size={14} />} text="未保存修改" tone="warning" /> : null}
           </div>
           {selectedIsSourceOnly ? <div className="warning-note" role="status"><FileSearch size={16} />这是原著分析得到的只读角色，不是改编目标角色。</div> : selectedIsCandidateOnly ? <div className="warning-note" role="status"><Sparkles size={16} />Character Agent 候选（尚未发布）；确认本轮角色候选后才会写入 StoryFoundation。</div> : null}
@@ -239,7 +244,7 @@ export function CharacterEditor({
         </>}
       </article>
     </div>
-    <FindingPanel findings={workspace?.findings} characters={displayCharacters} completeness={workspace?.completeness} stale={workspace?.reviewStale} onFocus={focusFinding} />
+    {!showingSourceOnly ? <FindingPanel findings={workspace?.findings} characters={displayCharacters} completeness={workspace?.completeness} stale={workspace?.reviewStale} onFocus={focusFinding} /> : null}
     {pendingDialog ? <ModalDialog {...pendingDialog} onClose={() => setPendingDialog(null)} /> : null}
   </section>;
 }
@@ -285,7 +290,7 @@ function CharacterAgentPanel({
   </section>;
 }
 
-function CharacterListCard({ character, selected, core, dirty, completeness, review, mapping, mode, onSelect }) {
+function CharacterListCard({ character, selected, core, dirty, completeness, review, mapping, mode, sourceOnly, onSelect }) {
   return <button
     aria-selected={selected} className={`character-list-card ${selected ? 'selected' : ''}`}
     role="option" type="button" onClick={onSelect}
@@ -294,9 +299,11 @@ function CharacterListCard({ character, selected, core, dirty, completeness, rev
     <span className="character-list-role">{character.role || '未填写职责'}</span>
     <span className="character-list-badges">
       <span>{tierLabels[character.tier] || '重要'}</span>
-      <span>{completeness?.status === 'complete' ? '完整' : `缺口 ${completeness?.missing?.length ?? '—'}`}</span>
-      <span>{reviewLabels[review]}</span>
-      {mode === 'adaptation' ? <span>{sourceLabels[mapping?.action || 'unmapped']}</span> : <span>原创</span>}
+      {sourceOnly ? <><span>原著证据</span><span>只读</span></> : <>
+        <span>{completeness?.status === 'complete' ? '完整' : `缺口 ${completeness?.missing?.length ?? '—'}`}</span>
+        <span>{reviewLabels[review]}</span>
+        {mode === 'adaptation' ? <span>{sourceLabels[mapping?.action || 'unmapped']}</span> : <span>原创</span>}
+      </>}
       {dirty ? <span>● 未保存</span> : null}
     </span>
   </button>;
@@ -321,7 +328,7 @@ function CharacterForm({ character, disabled, errors, index, expanded, setExpand
           <TextField label="姓名" field="name" value={character.name} disabled={disabled} error={errorFor('name')} inputRef={refFor('name')} onChange={(name) => onChange({ ...character, name })} />
           <TagEditor label="别名" value={character.aliases} disabled={disabled} inputRef={refFor('aliases')} onChange={(aliases) => onChange({ ...character, aliases })} />
           <TextField label="故事职责" field="role" value={character.role} disabled={disabled} error={errorFor('role')} inputRef={refFor('role')} onChange={(role) => onChange({ ...character, role })} />
-          <label><span>性别 / 代词</span><select ref={refFor('gender')} disabled={disabled} value={character.gender || 'unspecified'} onChange={(event) => onChange({ ...character, gender: event.target.value })}>{foundationOptions.characterGenders.map((gender) => <option key={gender} value={gender}>{genderLabels[gender]}</option>)}</select><small>未设定时，正文必须使用姓名或身份称谓，不得自行切换“他/她”。</small></label>
+          <label><span>性别 / 代词</span><select ref={refFor('gender')} disabled={disabled} value={character.gender || 'unspecified'} onChange={(event) => onChange({ ...character, gender: event.target.value })}>{foundationOptions.characterGenders.map((gender) => <option key={gender} value={gender}>{genderLabels[gender]}</option>)}</select><small>原著未明确时，正文必须使用姓名或身份称谓，不得自行切换“他/她”。</small></label>
           <label><span>层级</span><select ref={refFor('tier')} disabled={disabled} value={character.tier || 'important'} onChange={(event) => onChange({ ...character, tier: event.target.value })}>{foundationOptions.characterTiers.map((tier) => <option key={tier} value={tier}>{tierLabels[tier]}</option>)}</select><small>core 变化属于高风险，会要求重新确认。</small></label>
           <TextField label="阵营" field="faction" value={character.faction} disabled={disabled} inputRef={refFor('faction')} onChange={(faction) => onChange({ ...character, faction })} />
         </> : null}
