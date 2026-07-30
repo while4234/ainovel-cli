@@ -46,7 +46,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-07-30 `this commit` `fix: route planning reviews through workflow panel`:
+- 2026-07-31 `this commit` `fix: allow bounded editor arc reviews`:
+  gives only `agent_editor` a 96 KiB compiled-input boundary so a confirmed
+  four-chapter arc package can survive one `novel_context` expansion. A real
+  63.2 KiB review passed and saved its arc summary after deployment.
+- 2026-07-30 `ae1eef4` `fix: route planning reviews through workflow panel`:
   wires durable workflow next actions to the matching adaptation, original
   planning, character-confirmation, or resume handler instead of leaving the
   progress panel inert. Pre-writing detail-batch audits now have a scoped

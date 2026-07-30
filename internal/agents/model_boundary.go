@@ -14,6 +14,7 @@ import (
 const (
 	productionAgentInputLimitBytes = 60 * 1024
 	architectLongInputLimitBytes   = 96 * 1024
+	editorAgentInputLimitBytes     = 96 * 1024
 	characterAgentInputLimitBytes  = 128 * 1024
 	writerAgentInputLimitBytes     = 96 * 1024
 	continuityAuditInputLimitBytes = 128 * 1024
@@ -220,6 +221,13 @@ func (m *diagnosticModel) inputLimitBytes() int {
 		// window can legitimately cross the shared 60 KiB planning boundary
 		// while remaining far below Architect's 96K-token runtime window.
 		return architectLongInputLimitBytes
+	}
+	if m.task == "agent_editor" {
+		// Editor reviews one bounded arc or chapter batch after novel_context
+		// expands its confirmed outlines and audit evidence. Four-chapter arc
+		// reviews can cross 60 KiB while remaining below the 128K-token Editor
+		// runtime window.
+		return editorAgentInputLimitBytes
 	}
 	if m.task == "agent_character" {
 		// Character review must compare one complete staged cast and its

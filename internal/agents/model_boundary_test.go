@@ -117,6 +117,32 @@ func TestProductionLongArchitectBoundaryAllowsOneFocalVolumeContext(t *testing.T
 	}
 }
 
+func TestProductionEditorBoundaryAllowsOneArcReviewPackage(t *testing.T) {
+	for _, delta := range []int{-1, 1} {
+		t.Run(map[int]string{-1: "under", 1: "over"}[delta], func(t *testing.T) {
+			st := initializedDiagnosticStore(t)
+			provider := &boundaryTestModel{response: "ok"}
+			model := withProductionAgentBoundary(provider, st, "agent_editor")
+			messages := exactCompiledAgentMessages(t, editorAgentInputLimitBytes+delta)
+			_, err := model.Generate(t.Context(), messages, nil)
+			if delta < 0 {
+				if err != nil || provider.calls != 1 {
+					t.Fatalf("under-limit err=%v calls=%d", err, provider.calls)
+				}
+				return
+			}
+			if err == nil || provider.calls != 0 || !agentcore.IsContextOverflow(err) {
+				t.Fatalf("over-limit err=%v calls=%d", err, provider.calls)
+			}
+			records, _ := readAgentDiagnostics(t, st.Dir())
+			if len(records) != 1 || records[0].Status != "rejected_budget" ||
+				records[0].InputBytes != editorAgentInputLimitBytes+1 {
+				t.Fatalf("over-limit diagnostics=%+v", records)
+			}
+		})
+	}
+}
+
 func TestProductionCharacterBoundaryAllowsOneCompleteCastReview(t *testing.T) {
 	for _, delta := range []int{-1, 1} {
 		t.Run(map[int]string{-1: "under", 1: "over"}[delta], func(t *testing.T) {
