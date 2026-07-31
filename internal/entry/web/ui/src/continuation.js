@@ -171,6 +171,11 @@ export function continuationNeedsReview(value) {
   return Boolean(continuationReviewKind(value));
 }
 
+export function continuationNeedsConfirmation(value) {
+  const snapshot = normalizeContinuationSnapshot(value);
+  return continuationNeedsReview(snapshot) || snapshot.stage === 'ready_to_write';
+}
+
 export function continuationCanRetry(value) {
   return ['paused', 'failed'].includes(normalizeContinuationSnapshot(value).stage);
 }

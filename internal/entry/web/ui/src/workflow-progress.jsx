@@ -111,6 +111,24 @@ export function workflowRiskText(progress) {
   return '暂无需要处理的风险。';
 }
 
+export function shouldShowWorkflowProgressPanel({
+  adaptationProposalReviewVisible = false,
+  centerView,
+  continuationConfirmationVisible = false,
+  planningReviewCollecting = false,
+  planningReviewVisible = false,
+  reviewActionRunning = false
+} = {}) {
+  if (centerView !== 'writing' || reviewActionRunning) {
+    return true;
+  }
+  const userReviewVisible =
+    adaptationProposalReviewVisible ||
+    continuationConfirmationVisible ||
+    (planningReviewVisible && !planningReviewCollecting);
+  return !userReviewVisible;
+}
+
 export function WorkflowProgressPanel({ projectId = '', snapshot }) {
   const progressRef = React.useRef({ projectId: '', progress: null });
   progressRef.current = retainProjectWorkflowProgress(progressRef.current, projectId, snapshot);

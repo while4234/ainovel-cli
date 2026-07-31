@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildContinuationOutlineScopePayload,
   continuationCanResume,
+  continuationNeedsConfirmation,
   continuationRequiredReviewStages,
   continuationUploadSuccessMessage,
   deriveContinuationSteps,
@@ -75,6 +76,22 @@ describe('continuation workflow derivation', () => {
   it('does not treat review stages as recovery actions', () => {
     expect(continuationCanResume({ stage: 'proposal_review_pending' })).toBe(false);
   });
+
+  it.each([
+    'proposal_review_pending',
+    'volume_review_pending',
+    'outline_review_pending',
+    'ready_to_write'
+  ])('treats %s as requiring user confirmation', (stage) => {
+    expect(continuationNeedsConfirmation({ stage })).toBe(true);
+  });
+
+  it.each(['proposal_generating', 'outline_generating', 'writing'])(
+    'does not treat %s as requiring user confirmation',
+    (stage) => {
+      expect(continuationNeedsConfirmation({ stage })).toBe(false);
+    }
+  );
 
   it('adds the current revision to every mutation payload', () => {
     expect(withExpectedRevision({ stage: 'proposal_review_pending', revision: 11 }, {

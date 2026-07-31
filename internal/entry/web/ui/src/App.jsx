@@ -32,7 +32,7 @@ import {
   X
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { WorkflowProgressPanel } from './workflow-progress.jsx';
+import { shouldShowWorkflowProgressPanel, WorkflowProgressPanel } from './workflow-progress.jsx';
 import { ManuscriptWorkspace } from './manuscript/ManuscriptWorkspace.jsx';
 import {
   analyzeAdaptationSource,
@@ -178,6 +178,7 @@ import {
   buildContinuationOutlineScopePayload,
   continuationCanResume,
   continuationCanRetry,
+  continuationNeedsConfirmation,
   continuationNeedsReview,
   continuationReviewKind,
   continuationSnapshotFrom,
@@ -4455,6 +4456,15 @@ export default function App() {
   );
   const showCoCreatePlanningWorkspace = sideView === 'cocreate' && coCreatePlanningReview.active;
   const showCoCreateWorkspace = sideView === 'cocreate' && !showCoCreatePlanningWorkspace && hasCoCreateWorkspaceContent(coCreate);
+  const showWorkflowProgress = shouldShowWorkflowProgressPanel({
+    centerView,
+    adaptationProposalReviewVisible: showAdaptationProposalWorkspace,
+    continuationConfirmationVisible:
+      showContinuationWorkspace && continuationNeedsConfirmation(continuationSnapshot),
+    planningReviewCollecting: coCreatePlanningReview.collecting,
+    planningReviewVisible: showCoCreatePlanningWorkspace,
+    reviewActionRunning: projectBusy
+  });
   const globalCoCreateVisible = Boolean(activeProject && shouldShowGlobalCoCreate({ snapshot, coCreate, planningReview: coCreatePlanningReview }));
   useEffect(() => {
     if (sideView !== 'cocreate' || globalCoCreateVisible) return;
@@ -5047,10 +5057,12 @@ export default function App() {
           </div>
         ) : null}
 
-        <WorkflowProgressPanel
-          projectId={activeProject?.id || ''}
-          snapshot={snapshot}
-        />
+        {showWorkflowProgress ? (
+          <WorkflowProgressPanel
+            projectId={activeProject?.id || ''}
+            snapshot={snapshot}
+          />
+        ) : null}
         <ManuscriptWorkspace
           active={centerView === 'manuscript'}
           controlsTarget={manuscriptControlsTarget}

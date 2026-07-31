@@ -6,6 +6,7 @@ import {
   WorkflowProgressPanel,
   retainProjectWorkflowProgress,
   retainWorkflowProgress,
+  shouldShowWorkflowProgressPanel,
   workflowOverallPercent,
   workflowProgressFromSnapshot,
   workflowRiskText
@@ -37,11 +38,58 @@ function progress(overrides = {}) {
 }
 
 describe('unified workflow progress', () => {
-  it('keeps the workflow panel mounted while project snapshots load', () => {
+  it('renders the workflow panel through the review-aware visibility decision', () => {
     expect(appSource).toMatch(
-      /<WorkflowProgressPanel[\s\S]*?projectId=\{activeProject\?\.id \|\| ''\}[\s\S]*?snapshot=\{snapshot\}[\s\S]*?\/>/
+      /\{showWorkflowProgress \? \([\s\S]*?<WorkflowProgressPanel[\s\S]*?projectId=\{activeProject\?\.id \|\| ''\}[\s\S]*?snapshot=\{snapshot\}[\s\S]*?\/>[\s\S]*?\) : null\}/
     );
+    expect(appSource).toContain('adaptationProposalReviewVisible: showAdaptationProposalWorkspace');
+    expect(appSource).toContain('showContinuationWorkspace && continuationNeedsConfirmation(continuationSnapshot)');
+    expect(appSource).toContain('planningReviewCollecting: coCreatePlanningReview.collecting');
+    expect(appSource).toContain('planningReviewVisible: showCoCreatePlanningWorkspace');
+    expect(appSource).toContain('reviewActionRunning: projectBusy');
     expect(appSource).not.toMatch(/<WorkflowProgressPanel\s+key=/);
+  });
+
+  it('hides the workflow panel for user review while keeping it during AI generation', () => {
+    expect(shouldShowWorkflowProgressPanel({
+      centerView: 'writing',
+      planningReviewCollecting: false,
+      planningReviewVisible: true
+    })).toBe(false);
+    expect(shouldShowWorkflowProgressPanel({
+      centerView: 'writing',
+      planningReviewCollecting: true,
+      planningReviewVisible: true
+    })).toBe(true);
+    expect(shouldShowWorkflowProgressPanel({
+      centerView: 'writing',
+      planningReviewCollecting: false,
+      planningReviewVisible: true,
+      reviewActionRunning: true
+    })).toBe(true);
+    expect(shouldShowWorkflowProgressPanel({
+      adaptationProposalReviewVisible: true,
+      centerView: 'writing'
+    })).toBe(false);
+    expect(shouldShowWorkflowProgressPanel({
+      centerView: 'writing',
+      continuationConfirmationVisible: true
+    })).toBe(false);
+    expect(shouldShowWorkflowProgressPanel({
+      adaptationProposalReviewVisible: true,
+      centerView: 'foundation',
+      continuationConfirmationVisible: true,
+      planningReviewCollecting: false,
+      planningReviewVisible: true
+    })).toBe(true);
+  });
+
+  it('does not hide progress merely because an inactive planning review is loaded', () => {
+    expect(shouldShowWorkflowProgressPanel({
+      centerView: 'writing',
+      planningReviewCollecting: false,
+      planningReviewVisible: false
+    })).toBe(true);
   });
 
   it('reads the shared workflow contract from a project snapshot', () => {
