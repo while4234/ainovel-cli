@@ -133,7 +133,7 @@ func TestCharacterCandidateEditInvalidatesPriorReview(t *testing.T) {
 	}
 }
 
-func TestRebindConfirmedCharacterWorkflowIgnoresPremiseOnlyRevision(t *testing.T) {
+func TestRebindConfirmedCharacterWorkflowIgnoresDownstreamPlanningRevision(t *testing.T) {
 	st := characterToolStore(t)
 	published, err := st.Foundation.Load()
 	if err != nil {
@@ -143,6 +143,21 @@ func TestRebindConfirmedCharacterWorkflowIgnoresPremiseOnlyRevision(t *testing.T
 	published.RelationshipsReviewed = true
 	published, err = st.Foundation.SaveCAS(published, published.Revision)
 	if err != nil {
+		t.Fatal(err)
+	}
+	initialReview := &domain.PlanningReview{
+		Status:      domain.PlanningReviewStatusPending,
+		Kind:        domain.PlanningReviewKindChapterOutline,
+		Brief:       "the confirmed upstream creative brief",
+		StartPrompt: "the confirmed upstream start prompt",
+	}
+	if err := st.RunMeta.SetPlanningReview(initialReview); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UserRules.Save(&rules.Snapshot{
+		Version: rules.SnapshotVersion, Status: rules.StatusReady,
+		Preferences: "confirmed upstream writing preferences",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	_, binding, inputs, _, err := CurrentCharacterCanonicalBinding(st)
@@ -189,6 +204,18 @@ func TestRebindConfirmedCharacterWorkflowIgnoresPremiseOnlyRevision(t *testing.T
 	if _, err := st.Foundation.SaveCAS(updated, published.Revision); err != nil {
 		t.Fatal(err)
 	}
+	revisedReview := *initialReview
+	revisedReview.Brief = "a downstream chapter-outline revision that must not invalidate confirmed characters"
+	revisedReview.StartPrompt = "a downstream regenerated planning prompt"
+	if err := st.RunMeta.SetPlanningReview(&revisedReview); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UserRules.Save(&rules.Snapshot{
+		Version: rules.SnapshotVersion, Status: rules.StatusReady,
+		Preferences: "updated downstream writing preferences",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
@@ -211,6 +238,12 @@ func TestRebindConfirmedCharacterWorkflowIgnoresPremiseOnlyRevision(t *testing.T
 		reboundLifecycle.Candidate != reboundBinding.Candidate ||
 		reboundLifecycle.ReviewedCandidate != reboundBinding.Candidate {
 		t.Fatalf("rebound candidate=%+v lifecycle=%+v binding=%+v", reboundCandidate, reboundLifecycle, reboundBinding)
+	}
+	if reboundBinding.Inputs.CreativeBrief != binding.Inputs.CreativeBrief {
+		t.Fatalf("downstream planning revision changed confirmed creative brief: before=%q after=%q", binding.Inputs.CreativeBrief, reboundBinding.Inputs.CreativeBrief)
+	}
+	if reboundBinding.InputDigest == binding.InputDigest {
+		t.Fatal("updated user_rules should still advance the rebound input digest")
 	}
 }
 

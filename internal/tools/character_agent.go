@@ -938,10 +938,22 @@ func currentCharacterInputs(
 			return inputs, mode, fmt.Errorf("load original character input brief: %w", reviewErr)
 		}
 		if review != nil {
-			inputs.CreativeBrief = signatureForCharacterInput(struct {
+			currentBrief := signatureForCharacterInput(struct {
 				Brief       string `json:"brief"`
 				StartPrompt string `json:"start_prompt"`
 			}{review.Brief, review.StartPrompt})
+			inputs.CreativeBrief = currentBrief
+			confirmedBrief, confirmed, err := confirmedCharacterCreativeBriefInput(st)
+			if err != nil {
+				return inputs, mode, fmt.Errorf("load confirmed original character brief: %w", err)
+			}
+			if confirmed {
+				// Once Character has passed independent review and explicit user
+				// confirmation, later planning feedback is downstream of that gate.
+				// Keep the exact creative-brief evidence the user approved;
+				// user_rules may still advance through the compatibility check.
+				inputs.CreativeBrief = confirmedBrief
+			}
 		}
 		return inputs, mode, nil
 	}
@@ -993,6 +1005,27 @@ func currentCharacterInputs(
 	}
 	appendNamedCharacterSignature(&inputs, "source_character_index", index)
 	return inputs, mode, nil
+}
+
+func confirmedCharacterCreativeBriefInput(st *store.Store) (string, bool, error) {
+	candidate, err := st.CharacterCards.LoadCandidate()
+	if err != nil || candidate == nil {
+		return "", false, err
+	}
+	lifecycle, err := st.CharacterCards.Load(candidate.Base)
+	if err != nil || lifecycle == nil {
+		return "", false, err
+	}
+	confirmed := lifecycle.AnalysisStatus == domain.CharacterCardAnalysisCandidateReady &&
+		lifecycle.ReviewStatus == domain.CharacterCardReviewPassed &&
+		lifecycle.ConfirmationStatus == domain.CharacterCardConfirmed &&
+		lifecycle.Candidate == candidate.Base.Candidate &&
+		lifecycle.ReviewedCandidate == candidate.Base.Candidate &&
+		lifecycle.ReviewedInputDigest == candidate.Base.InputDigest
+	if !confirmed {
+		return "", false, nil
+	}
+	return lifecycle.Inputs.CreativeBrief, true, nil
 }
 
 func bindCharacterCoreCastProjection(
