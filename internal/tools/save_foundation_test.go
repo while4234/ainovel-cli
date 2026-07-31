@@ -3,11 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -24,8 +26,8 @@ func TestSaveFoundationSchemaAllowsMissingType(t *testing.T) {
 
 func TestDecodeWorldRulesAcceptsGroupedHardAndSoftObject(t *testing.T) {
 	rules, err := decodeWorldRules(`{
-		"hard_rules":[{"id":"identity","category":"identity","rule":"Confirmed identities never drift."}],
-		"soft_rules":[{"id":"tone","category":"tone","rule":"Prefer restrained narration."}],
+		"hard_rules":[{"id":"identity","category":"identity","rule":"Confirmed identities never drift.","boundary":"No identity replacement."}],
+		"soft_rules":[{"id":"tone","category":"tone","rule":"Prefer restrained narration.","boundary":"No melodramatic omniscience."}],
 		"setting_summary":{"era":"modern"},
 		"scale":"long"
 	}`)
@@ -39,12 +41,80 @@ func TestDecodeWorldRulesAcceptsGroupedHardAndSoftObject(t *testing.T) {
 	}
 }
 
+func TestDecodeWorldRulesRejectsCustomWorldBibleObjectWithExactContract(t *testing.T) {
+	_, err := decodeWorldRules(`{
+		"title":"Custom world bible",
+		"setting":{"era":"modern"},
+		"reality_rules":["Consequences persist."],
+		"narrative_rules":{"pov":"limited"}
+	}`)
+	if err == nil {
+		t.Fatal("custom world-bible object was accepted")
+	}
+	for _, want := range []string{
+		`"hard_rules":[WorldRule...]`,
+		`"soft_rules":[WorldRule...]`,
+		"id/category/title/rule/boundary/strength/priority/tags",
+		"do not send custom setting/reality_rules",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestDecodeWorldRulesRejectsEmptyRequiredFields(t *testing.T) {
+	for name, content := range map[string]string{
+		"rule":     `[{"id":"hard-1","boundary":"No exceptions."}]`,
+		"boundary": `[{"id":"hard-1","rule":"Consequences persist."}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodeWorldRules(content)
+			if err == nil || !errors.Is(err, errs.ErrToolArgs) {
+				t.Fatalf("error = %v", err)
+			}
+			if !strings.Contains(err.Error(), "non-empty "+name) {
+				t.Fatalf("error missing %s contract: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestDecodeFoundationGenerationWorldRulesRequiresCompleteGroups(t *testing.T) {
+	valid := `{
+		"hard_rules":[{"id":"hard-1","rule":"Consequences persist.","boundary":"No reset."}],
+		"soft_rules":[{"id":"soft-1","rule":"Prefer restraint.","boundary":"Avoid melodrama."}]
+	}`
+	rules, err := decodeFoundationGenerationWorldRules(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 ||
+		rules[0].Strength != domain.WorldRuleStrengthHard ||
+		rules[1].Strength != domain.WorldRuleStrengthSoft {
+		t.Fatalf("rules = %+v", rules)
+	}
+
+	for name, content := range map[string]string{
+		"array":        `[{"id":"hard-1","rule":"Consequences persist.","boundary":"No reset."}]`,
+		"missing_soft": `{"hard_rules":[{"id":"hard-1","rule":"Consequences persist.","boundary":"No reset."}]}`,
+		"custom_field": `{"hard_rules":[{"id":"hard-1","rule":"Consequences persist.","boundary":"No reset."}],"soft_rules":[{"id":"soft-1","rule":"Prefer restraint.","boundary":"Avoid melodrama."}],"setting":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodeFoundationGenerationWorldRules(content)
+			if err == nil || !errors.Is(err, errs.ErrToolArgs) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestDecodeWorldRulesInfersLegacyArrayStrengthFromStableID(t *testing.T) {
 	rules, err := decodeWorldRules(`[
-		{"id":"hr_identity","rule":"Identity is stable."},
-		{"id":"sr_tone","rule":"Prefer restrained narration."},
-		{"id":"custom","rule":"Historical unknown IDs remain compatible."},
-		{"id":"sr_explicit","rule":"Explicit values win.","strength":"hard"}
+		{"id":"hr_identity","rule":"Identity is stable.","boundary":"No identity replacement."},
+		{"id":"sr_tone","rule":"Prefer restrained narration.","boundary":"No melodramatic omniscience."},
+		{"id":"custom","rule":"Historical unknown IDs remain compatible.","boundary":"No silent reinterpretation."},
+		{"id":"sr_explicit","rule":"Explicit values win.","boundary":"No implicit override.","strength":"hard"}
 	]`)
 	if err != nil {
 		t.Fatal(err)

@@ -186,12 +186,12 @@ func TestCoCreateStreamRepairsUnknownCoreCastField(t *testing.T) {
 	}
 }
 
-func TestCoCreateStreamGivesEachRetryItsOwnTimeout(t *testing.T) {
+func TestCoCreateStreamDoesNotRepeatAnAttemptThatHitItsConfiguredTimeout(t *testing.T) {
 	restore := stubCoCreateRetrySleep(t)
 	defer restore()
 
 	model := &timeoutThenSuccessCoCreateModel{}
-	reply, err := coCreateStream(
+	_, err := coCreateStream(
 		context.Background(),
 		newCoCreateModelSet(model),
 		nil,
@@ -201,14 +201,11 @@ func TestCoCreateStreamGivesEachRetryItsOwnTimeout(t *testing.T) {
 		[]CoCreateMessage{{Role: "user", Content: "start"}},
 		nil,
 	)
-	if err != nil {
-		t.Fatalf("coCreateStream: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "increase cocreate_timeout_seconds") {
+		t.Fatalf("coCreateStream error = %v, want actionable timeout", err)
 	}
-	if model.streamCalls != 2 {
-		t.Fatalf("stream calls = %d, want 2", model.streamCalls)
-	}
-	if reply.Message != "ok" {
-		t.Fatalf("reply = %+v", reply)
+	if model.streamCalls != 1 {
+		t.Fatalf("stream calls = %d, want 1 to avoid repeating a predictably timed-out request", model.streamCalls)
 	}
 }
 

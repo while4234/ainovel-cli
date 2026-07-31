@@ -62,6 +62,7 @@ const (
 	projectActionKindCharacterAnalyze   = "character_analyze"
 	projectActionKindCharacterReview    = "character_review"
 	projectActionKindCharacterRetry     = "character_retry"
+	projectActionKindPlanningRevision   = "planning_revision"
 	webCoCreateCheckpointRelPath        = "meta/sessions/web-cocreate-checkpoint.json"
 	webCoCreateLogRelPath               = "meta/sessions/cocreate.jsonl"
 	webEventSeqRelPath                  = "meta/runtime/web-event-seq.json"
@@ -2398,6 +2399,9 @@ func (s *ProjectSession) prepareNormalFoundationGeneration(plan startup.Plan, cr
 		return err
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
+	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
+		return fmt.Errorf("restore confirmed core cast before Foundation generation: %w", err)
+	}
 	if _, err := st.SaveFoundationPremise(nil, strings.TrimSpace(plan.RawPrompt)); err != nil {
 		return fmt.Errorf("save confirmed co-create premise: %w", err)
 	}
@@ -2684,7 +2688,14 @@ func (s *ProjectSession) ReviseCoCreatePlanning(ctx context.Context, req webCoCr
 		return err
 	}
 	defer unlock()
+	return s.reviseCoCreatePlanningWithinAction(ctx, req, instruction)
+}
 
+func (s *ProjectSession) reviseCoCreatePlanningWithinAction(
+	ctx context.Context,
+	req webCoCreatePlanningRevisionRequest,
+	instruction string,
+) error {
 	if s.cocreate != nil {
 		return fmt.Errorf("finish the active co-create session before revising the planning review")
 	}
@@ -3890,24 +3901,10 @@ func (s *ProjectSession) runCoCreatePlanningRevision(ctx context.Context, state 
 		s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
 		return host.CoCreateReply{}, err
 	}
-	if state.draftNeedsRepair(reply, previousDraft) {
-		repairReply, repairErr := s.host.CoCreateStream(ctx, state.draftRepairHistory(reply, previousDraft), nil)
-		if repairErr != nil {
-			err := fmt.Errorf("repair co-create planning revision draft: %w", repairErr)
-			s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
-			return host.CoCreateReply{}, err
-		}
-		if strings.TrimSpace(repairReply.Prompt) == "" {
-			err := fmt.Errorf("repair co-create planning revision draft: model did not return a draft")
-			s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
-			return host.CoCreateReply{}, err
-		}
-		if state.draftNeedsRepair(repairReply, previousDraft) {
-			err := fmt.Errorf("repair co-create planning revision draft: model returned an incomplete draft")
-			s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
-			return host.CoCreateReply{}, err
-		}
-		reply = repairReply
+	reply, err = s.repairCoCreatePlanningRevisionDraft(ctx, state, reply, previousDraft)
+	if err != nil {
+		s.appendCoCreateRunFinished(eventID, startedAt, state.apiState(), err)
+		return host.CoCreateReply{}, err
 	}
 	if strings.TrimSpace(reply.Prompt) == "" {
 		err := fmt.Errorf("co-create planning revision did not return a draft")
@@ -3919,6 +3916,42 @@ func (s *ProjectSession) runCoCreatePlanningRevision(ctx context.Context, state 
 	finished.DraftPrompt = strings.TrimSpace(reply.Prompt)
 	s.appendCoCreateRunFinished(eventID, startedAt, finished, nil)
 	return reply, nil
+}
+
+func (s *ProjectSession) repairCoCreatePlanningRevisionDraft(
+	ctx context.Context,
+	state *webCoCreateSession,
+	candidate host.CoCreateReply,
+	previousDraft string,
+) (host.CoCreateReply, error) {
+	maxAttempts := max(1, s.host.CurrentStructureRepairMaxAttempts())
+	for attempt := 1; state.draftNeedsRepair(candidate, previousDraft); attempt++ {
+		if attempt > maxAttempts {
+			return host.CoCreateReply{}, fmt.Errorf(
+				"repair co-create planning revision draft: model returned an incomplete draft after %d repair attempts",
+				maxAttempts,
+			)
+		}
+		repaired, err := s.host.CoCreateStream(
+			ctx,
+			state.draftRepairHistory(candidate, previousDraft),
+			nil,
+		)
+		if err != nil {
+			return host.CoCreateReply{}, fmt.Errorf("repair co-create planning revision draft attempt %d: %w", attempt, err)
+		}
+		if strings.TrimSpace(repaired.Prompt) == "" {
+			if attempt == maxAttempts {
+				return host.CoCreateReply{}, fmt.Errorf(
+					"repair co-create planning revision draft: model did not return a draft after %d repair attempts",
+					maxAttempts,
+				)
+			}
+			continue
+		}
+		candidate = repaired
+	}
+	return candidate, nil
 }
 
 func (s *ProjectSession) runCoCreateLocked(ctx context.Context) (webCoCreateState, error) {

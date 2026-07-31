@@ -187,6 +187,46 @@ func TestArchitectStopGuardAllowsRepairArcCheckpoint(t *testing.T) {
 	}
 }
 
+func TestArchitectStopGuardAllowsFreshFoundationRetryBoundary(t *testing.T) {
+	s := newTestStore(t)
+	guard := NewArchitectStopGuard(
+		s,
+		"call save_foundation(type=world_rules) with foundation_generation=2 and foundation_base_revision=7",
+	)
+
+	decision := guard(t.Context(), agentcore.StopInfo{
+		TurnIndex: 1,
+		Trigger:   agentcore.StopTriggerAfterTool,
+		Message: agentcore.Message{
+			Role:    agentcore.RoleAssistant,
+			Content: []agentcore.ContentBlock{agentcore.TextBlock("retry_in_fresh_context")},
+		},
+	})
+	if !decision.Allow {
+		t.Fatalf("fresh-context boundary was blocked: %+v", decision)
+	}
+}
+
+func TestArchitectStopGuardStillBlocksNaturalStopDuringFoundationGeneration(t *testing.T) {
+	s := newTestStore(t)
+	guard := NewArchitectStopGuard(
+		s,
+		"call save_foundation(type=world_rules) with foundation_generation=2 and foundation_base_revision=7",
+	)
+
+	decision := guard(t.Context(), agentcore.StopInfo{
+		TurnIndex: 1,
+		Trigger:   agentcore.StopTriggerEndTurn,
+		Message: agentcore.Message{
+			Role:    agentcore.RoleAssistant,
+			Content: []agentcore.ContentBlock{agentcore.TextBlock("done without saving")},
+		},
+	})
+	if decision.Allow || decision.InjectMessage == "" {
+		t.Fatalf("natural stop was not blocked: %+v", decision)
+	}
+}
+
 func TestSubAgentGuard_PreserveDetailsShortDraftRepairsBeforeCommit(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Progress.Init("test", 1); err != nil {

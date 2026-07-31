@@ -698,7 +698,16 @@ func routeOriginalFoundation(state State, review *domain.PlanningReview) *Instru
 		case "planned_relationships":
 			return nil
 		case "world_rules":
-			return &Instruction{Agent: "architect_long", Reason: "完整 StoryFoundation 的世界规则待补全", Task: "Read novel_context(scope=planning), then call save_foundation(type=world_rules) exactly once with complete hard and soft world rules. Hard rules are inviolable constraints. Preserve the confirmed CoreCast and do not generate any outline." + fenceContract + feedbackContract}
+			return &Instruction{
+				Agent:  "architect_long",
+				Reason: "完整 StoryFoundation 的世界规则待补全",
+				Task: "Read novel_context(scope=planning), then call save_foundation(type=world_rules) exactly once. " +
+					`content must be exactly {"hard_rules":[WorldRule...],"soft_rules":[WorldRule...]}; every WorldRule must use fields ` +
+					`{"id":"...","category":"...","title":"...","rule":"...","boundary":"...","strength":"hard|soft","priority":1,"tags":["..."]}, with non-empty rule and boundary. ` +
+					"Do not send a custom title/setting/reality_rules/narrative_rules/conflict_rules/content_boundaries object, " +
+					"and do not switch to premise or outline after a validation error. Hard rules are inviolable constraints. " +
+					"Preserve the confirmed CoreCast and do not generate any outline." + fenceContract + feedbackContract,
+			}
 		}
 	}
 	return nil

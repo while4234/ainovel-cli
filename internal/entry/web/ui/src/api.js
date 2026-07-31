@@ -819,10 +819,10 @@ export function reviseCoCreateFoundation(projectId, feedback) {
 }
 
 export function reviseCoCreatePlanning(projectId, payload = {}) {
-  return request(`/api/projects/${encodeURIComponent(projectId)}/cocreate/planning/revise`, {
-    method: 'POST',
-    body: JSON.stringify(payload)
-  });
+  return persistentAction(
+    `/api/projects/${encodeURIComponent(projectId)}/cocreate/planning/revise`,
+    payload
+  );
 }
 
 export function cancelCoCreate(projectId) {

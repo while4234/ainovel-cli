@@ -899,6 +899,7 @@ export default function App() {
   const activeProjectIdRef = useRef('');
   const planningReviewHydrationProjectRef = useRef('');
 	const planningMutationSeqRef = useRef(0);
+	const planningRevisionInFlightProjectRef = useRef('');
   const outlineRevisionHydrationRef = useRef('');
   const forceFoundationProjectOpenRef = useRef('');
 
@@ -3831,7 +3832,13 @@ export default function App() {
   };
 
   const reviseCoCreatePlanningRun = async (manualFeedback = '') => {
-    if (!activeProject?.id || !coCreatePlanningReview.pending || busy || projectRunning) {
+    if (
+      !activeProject?.id ||
+      !coCreatePlanningReview.pending ||
+      busy ||
+      projectRunning ||
+      planningRevisionInFlightProjectRef.current === activeProject.id
+    ) {
       return;
     }
     const foundationFeedback = typeof manualFeedback === 'string' && manualFeedback.trim()
@@ -3851,6 +3858,7 @@ export default function App() {
     }
     setBusy(true);
     const projectId = activeProject.id;
+    planningRevisionInFlightProjectRef.current = projectId;
     const projectEpoch = projectOpenSeqRef.current;
     const requestSeq = ++planningMutationSeqRef.current;
     const requestIsCurrent = () => isCurrentProject(projectId) &&
@@ -3900,6 +3908,9 @@ export default function App() {
         error: err.message
       }));
     } finally {
+      if (planningRevisionInFlightProjectRef.current === projectId) {
+        planningRevisionInFlightProjectRef.current = '';
+      }
       if (requestIsCurrent()) setBusy(false);
     }
   };

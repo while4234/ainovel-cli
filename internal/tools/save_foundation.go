@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -453,7 +454,7 @@ func cloneCoreCastForCharacterRepair(value domain.CoreCastContract) domain.CoreC
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/planned_relationships/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。Foundation 生成轮次中的 premise / characters / planned_relationships / world_rules 必须原样携带 Host 指令给出的 foundation_generation 与 foundation_base_revision；旧轮次、重复或并发响应会被拒绝。type 可选 premise / outline / layered_outline / characters / planned_relationships / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。planned_relationships 必须使用 characters 中的稳定 ID，且只保存创作前计划关系，不写入 relationship_state。outline/expand_arc/repair_arc 的 character_beats 必须使用稳定 character_id，relationship_beats 必须使用已确认 relationship_id 及其 source_character_id/target_character_id，不能用姓名代替 ID。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/planned_relationships/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。Foundation 生成轮次中的 premise / characters / planned_relationships / world_rules 必须原样携带 Host 指令给出的 foundation_generation 与 foundation_base_revision；旧轮次、重复或并发响应会被拒绝。type 可选 premise / outline / layered_outline / characters / planned_relationships / world_rules / expand_arc / repair_arc / repair_volume / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串。普通 world_rules 写入可传 WorldRule 数组或对象 {\"hard_rules\":[WorldRule...],\"soft_rules\":[WorldRule...]}；Foundation 生成轮次不接受数组，必须使用该对象且 hard_rules、soft_rules 均非空。每条必须包含非空 rule 和 boundary，不接受自定义 setting/reality_rules/narrative_rules 等字段。其他类型 content 优先直接传 JSON 数组或对象。planned_relationships 必须使用 characters 中的稳定 ID，且只保存创作前计划关系，不写入 relationship_state。outline/expand_arc/repair_arc 的 character_beats 必须使用稳定 character_id，relationship_beats 必须使用已确认 relationship_id 及其 source_character_id/target_character_id，不能用姓名代替 ID。expand_arc 展开骨架弧的详细章节（需 volume + arc，普通原创审核规划每批严格 3-4 章）；repair_arc 修复已展开弧；repair_volume 按自动审核或用户意见完整替换一个尚未展开的分卷骨架且不得改变该卷预估总章数；append_volume 追加新卷（普通原创分卷规划阶段每次只追加一个骨架卷，每弧3-4章）；update_compass 更新终局方向；complete_book 宣告全书完结。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -465,7 +466,7 @@ func (t *SaveFoundationTool) Schema() map[string]any {
 	return schema.Object(
 		schema.Property("type", schema.Enum("设定类型。建议显式传；若缺失，工具会在内容和当前缺失项唯一明确时自动推断。", "premise", "outline", "layered_outline", "characters", "planned_relationships", "world_rules", "expand_arc", "repair_arc", "repair_volume", "append_volume", "update_compass", "complete_book")),
 		schema.Property("content", map[string]any{
-			"description": "内容。premise 传 Markdown 字符串；其他类型直接传 JSON 数组或对象即可，也兼容传 JSON 字符串。expand_arc / repair_arc 时传章节数组。",
+			"description": "内容。premise 传 Markdown 字符串；普通 world_rules 可传 WorldRule 数组或 {\"hard_rules\":[WorldRule...],\"soft_rules\":[WorldRule...]}。Foundation 生成轮次的 world_rules 不接受数组，必须使用该对象、两组均非空；每条使用 id/category/title/rule/boundary/strength/priority/tags 且 rule、boundary 非空。其他类型直接传 JSON 数组或对象，也兼容 JSON 字符串。expand_arc / repair_arc 时传章节数组。",
 		}).Required(),
 		schema.Property("scale", schema.Enum("规划级别", "short", "mid", "long")),
 		schema.Property("foundation_generation", schema.Int("Foundation 生成轮次；生成四个 Foundation section 时必须与 Host 指令完全一致")),
@@ -586,7 +587,7 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		name := domain.ExtractNovelNameFromPremise(content)
 		generationReview, err = t.store.SaveFoundationPremise(generationFence, content)
 		if err != nil {
-			return nil, fmt.Errorf("save premise: %w: %w", errs.ErrStoreWrite, err)
+			return nil, foundationGenerationSaveError("premise", err)
 		}
 		if name != "" {
 			_ = t.store.Progress.SetNovelName(name)
@@ -677,7 +678,7 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		generationReview, err = t.store.SaveFoundationCharacters(generationFence, chars)
 		if err != nil {
-			return nil, fmt.Errorf("save characters: %w: %w", errs.ErrStoreWrite, err)
+			return nil, foundationGenerationSaveError("characters", err)
 		}
 		result["count"] = len(chars)
 
@@ -688,19 +689,25 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		generationReview, err = t.store.SaveFoundationRelationships(generationFence, relationships)
 		if err != nil {
-			return nil, fmt.Errorf("save planned_relationships: %w: %w", errs.ErrStoreWrite, err)
+			return nil, foundationGenerationSaveError("planned_relationships", err)
 		}
 		result["count"] = len(relationships)
 
 	case "world_rules":
-		rules, decodeErr := decodeWorldRules(content)
+		var rules []domain.WorldRule
+		var decodeErr error
+		if generationFence != nil {
+			rules, decodeErr = decodeFoundationGenerationWorldRules(content)
+		} else {
+			rules, decodeErr = decodeWorldRules(content)
+		}
 		if decodeErr != nil {
 			err = decodeErr
 			return nil, err
 		}
 		generationReview, err = t.store.SaveFoundationWorldRules(generationFence, rules)
 		if err != nil {
-			return nil, fmt.Errorf("save world_rules: %w: %w", errs.ErrStoreWrite, err)
+			return nil, foundationGenerationSaveError("world_rules", err)
 		}
 		result["count"] = len(rules)
 
@@ -1339,17 +1346,24 @@ func decodeWorldRules(content string) ([]domain.WorldRule, error) {
 	var rules []domain.WorldRule
 	if err := json.Unmarshal([]byte(content), &rules); err == nil {
 		inferLegacyWorldRuleStrengths(rules)
-		return rules, nil
+		return validateDecodedWorldRules(rules)
 	}
 	var grouped struct {
 		HardRules []domain.WorldRule `json:"hard_rules"`
 		SoftRules []domain.WorldRule `json:"soft_rules"`
 	}
 	if err := json.Unmarshal([]byte(content), &grouped); err != nil {
-		return nil, decodeFoundationJSON("world_rules", content, &rules)
+		return nil, fmt.Errorf(
+			"parse world_rules JSON: content must be a WorldRule array or {\"hard_rules\":[WorldRule...],\"soft_rules\":[WorldRule...]}; each rule uses id/category/title/rule/boundary/strength/priority/tags with non-empty rule and boundary; do not send custom setting/reality_rules/narrative_rules/conflict_rules/content_boundaries fields: %v: %w",
+			err,
+			errs.ErrToolArgs,
+		)
 	}
 	if len(grouped.HardRules) == 0 && len(grouped.SoftRules) == 0 {
-		return nil, fmt.Errorf("parse world_rules JSON: expected an array or an object containing hard_rules/soft_rules: %w", errs.ErrToolArgs)
+		return nil, fmt.Errorf(
+			"parse world_rules JSON: content must be a WorldRule array or {\"hard_rules\":[WorldRule...],\"soft_rules\":[WorldRule...]}; each rule uses id/category/title/rule/boundary/strength/priority/tags with non-empty rule and boundary; do not send custom setting/reality_rules/narrative_rules/conflict_rules/content_boundaries fields: %w",
+			errs.ErrToolArgs,
+		)
 	}
 	for idx := range grouped.HardRules {
 		grouped.HardRules[idx].Strength = domain.WorldRuleStrengthHard
@@ -1359,7 +1373,71 @@ func decodeWorldRules(content string) ([]domain.WorldRule, error) {
 	}
 	rules = append(rules, grouped.HardRules...)
 	rules = append(rules, grouped.SoftRules...)
+	return validateDecodedWorldRules(rules)
+}
+
+func decodeFoundationGenerationWorldRules(content string) ([]domain.WorldRule, error) {
+	var grouped struct {
+		HardRules []domain.WorldRule `json:"hard_rules"`
+		SoftRules []domain.WorldRule `json:"soft_rules"`
+	}
+	if !json.Valid([]byte(content)) {
+		return nil, fmt.Errorf(
+			"parse Foundation generation world_rules JSON: content must be one valid JSON object: %w",
+			errs.ErrToolArgs,
+		)
+	}
+	decoder := json.NewDecoder(strings.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&grouped); err != nil {
+		return nil, fmt.Errorf(
+			"parse Foundation generation world_rules JSON: content must be exactly {\"hard_rules\":[WorldRule...],\"soft_rules\":[WorldRule...]}, without custom top-level fields: %v: %w",
+			err,
+			errs.ErrToolArgs,
+		)
+	}
+	if len(grouped.HardRules) == 0 || len(grouped.SoftRules) == 0 {
+		return nil, fmt.Errorf(
+			"parse Foundation generation world_rules JSON: hard_rules and soft_rules must each contain at least one WorldRule: %w",
+			errs.ErrToolArgs,
+		)
+	}
+	for index := range grouped.HardRules {
+		grouped.HardRules[index].Strength = domain.WorldRuleStrengthHard
+	}
+	for index := range grouped.SoftRules {
+		grouped.SoftRules[index].Strength = domain.WorldRuleStrengthSoft
+	}
+	rules := append(grouped.HardRules, grouped.SoftRules...)
+	return validateDecodedWorldRules(rules)
+}
+
+func validateDecodedWorldRules(rules []domain.WorldRule) ([]domain.WorldRule, error) {
+	for index, rule := range rules {
+		if strings.TrimSpace(rule.Rule) == "" {
+			return nil, fmt.Errorf("parse world_rules JSON: WorldRule %d requires non-empty rule: %w", index, errs.ErrToolArgs)
+		}
+		if strings.TrimSpace(rule.Boundary) == "" {
+			return nil, fmt.Errorf("parse world_rules JSON: WorldRule %d requires non-empty boundary: %w", index, errs.ErrToolArgs)
+		}
+	}
 	return rules, nil
+}
+
+func foundationGenerationSaveError(section string, err error) error {
+	base := fmt.Errorf("save %s: %w: %w", section, errs.ErrStoreWrite, err)
+	var reviewErr *store.FoundationReviewError
+	if !errors.As(err, &reviewErr) || reviewErr.Review == nil {
+		return base
+	}
+	review := reviewErr.Review
+	return fmt.Errorf(
+		"%w; authoritative retry contract: keep type=%s and use foundation_generation=%d, foundation_base_revision=%d exactly; do not switch section types or substitute the current canonical Foundation revision",
+		base,
+		section,
+		review.FoundationGeneration,
+		review.FoundationBaseRevision,
+	)
 }
 
 func decodeLayeredOutline(content string) ([]domain.VolumeOutline, error) {

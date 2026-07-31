@@ -69,6 +69,35 @@ func TestArchitectCannotWriteFoundationBeforeCharacterConfirmation(t *testing.T)
 	}
 }
 
+func TestSaveFoundationStaleFenceReturnsAuthoritativeRetryContract(t *testing.T) {
+	st := confirmedCoreCastToolStore(t)
+	review := &domain.PlanningReview{Brief: "complete creative brief", StartPrompt: "start"}
+	if _, err := st.BeginFoundationReview(review); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"type":                     "premise",
+		"content":                  "# Canonical premise\nA complete story foundation.",
+		"foundation_generation":    review.FoundationGeneration,
+		"foundation_base_revision": review.FoundationBaseRevision + 1,
+	})
+	_, err := NewSaveFoundationTool(st).Execute(context.Background(), args)
+	if err == nil {
+		t.Fatal("stale Foundation fence was accepted")
+	}
+	for _, want := range []string{
+		"authoritative retry contract",
+		"type=premise",
+		"foundation_generation=1",
+		"foundation_base_revision=1",
+		"do not switch section types",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+}
+
 func TestArchitectContextUsesCanonicalFoundationAndSeparatesRuntimeRelationships(t *testing.T) {
 	st := confirmedCoreCastToolStore(t)
 	review := &domain.PlanningReview{Brief: "canonical context", StartPrompt: "start"}

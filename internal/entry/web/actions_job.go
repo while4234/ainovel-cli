@@ -198,7 +198,7 @@ func (r *ActionRegistry) Close() {
 }
 
 func (r *ActionRegistry) execute(actionID string, run func(context.Context) error, finished func()) {
-	err := run(context.Background())
+	err := runBackgroundActionSafely(run)
 	finishedAt := time.Now().UTC()
 
 	r.mu.Lock()
@@ -223,6 +223,15 @@ func (r *ActionRegistry) execute(actionID string, run func(context.Context) erro
 	if finished != nil {
 		finished()
 	}
+}
+
+func runBackgroundActionSafely(run func(context.Context) error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("background action panicked: %v", recovered)
+		}
+	}()
+	return run(context.Background())
 }
 
 func (r *ActionRegistry) load() error {
@@ -325,6 +334,23 @@ func (s *ProjectSession) StartBackgroundAction(
 	idempotencyKey string,
 	run func(context.Context) error,
 ) (ActionRecord, bool, error) {
+	return s.startBackgroundAction(kind, idempotencyKey, run, false)
+}
+
+func (s *ProjectSession) StartCancellableBackgroundAction(
+	kind string,
+	idempotencyKey string,
+	run func(context.Context) error,
+) (ActionRecord, bool, error) {
+	return s.startBackgroundAction(kind, idempotencyKey, run, true)
+}
+
+func (s *ProjectSession) startBackgroundAction(
+	kind string,
+	idempotencyKey string,
+	run func(context.Context) error,
+	cancellable bool,
+) (ActionRecord, bool, error) {
 	if s == nil || s.actions == nil {
 		return ActionRecord{}, false, fmt.Errorf("project action registry is unavailable")
 	}
@@ -346,6 +372,15 @@ func (s *ProjectSession) StartBackgroundAction(
 		actionCtx, contextErr := s.normalFlowActionContext(ctx)
 		if contextErr != nil {
 			return contextErr
+		}
+		if cancellable {
+			actionCtx, cancel := context.WithCancel(actionCtx)
+			s.setActionCancel(kind, cancel)
+			defer func() {
+				s.clearActionCancel()
+				cancel()
+			}()
+			return run(actionCtx)
 		}
 		return run(actionCtx)
 	}, actionLifecycle{
@@ -401,6 +436,12 @@ func (s *Server) handleProjectBackgroundAction(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if action.Status != ActionStatusRunning && session.isActionRunning(action.Kind) {
+		action.Status = ActionStatusRunning
+		action.Recoverable = false
+		action.Error = ""
+		action.FinishedAt = nil
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project":  manifest,
 		"action":   action,
@@ -411,6 +452,10 @@ func (s *Server) handleProjectBackgroundAction(w http.ResponseWriter, r *http.Re
 func writeBackgroundActionStartError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrActionKeyRequired) {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if errors.Is(err, ErrSessionActionInProgress) {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeError(w, http.StatusInternalServerError, err.Error())

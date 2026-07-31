@@ -389,15 +389,31 @@ func writerNeedsChangeEvidence(chapterPlan domain.AdaptationChapterPlan) bool {
 	return false
 }
 
-// NewArchitectStopGuard 要求 architect 本轮至少落盘一次 save_foundation。
-func NewArchitectStopGuard(st *store.Store) agentcore.StopGuard {
-	return newCheckpointDeltaGuard(st, "architect",
+// NewArchitectStopGuard requires architect to persist at least one
+// save_foundation checkpoint in this run. Foundation generation contract
+// failures are deliberately returned at an after-tool boundary so Host can
+// re-dispatch the same durable section in a clean subagent context.
+func NewArchitectStopGuard(st *store.Store, task ...string) agentcore.StopGuard {
+	checkpointGuard := newCheckpointDeltaGuard(st, "architect",
 		[]string{
 			"premise", "outline", "layered_outline", "characters", "world_rules",
 			"expand_arc", "repair_arc", "repair_volume", "append_volume", "update_compass", "complete_book",
 		},
 		"你必须调用 save_foundation 将产出落盘后才能结束。只输出 Markdown/JSON 文字等于丢失。",
 	)
+	foundationGeneration := len(task) > 0 && strings.Contains(task[0], "foundation_generation=")
+	if !foundationGeneration {
+		return checkpointGuard
+	}
+	return func(ctx context.Context, info agentcore.StopInfo) agentcore.StopDecision {
+		if info.Trigger == agentcore.StopTriggerAfterTool {
+			// The result-aware stop hook requests this boundary only for either
+			// durable success or retry_in_fresh_context. Both must return to Host:
+			// success advances the route; retry starts a clean subagent context.
+			return agentcore.StopDecision{Allow: true}
+		}
+		return checkpointGuard(ctx, info)
+	}
 }
 
 // NewEditorStopGuard 要求 editor 本轮落盘与"任务"匹配的产物后才能结束。

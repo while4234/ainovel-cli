@@ -111,6 +111,76 @@ func TestActionRegistryRequiresIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestActionRegistryReleasesLifecycleAfterRunnerPanic(t *testing.T) {
+	registry, err := NewActionRegistry("project-panic", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan struct{})
+	action, created, err := registry.Start(
+		"planning_revision",
+		"panic-request",
+		func(context.Context) error {
+			panic("unexpected model adapter panic")
+		},
+		actionLifecycle{finished: func() { close(finished) }},
+	)
+	if err != nil || !created {
+		t.Fatalf("Start = created=%v err=%v", created, err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("panic did not finish action lifecycle")
+	}
+	failed := waitForActionStatus(t, registry, action.ActionID, ActionStatusFailed)
+	if !failed.Recoverable || !strings.Contains(failed.Error, "panicked") {
+		t.Fatalf("panic action = %+v", failed)
+	}
+}
+
+func TestCancellableBackgroundActionStopsFromProjectPause(t *testing.T) {
+	dir := t.TempDir()
+	host := newFakeProjectHost()
+	session, err := NewProjectSession(
+		ProjectManifest{ID: "cancellable-planning-revision", RootDir: dir, OutputDir: dir},
+		host,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	started := make(chan struct{})
+	action, created, err := session.StartCancellableBackgroundAction(
+		projectActionKindPlanningRevision,
+		"planning-pause",
+		func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	)
+	if err != nil || !created {
+		t.Fatalf("StartCancellableBackgroundAction = created=%v err=%v", created, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellable background action did not start")
+	}
+	if !session.Pause() {
+		t.Fatal("project pause did not cancel the background action")
+	}
+	failed := waitForActionStatus(t, session.actions, action.ActionID, ActionStatusFailed)
+	if !failed.Recoverable || !strings.Contains(failed.Error, "context canceled") {
+		t.Fatalf("paused action = %+v", failed)
+	}
+	if !session.waitForActionsIdle(2 * time.Second) {
+		t.Fatal("paused background action did not release ownership")
+	}
+}
+
 func TestActionRegistryLatestSurvivesReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "meta", "actions.json")
 	registry, err := NewActionRegistry("project-latest", path)

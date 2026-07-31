@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -298,6 +299,211 @@ func TestProjectCoCreatePlanningRevisionRegeneratesPendingPlan(t *testing.T) {
 	if !strings.Contains(review.Brief, "Make the heroine proactive") || strings.Contains(review.Brief, "Passive heroine") {
 		t.Fatalf("planning review brief = %q", review.Brief)
 	}
+}
+
+func TestPlanningRevisionDraftCompletenessDoesNotRejectNarrativeReference(t *testing.T) {
+	previous := strings.Repeat("完整旧规划内容。", 250)
+	candidate := strings.Repeat("完整新规划内容。", 300) +
+		"\n本次修订在保留上一版核心人物动机的同时，已经完整重写全部章节提纲。"
+
+	if draftPromptRegressed(previous, candidate) {
+		t.Fatal("a complete expanded draft was rejected for merely mentioning the previous version")
+	}
+	if !containsDraftOmissionPlaceholder("## 其他设定\n- 其余设定同上。") {
+		t.Fatal("a standalone omission placeholder was not detected")
+	}
+}
+
+func TestProjectCoCreatePlanningRevisionRetriesIncompleteRepairsFromLatestRawCandidate(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Planning Revision Repair Retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.structureRepairMaxAttempts = 3
+	firstCandidate := "## First candidate\n- 其余设定同上"
+	secondCandidate := "## Second candidate\n- 其他设定同上"
+	thirdCandidate := "## Third candidate\n- 其余同上"
+	finalCandidate := "## Final complete outline\n" + strings.Repeat("- 完整、独立且可执行的章节规划。\n", 200)
+	fake.cocreateReplies = []host.CoCreateReply{
+		webCoCreateReply("first incomplete candidate", firstCandidate, true),
+		webCoCreateReply("second incomplete candidate", secondCandidate, true),
+		webCoCreateReply("third incomplete candidate", thirdCandidate, true),
+		webCoCreateReply("final repaired candidate", finalCandidate, true),
+	}
+	st := storepkg.NewStore(manifest.OutputDir)
+	establishWebApprovedNormalFoundationFixture(t, st)
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindChapterOutline
+		review.Brief = "## Existing complete outline\n" + strings.Repeat("- Existing planning detail.\n", 120)
+		review.TargetTotalWords = 5000
+	})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+manifest.ID+"/cocreate/planning/revise",
+		bytes.NewBufferString(`{"feedback":"repair the final outline without discarding valid details"}`),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("planning revision status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.cocreateCalls != 4 {
+		t.Fatalf("co-create calls=%d, want initial generation plus three configured repairs", fake.cocreateCalls)
+	}
+	if !coCreateHistoryContains(fake.lastCoCreateHistory, thirdCandidate) {
+		t.Fatalf("last repair did not use the latest raw candidate: %+v", fake.lastCoCreateHistory)
+	}
+	if !coCreateHistoryContains(fake.lastCoCreateHistory, "repair the final outline") {
+		t.Fatalf("last repair lost the user's review feedback: %+v", fake.lastCoCreateHistory)
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review == nil || review.Status != domain.PlanningReviewStatusCollecting ||
+		!strings.Contains(review.Brief, "Final complete outline") {
+		t.Fatalf("final repaired outline was not accepted: %+v", review)
+	}
+}
+
+func TestProjectCoCreatePlanningRevisionAsyncOutlivesHTTPContext(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Async CoCreate Planning Revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateReply = webCoCreateReply(
+		"updated plan",
+		"## Revised\n- Make the heroine proactive\n- Shorten the opening",
+		true,
+	)
+	st := storepkg.NewStore(manifest.OutputDir)
+	establishWebApprovedNormalFoundationFixture(t, st)
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindChapterOutline
+		review.Brief = "## Old\n- Slow opening\n- Passive heroine"
+		review.TargetTotalWords = 5000
+	})
+
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	cancelRequest()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+manifest.ID+"/cocreate/planning/revise",
+		bytes.NewBufferString(`{"feedback":"make the heroine proactive","async":true,"idempotency_key":"planning-http-canceled"}`),
+	).WithContext(requestContext)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("async planning revise status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var accepted struct {
+		ActionID string `json:"action_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	action := waitForActionStatus(t, server.sessions.sessions[manifest.ID].actions, accepted.ActionID, ActionStatusCompleted)
+	if action.Error != "" || fake.cocreateCalls != 1 {
+		t.Fatalf("completed action=%+v cocreateCalls=%d", action, fake.cocreateCalls)
+	}
+}
+
+func TestProjectCoCreatePlanningRevisionFailureReleasesActionForFreshFeedback(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Retry CoCreate Planning Revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := installFakeSession(t, server, manifest)
+	fake.cocreateErr = context.Canceled
+	st := storepkg.NewStore(manifest.OutputDir)
+	establishWebApprovedNormalFoundationFixture(t, st)
+	setWebPlanningReviewPreservingFoundation(t, st, func(review *domain.PlanningReview) {
+		review.Status = domain.PlanningReviewStatusPending
+		review.Kind = domain.PlanningReviewKindChapterOutline
+		review.Brief = "## Original review draft\n- Keep this until a revision succeeds"
+		review.TargetTotalWords = 5000
+	})
+	session := server.sessions.sessions[manifest.ID]
+
+	firstID := startAsyncPlanningRevisionTestRequest(
+		t,
+		server,
+		manifest.ID,
+		`{"feedback":"first feedback","async":true,"idempotency_key":"planning-failure-1"}`,
+	)
+	failed := waitForActionStatus(t, session.actions, firstID, ActionStatusFailed)
+	if !session.waitForActionsIdle(2 * time.Second) {
+		t.Fatal("failed planning revision did not release project action ownership")
+	}
+	if !failed.Recoverable || session.hasActiveAction() {
+		t.Fatalf("failed action did not release ownership: action=%+v active=%v", failed, session.hasActiveAction())
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil || review == nil || review.Status != domain.PlanningReviewStatusPending ||
+		!strings.Contains(review.Brief, "Keep this until a revision succeeds") {
+		t.Fatalf("failed revision changed review: review=%+v err=%v", review, err)
+	}
+
+	fake.cocreateErr = nil
+	fake.cocreateReply = webCoCreateReply(
+		"updated plan",
+		"## Revised\n- Apply the new feedback cleanly",
+		true,
+	)
+	secondID := startAsyncPlanningRevisionTestRequest(
+		t,
+		server,
+		manifest.ID,
+		`{"feedback":"new replacement feedback","async":true,"idempotency_key":"planning-retry-2"}`,
+	)
+	waitForActionStatus(t, session.actions, secondID, ActionStatusCompleted)
+	if !session.waitForActionsIdle(2 * time.Second) {
+		t.Fatal("successful retry did not release project action ownership")
+	}
+	if session.hasActiveAction() {
+		t.Fatal("successful retry left project action ownership active")
+	}
+}
+
+func startAsyncPlanningRevisionTestRequest(
+	t *testing.T,
+	server *Server,
+	projectID string,
+	body string,
+) string {
+	t.Helper()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/projects/"+projectID+"/cocreate/planning/revise",
+		bytes.NewBufferString(body),
+	)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("async planning revision status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var accepted struct {
+		ActionID string `json:"action_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted action: %v", err)
+	}
+	if accepted.ActionID == "" {
+		t.Fatal("accepted action has no action_id")
+	}
+	return accepted.ActionID
 }
 
 func TestRolledBackCoCreateDraftCanBeRevisedAndRegenerateFoundation(t *testing.T) {

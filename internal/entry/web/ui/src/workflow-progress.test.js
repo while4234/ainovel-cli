@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import {
   WorkflowProgressPanel,
+  reflectRunningPlanningRevision,
   retainProjectWorkflowProgress,
   retainWorkflowProgress,
   shouldShowWorkflowProgressPanel,
@@ -223,6 +224,52 @@ describe('unified workflow progress', () => {
     expect(workflowRiskText(progress({ error: '模型连接中断', recoverable: true }))).toBe('模型连接中断。请点击工作区顶部“恢复”继续。');
     expect(workflowRiskText(progress())).toContain('需要你确认');
     expect(workflowRiskText(progress({ next_action: null, recoverable: true }))).toContain('顶部“恢复”');
+  });
+
+  it('projects a running planning revision over a stale confirmation checkpoint', () => {
+    const waiting = progress();
+    const projected = reflectRunningPlanningRevision(waiting, {
+      kind: 'planning_revision',
+      status: 'running'
+    });
+
+    expect(projected).not.toBe(waiting);
+    expect(projected.status).toBe('running');
+    expect(projected.next_action).toBeNull();
+    expect(projected.steps[1]).toMatchObject({
+      status: 'running',
+      message: 'AI 正在根据你的审核意见修改规划'
+    });
+    expect(waiting.status).toBe('waiting_confirmation');
+
+    const markup = renderToStaticMarkup(createElement(WorkflowProgressPanel, {
+      snapshot: {
+        workflow_progress: waiting,
+        current_action: {
+          action_id: 'action-planning-revision',
+          kind: 'planning_revision',
+          status: 'running',
+          recoverable: false
+        }
+      }
+    }));
+    expect(markup).toContain('正在运行');
+    expect(markup).toContain('AI 正在根据你的审核意见修改规划');
+    expect(markup).toContain('根据审核意见修改规划');
+    expect(markup).not.toContain('等待确认');
+  });
+
+  it('does not project a completed or unrelated action over workflow progress', () => {
+    const waiting = progress();
+
+    expect(reflectRunningPlanningRevision(waiting, {
+      kind: 'planning_revision',
+      status: 'completed'
+    })).toBe(waiting);
+    expect(reflectRunningPlanningRevision(waiting, {
+      kind: 'simulation_analysis',
+      status: 'running'
+    })).toBe(waiting);
   });
 
   it.each([

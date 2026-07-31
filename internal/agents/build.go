@@ -183,7 +183,9 @@ func BuildCoordinator(
 
 	architectTools := []agentcore.Tool{
 		architectContextTool,
-		revisionFenceWrites(store.Revisions, tools.NewArchitectSaveFoundationTool(store, completionGate)),
+		newFoundationRetryBoundaryTool(
+			revisionFenceWrites(store.Revisions, tools.NewArchitectSaveFoundationTool(store, completionGate)),
+		),
 	}
 	characterRuns := tools.NewCharacterRunRegistry()
 	characterTools := []agentcore.Tool{
@@ -333,8 +335,8 @@ func BuildCoordinator(
 		}
 	}
 
-	architectStopGuardFactory := func(_, _ string) agentcore.StopGuard {
-		return reminder.NewArchitectStopGuard(store)
+	architectStopGuardFactory := func(_, task string) agentcore.StopGuard {
+		return reminder.NewArchitectStopGuard(store, task)
 	}
 	architectThinking, _ := ResolveThinkingForModel(architectModel, roleThinking(cfg, "architect"))
 	architectMicrocompact := architectToolResultMicrocompactConfig()
@@ -351,7 +353,7 @@ func BuildCoordinator(
 		OnMessage:          onMsg,
 		StopAfterToolResult: func(toolName string, result json.RawMessage) bool {
 			r := decodeSaveFoundationResult(toolName, result)
-			return r.Type == "outline" && r.FoundationReady
+			return r.RetryInFreshContext || (r.Type == "outline" && r.FoundationReady)
 		},
 		StopGuardFactory: architectStopGuardFactory,
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
@@ -793,12 +795,13 @@ func chapterFromTask(task string) int {
 }
 
 type saveFoundationResult struct {
-	Type             string `json:"type"`
-	FoundationReady  bool   `json:"foundation_ready"`
-	PlanningReview   string `json:"planning_review"`
-	ContinuePlanning bool   `json:"continue_planning"`
-	AuditRequired    bool   `json:"audit_required"`
-	VolumeBatchSaved bool   `json:"volume_batch_saved"`
+	Type                string `json:"type"`
+	FoundationReady     bool   `json:"foundation_ready"`
+	PlanningReview      string `json:"planning_review"`
+	ContinuePlanning    bool   `json:"continue_planning"`
+	AuditRequired       bool   `json:"audit_required"`
+	VolumeBatchSaved    bool   `json:"volume_batch_saved"`
+	RetryInFreshContext bool   `json:"retry_in_fresh_context"`
 }
 
 func decodeSaveFoundationResult(toolName string, result json.RawMessage) saveFoundationResult {
@@ -812,6 +815,9 @@ func decodeSaveFoundationResult(toolName string, result json.RawMessage) saveFou
 
 func architectLongShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
 	r := decodeSaveFoundationResult(toolName, result)
+	if r.RetryInFreshContext {
+		return true
+	}
 	if r.PlanningReview == domain.PlanningReviewStatusPending {
 		return true
 	}

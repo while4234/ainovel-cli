@@ -96,7 +96,13 @@ func TestRouteOriginalPlanningBuildsFoundationBeforeAnyOutline(t *testing.T) {
 	if instruction == nil || instruction.Agent != "architect_long" {
 		t.Fatalf("post-confirmation instruction = %+v", instruction)
 	}
-	for _, want := range []string{"world_rules", "foundation_generation=2", "foundation_base_revision=0", "make the hard rules explicit", "do not generate any outline"} {
+	for _, want := range []string{
+		"world_rules", `"hard_rules":[WorldRule...]`, `"soft_rules":[WorldRule...]`,
+		`{"id":"...","category":"...","title":"...","rule":"...","boundary":"...","strength":"hard|soft","priority":1,"tags":["..."]}`,
+		"non-empty rule and boundary", "Do not send a custom", "do not switch to premise",
+		"foundation_generation=2", "foundation_base_revision=0",
+		"make the hard rules explicit", "do not generate any outline",
+	} {
 		if !strings.Contains(instruction.Task, want) {
 			t.Fatalf("task missing %q: %s", want, instruction.Task)
 		}

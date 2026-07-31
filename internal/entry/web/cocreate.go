@@ -74,6 +74,7 @@ type webCoCreatePlanningRevisionRequest struct {
 	FromChapter    int    `json:"from_chapter,omitempty"`
 	ToChapter      int    `json:"to_chapter,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	Async          bool   `json:"async,omitempty"`
 }
 
 type webNormalRevisionPreviewRequest struct {
@@ -553,6 +554,10 @@ func writeFoundationReviewError(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) handleProjectCoCreatePlanningRevise(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method == http.MethodGet {
+		s.handleProjectBackgroundAction(w, r, id)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -583,6 +588,22 @@ func (s *Server) handleProjectCoCreatePlanningRevise(w http.ResponseWriter, r *h
 	req.Instruction = strings.TrimSpace(req.Instruction)
 	if req.Instruction == "" {
 		req.Instruction = req.Feedback
+	}
+	if req.Async {
+		instruction := req.Feedback
+		action, created, startErr := session.StartCancellableBackgroundAction(
+			projectActionKindPlanningRevision,
+			req.IdempotencyKey,
+			func(ctx context.Context) error {
+				return session.reviseCoCreatePlanningWithinAction(ctx, req, instruction)
+			},
+		)
+		if startErr != nil {
+			writeBackgroundActionStartError(w, startErr)
+			return
+		}
+		writeBackgroundActionAccepted(w, r, manifest, session, action, created)
+		return
 	}
 	if err := session.ReviseCoCreatePlanning(r.Context(), req); err != nil {
 		writeProjectLifecycleError(w, err)
@@ -1407,6 +1428,10 @@ func containsDraftOmissionPlaceholder(draft string) bool {
 	}
 	placeholders := []string{
 		"同上",
+		"其余同上",
+		"其他同上",
+		"其余设定同上",
+		"其他设定同上",
 		"同前轮",
 		"同上一轮",
 		"如上",
@@ -1444,12 +1469,22 @@ func containsDraftOmissionPlaceholder(draft string) bool {
 		"same as above",
 		"as above",
 	}
-	for _, placeholder := range placeholders {
-		if strings.Contains(draft, placeholder) {
-			return true
+	for _, line := range strings.Split(draft, "\n") {
+		line = normalizeDraftOmissionLine(line)
+		for _, placeholder := range placeholders {
+			if line == placeholder {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func normalizeDraftOmissionLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimLeft(line, "#*-•0123456789.、()（） \t")
+	line = strings.TrimSpace(line)
+	return strings.Trim(line, "。；;，,：:")
 }
 
 func (s *webCoCreateSession) draftRepairHistory(reply host.CoCreateReply, previousDraft string) []host.CoCreateMessage {

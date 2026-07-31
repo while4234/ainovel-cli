@@ -378,6 +378,10 @@ retry:
 	streamCh, err = model.GenerateStream(attemptCtx, msgs, nil, agentcore.WithMaxTokens(maxTokens))
 	if err != nil {
 		_ = recorder.Finish(modeldiag.StatusProviderError, "", nil)
+		if timeoutErr := coCreateAttemptTimeoutError(attemptCtx, timeout); timeoutErr != nil {
+			cancelCurrentAttempt()
+			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(timeoutErr))
+		}
 		cancelCurrentAttempt()
 		if ok, sleepErr := prepareCoCreateRetry(ctx, err, attempts, onProgress, &retryErrors); sleepErr != nil {
 			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
@@ -413,6 +417,10 @@ retry:
 		case agentcore.StreamEventError:
 			if ev.Err != nil {
 				_ = recorder.Finish(modeldiag.StatusProviderError, raw.String(), responseUsage)
+				if timeoutErr := coCreateAttemptTimeoutError(attemptCtx, timeout); timeoutErr != nil {
+					cancelCurrentAttempt()
+					return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(timeoutErr))
+				}
 				cancelCurrentAttempt()
 				if ok, sleepErr := prepareCoCreateRetry(ctx, ev.Err, attempts, onProgress, &retryErrors); sleepErr != nil {
 					return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
@@ -432,9 +440,13 @@ retry:
 			return CoCreateReply{}, modelIdentity.wrapError(streamErr)
 		}
 	}
+	timeoutErr := coCreateAttemptTimeoutError(attemptCtx, timeout)
 	cancelCurrentAttempt()
 	if !done {
 		_ = recorder.Finish(modeldiag.StatusProviderError, raw.String(), responseUsage)
+		if timeoutErr != nil {
+			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(timeoutErr))
+		}
 		streamErr := fmt.Errorf("cocreate stream closed before done: %w", agentcore.ErrProviderNetwork)
 		if ok, sleepErr := prepareCoCreateRetry(ctx, streamErr, attempts, onProgress, &retryErrors); sleepErr != nil {
 			return CoCreateReply{}, fmt.Errorf("cocreate generate: %w", modelIdentity.wrapError(sleepErr))
@@ -485,6 +497,17 @@ retry:
 		return CoCreateReply{}, diagnosticErr
 	}
 	return reply, err
+}
+
+func coCreateAttemptTimeoutError(ctx context.Context, timeout time.Duration) error {
+	if ctx == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil
+	}
+	return fmt.Errorf(
+		"co-create model call timed out after %s; increase cocreate_timeout_seconds before retrying: %w",
+		timeout,
+		context.DeadlineExceeded,
+	)
 }
 
 // compileCoCreateMessages canonicalizes only the transient model view on every

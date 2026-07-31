@@ -545,10 +545,14 @@ describe('web API helpers', () => {
 
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project-1/cocreate/planning/revise', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({
-        feedback: 'tighten the opening'
-      })
+      body: expect.any(String)
     }));
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toMatchObject({
+      feedback: 'tighten the opening',
+      async: true
+    });
+    expect(body.idempotency_key).toContain('/api/projects/project-1/cocreate/planning/revise:');
   });
 
   it('can ask the backend to open the Grok authorization page', async () => {

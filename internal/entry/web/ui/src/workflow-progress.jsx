@@ -16,6 +16,7 @@ const statusLabels = {
 };
 
 const actionKindLabels = {
+  planning_revision: '根据审核意见修改规划',
   adaptation_analysis: '原文分析',
   adaptation_proposal: '改编提案',
   adaptation_proposal_generate: '生成改编提案',
@@ -94,6 +95,33 @@ export function workflowOverallPercent(progress) {
   return Math.max(0, Math.min(100, Math.round((units / steps.length) * 100)));
 }
 
+export function reflectRunningPlanningRevision(progress, action) {
+  if (
+    !progress ||
+    action?.kind !== 'planning_revision' ||
+    action?.status !== 'running'
+  ) {
+    return progress;
+  }
+  const currentStep = String(progress.current_step || '').trim();
+  return {
+    ...progress,
+    status: 'running',
+    error: '',
+    recoverable: false,
+    next_action: null,
+    steps: progress.steps.map((step) => (
+      step?.id === currentStep
+        ? {
+            ...step,
+            status: 'running',
+            message: 'AI 正在根据你的审核意见修改规划'
+          }
+        : step
+    ))
+  };
+}
+
 export function workflowRiskText(progress) {
   const error = String(progress?.error || '').trim();
   if (error) {
@@ -132,7 +160,8 @@ export function shouldShowWorkflowProgressPanel({
 export function WorkflowProgressPanel({ projectId = '', snapshot }) {
   const progressRef = React.useRef({ projectId: '', progress: null });
   progressRef.current = retainProjectWorkflowProgress(progressRef.current, projectId, snapshot);
-  const progress = progressRef.current.progress;
+  const action = snapshot?.current_action || snapshot?.CurrentAction;
+  const progress = reflectRunningPlanningRevision(progressRef.current.progress, action);
   if (!progress) {
     return null;
   }
@@ -190,7 +219,7 @@ export function WorkflowProgressPanel({ projectId = '', snapshot }) {
           <strong>{workflowRiskText(progress)}</strong>
         </div>
       </div>
-      <WorkflowActionRecovery action={snapshot?.current_action || snapshot?.CurrentAction} />
+      <WorkflowActionRecovery action={action} />
     </section>
   );
 }
