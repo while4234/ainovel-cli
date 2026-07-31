@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildContinuationOutlineScopePayload,
+  continuationCanResume,
   continuationRequiredReviewStages,
   continuationUploadSuccessMessage,
   deriveContinuationSteps,
@@ -62,6 +63,17 @@ describe('continuation workflow derivation', () => {
 
     expect(steps.find((step) => step.id === 'outlines').status).toBe('active');
     expect(steps.find((step) => step.id === 'start').status).toBe('pending');
+  });
+
+  it.each(['proposal_generating', 'outline_generating', 'paused', 'failed', 'writing'])(
+    'routes %s recovery through the workspace toolbar',
+    (stage) => {
+      expect(continuationCanResume({ stage })).toBe(true);
+    }
+  );
+
+  it('does not treat review stages as recovery actions', () => {
+    expect(continuationCanResume({ stage: 'proposal_review_pending' })).toBe(false);
   });
 
   it('adds the current revision to every mutation payload', () => {

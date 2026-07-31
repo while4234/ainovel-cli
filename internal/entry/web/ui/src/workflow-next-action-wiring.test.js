@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 const appSource = readFileSync(new URL('./App.jsx', import.meta.url), 'utf8');
 
-describe('workflow next-action wiring', () => {
-  it('routes adaptation confirmation through the visible workflow panel', () => {
-    expect(appSource).toMatch(
-      /<WorkflowProgressPanel[\s\S]*?onNextAction=\{runWorkflowNextAction\}[\s\S]*?snapshot=\{snapshot\}/
-    );
-    expect(appSource).toMatch(/case 'confirm_adaptation_proposal':[\s\S]*?confirmAdaptationRun\(\)/);
-    expect(appSource).toMatch(/case 'confirm_planning':[\s\S]*?confirmCoCreatePlanningRun\(\)/);
-    expect(appSource).toMatch(/case 'resume_project':[\s\S]*?runAction\(resumeProject/);
+describe('workflow action placement', () => {
+  it('keeps confirmation in the side panel and recovery in the workspace toolbar', () => {
+    expect(appSource).not.toMatch(/<WorkflowProgressPanel[\s\S]*?onNextAction=/);
+    expect(appSource).not.toContain('runWorkflowNextAction');
+    expect(appSource).toMatch(/<CoCreatePanel[\s\S]*?onCommit=\{commitCoCreateFlow\}/);
+    expect(appSource).toMatch(/continuationCanResume\(continuationSnapshot\)[\s\S]*?runAction\(resumeProject/);
+    expect(appSource).not.toContain('恢复共创');
+    expect(appSource).not.toContain('恢复当前规划任务');
   });
 });

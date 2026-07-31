@@ -64,7 +64,6 @@ import {
   downloadSimulationSource,
   emptyTrashProjects,
   exportProjectDownload,
-  generateContinuationOutlines,
   generateContinuationProposal,
   getBackendStatus,
   getCodexAuthStatus,
@@ -100,8 +99,6 @@ import {
   previewProjectRollback,
   renameProject,
   restoreTrashProject,
-  resumeCoCreate,
-  retryContinuation,
   retrySemanticAdaptationAudit,
   reviseAdaptationProposal,
   reviseAdaptationVolumeReview,
@@ -179,6 +176,7 @@ import {
 } from './cocreate.js';
 import {
   buildContinuationOutlineScopePayload,
+  continuationCanResume,
   continuationCanRetry,
   continuationNeedsReview,
   continuationReviewKind,
@@ -2739,14 +2737,6 @@ export default function App() {
     }
   };
 
-  const generateContinuationOutlinesRun = () => runContinuationAction(
-    generateContinuationOutlines,
-    {},
-    '章节细纲正在生成'
-  );
-
-  const retryContinuationRun = () => runContinuationAction(retryContinuation, {}, '已继续当前续写规划任务');
-
   const startContinuationRun = () => runContinuationAction(startContinuation, {}, '续写已启动');
 
   const runExport = async () => {
@@ -3676,28 +3666,6 @@ export default function App() {
     }
   };
 
-  const resumeCoCreateFlow = async () => {
-    const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
-    if (!activeProject?.id || !hasBackendSession || busy || coCreateRequestBusy) {
-      return;
-    }
-    const projectId = activeProject.id;
-    setCoCreate((previous) => ({ ...previous, status: 'running', error: '', suggestions: [] }));
-    try {
-      const data = await resumeCoCreate(projectId);
-      if (!isCurrentProject(projectId)) {
-        return;
-      }
-      setWorkbench((previous) => ({ ...previous, snapshot: data.snapshot || previous.snapshot }));
-      setCoCreate((previous) => coCreateStateFromResponse(data, previous));
-    } catch (err) {
-      if (!isCurrentProject(projectId)) {
-        return;
-      }
-      setCoCreate((previous) => coCreateStateFromError(err, previous));
-    }
-  };
-
   const submitCoCreateSuggestion = (suggestion) => {
     const text = String(suggestion || '').trim();
     const hasBackendSession = coCreate.active || (coCreate.messages.length > 0 && !coCreate.intakeActive);
@@ -4517,32 +4485,6 @@ export default function App() {
       target?.focus?.();
     });
   };
-  const runWorkflowNextAction = (action) => {
-    const actionID = String(action?.id || '').trim();
-    switch (actionID) {
-      case 'confirm_adaptation_proposal':
-        setSideView('adapt');
-        confirmAdaptationRun();
-        return;
-      case 'confirm_foundation':
-      case 'confirm_planning':
-        setSideView('cocreate');
-        confirmCoCreatePlanningRun();
-        return;
-      case 'confirm_character_candidate':
-        openFoundationCharacterConfirmation();
-        return;
-      case 'resume_project':
-      case 'resume_adaptation_proposal':
-      case 'resume_adaptation_proposal_details':
-      case 'resume_analysis':
-      case 'resume_writing':
-        runAction(resumeProject, { reportResumeNoOp: true });
-        return;
-      default:
-        setError(`当前流程动作尚未接入状态面板：${actionID || 'unknown'}`);
-    }
-  };
   const openFoundationCharacterRevision = () => {
     setFoundationNavigation({
       projectId: activeProject?.id || '',
@@ -5072,22 +5014,7 @@ export default function App() {
                   setSideView('continuation');
                   return;
                 }
-                if (continuationSnapshot.stage === 'proposal_generating') {
-                  setSideView('continuation');
-                  generateContinuationProposalRun();
-                  return;
-                }
-                if (continuationSnapshot.stage === 'outline_generating') {
-                  setSideView('continuation');
-                  generateContinuationOutlinesRun();
-                  return;
-                }
-                if (continuationCanRetry(continuationSnapshot)) {
-                  setSideView('continuation');
-                  retryContinuationRun();
-                  return;
-                }
-                if (continuationSnapshot.exists && continuationSnapshot.stage !== 'writing') {
+                if (continuationSnapshot.exists && !continuationCanResume(continuationSnapshot)) {
                   setSideView('continuation');
                   return;
                 }
@@ -5121,7 +5048,6 @@ export default function App() {
         ) : null}
 
         <WorkflowProgressPanel
-          onNextAction={runWorkflowNextAction}
           projectId={activeProject?.id || ''}
           snapshot={snapshot}
         />
@@ -5362,7 +5288,6 @@ export default function App() {
               onConfirmIntake={() => beginCoCreateFlow('normal', { confirmIntake: true })}
               onSubmit={submitCoCreate}
               onRebrief={(event) => submitCoCreate(event, { forceRebrief: true })}
-              onResume={resumeCoCreateFlow}
               onSuggestion={submitCoCreateSuggestion}
               onRevise={reviseCoCreateMessage}
               onResolveDecision={resolveCoCreateDecisionFlow}
@@ -5466,10 +5391,8 @@ export default function App() {
               onUpload={uploadContinuationNovel}
               onBeginDraft={beginContinuationDraft}
               onGenerateProposal={generateContinuationProposalRun}
-              onGenerateOutlines={generateContinuationOutlinesRun}
               onRevise={reviseContinuationReview}
               onApprove={approveContinuationReview}
-              onRetry={retryContinuationRun}
               onStart={startContinuationRun}
               coCreate={coCreate}
               planningRevision={planningRevision}
@@ -5479,7 +5402,6 @@ export default function App() {
               adaptation={adaptation}
               onCoCreateBegin={beginCoCreateFlow}
               onCoCreateSubmit={submitCoCreate}
-              onCoCreateResume={resumeCoCreateFlow}
               onCoCreateSuggestion={submitCoCreateSuggestion}
               onCoCreateRevise={reviseCoCreateMessage}
               onCoCreateResolveDecision={resolveCoCreateDecisionFlow}
@@ -6727,7 +6649,6 @@ function CoCreatePanel({
   onConfirmIntake,
   onSubmit,
   onRebrief = () => {},
-  onResume = () => {},
   onSuggestion,
   onRevise,
   onResolveDecision = () => {},
@@ -6952,12 +6873,8 @@ function CoCreatePanel({
           <div className="cocreate-resume-card">
             <div>
               <strong>上次生成失败，进度已保存</strong>
-              <span>会沿用当前共创上下文和已确认决策继续生成，不会重新开始。</span>
+              <span>点击工作区顶部“恢复”，会沿用当前共创上下文和已确认决策继续生成。</span>
             </div>
-            <button className="tool-button accent full-width" onClick={onResume} type="button">
-              <RefreshCw size={16} />
-              恢复共创
-            </button>
           </div>
         ) : null}
       </section>
@@ -8795,10 +8712,8 @@ function ContinuationPanel({
   onUpload,
   onBeginDraft,
   onGenerateProposal,
-  onGenerateOutlines,
   onRevise,
   onApprove,
-  onRetry,
   onStart,
   coCreate,
   planningRevision,
@@ -8807,7 +8722,6 @@ function ContinuationPanel({
   adaptation,
   onCoCreateBegin,
   onCoCreateSubmit,
-  onCoCreateResume,
   onCoCreateSuggestion,
   onCoCreateRevise,
   onCoCreateResolveDecision,
@@ -8846,7 +8760,6 @@ function ContinuationPanel({
         onConfirmIntake={() => {}}
         onSubmit={onCoCreateSubmit}
         onRebrief={onCoCreateSubmit}
-        onResume={onCoCreateResume}
         onSuggestion={onCoCreateSuggestion}
         onRevise={onCoCreateRevise}
         onResolveDecision={onCoCreateResolveDecision}
@@ -8922,20 +8835,6 @@ function ContinuationPanel({
             </button>
           ) : null}
 
-          {workflow.stage === 'proposal_generating' ? (
-            <button className="tool-button accent full-width" disabled={actionBusy} onClick={onGenerateProposal} type="button">
-              <WandSparkles size={16} />
-              生成 / 继续生成提案
-            </button>
-          ) : null}
-
-          {workflow.stage === 'outline_generating' ? (
-            <button className="tool-button accent full-width" disabled={actionBusy} onClick={onGenerateOutlines} type="button">
-              <WandSparkles size={16} />
-              生成 / 继续生成章节细纲
-            </button>
-          ) : null}
-
           {reviewKind ? (
             <ContinuationReviewForm
               busy={actionBusy}
@@ -8949,10 +8848,7 @@ function ContinuationPanel({
           ) : null}
 
           {continuationCanRetry(workflow) ? (
-            <button className="tool-button full-width" disabled={actionBusy} onClick={onRetry} type="button">
-              <RefreshCw size={16} />
-              恢复当前规划任务
-            </button>
+            <div className="settings-note warning">当前任务可从检查点继续，请点击工作区顶部“恢复”。</div>
           ) : null}
 
           {workflow.stage === 'ready_to_write' ? (

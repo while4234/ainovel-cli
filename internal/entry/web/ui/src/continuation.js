@@ -175,6 +175,11 @@ export function continuationCanRetry(value) {
   return ['paused', 'failed'].includes(normalizeContinuationSnapshot(value).stage);
 }
 
+export function continuationCanResume(value) {
+  return ['proposal_generating', 'outline_generating', 'paused', 'failed', 'writing']
+    .includes(normalizeContinuationSnapshot(value).stage);
+}
+
 export function deriveContinuationSteps(value) {
   const snapshot = normalizeContinuationSnapshot(value);
   let activeIndex = STAGE_STEP_INDEX[snapshot.stage] ?? 0;

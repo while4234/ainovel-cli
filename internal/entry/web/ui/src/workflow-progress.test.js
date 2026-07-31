@@ -38,7 +38,9 @@ function progress(overrides = {}) {
 
 describe('unified workflow progress', () => {
   it('keeps the workflow panel mounted while project snapshots load', () => {
-    expect(appSource).toContain("<WorkflowProgressPanel projectId={activeProject?.id || ''} snapshot={snapshot} />");
+    expect(appSource).toMatch(
+      /<WorkflowProgressPanel[\s\S]*?projectId=\{activeProject\?\.id \|\| ''\}[\s\S]*?snapshot=\{snapshot\}[\s\S]*?\/>/
+    );
     expect(appSource).not.toMatch(/<WorkflowProgressPanel\s+key=/);
   });
 
@@ -99,7 +101,7 @@ describe('unified workflow progress', () => {
     expect(markup).toContain('role="progressbar"');
     expect(markup).toContain('aria-current="step"');
     expect(markup).toContain('当前说明');
-    expect(markup).toContain('下一操作');
+    expect(markup).not.toContain('下一操作');
     expect(markup).toContain('风险与恢复');
     expect(markup).toContain('2/4');
   });
@@ -170,8 +172,30 @@ describe('unified workflow progress', () => {
   });
 
   it('prioritizes a workflow error and otherwise explains confirmation and recovery risk', () => {
-    expect(workflowRiskText(progress({ error: '模型连接中断', recoverable: true }))).toBe('模型连接中断');
+    expect(workflowRiskText(progress({ error: '模型连接中断', recoverable: true }))).toBe('模型连接中断。请点击工作区顶部“恢复”继续。');
     expect(workflowRiskText(progress())).toContain('需要你确认');
-    expect(workflowRiskText(progress({ next_action: null, recoverable: true }))).toContain('检查点恢复');
+    expect(workflowRiskText(progress({ next_action: null, recoverable: true }))).toContain('顶部“恢复”');
+  });
+
+  it.each([
+    ['中断恢复', 'resume_project', '恢复规划', false],
+    ['阶段确认', 'commit_cocreate', '完成共创', true],
+    ['开始生成', 'generate_outlines', '开始生成章节细纲', false]
+  ])('leaves %s actions out of the read-only workflow display', (_, id, label, requiresConfirmation) => {
+    const markup = renderToStaticMarkup(createElement(WorkflowProgressPanel, {
+      snapshot: {
+        workflow_progress: progress({
+          next_action: {
+            id,
+            label,
+            requires_confirmation: requiresConfirmation
+          }
+        })
+      }
+    }));
+
+    expect(markup).not.toContain('下一操作');
+    expect(markup).not.toContain(label);
+    expect(markup).not.toContain('<button');
   });
 });

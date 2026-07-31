@@ -97,10 +97,10 @@ export function workflowOverallPercent(progress) {
 export function workflowRiskText(progress) {
   const error = String(progress?.error || '').trim();
   if (error) {
-    return error;
+    return progress?.recoverable ? `${error}。请点击工作区顶部“恢复”继续。` : error;
   }
   if (progress?.recoverable) {
-    return '可从检查点恢复，重试不会跳过已完成步骤。';
+    return '请点击工作区顶部“恢复”从检查点继续，不会跳过已完成步骤。';
   }
   if (progress?.next_action?.requires_confirmation) {
     return '需要你确认后才会继续，不会自动改写关键产物。';
@@ -111,7 +111,7 @@ export function workflowRiskText(progress) {
   return '暂无需要处理的风险。';
 }
 
-export function WorkflowProgressPanel({ projectId = '', snapshot, onNextAction }) {
+export function WorkflowProgressPanel({ projectId = '', snapshot }) {
   const progressRef = React.useRef({ projectId: '', progress: null });
   progressRef.current = retainProjectWorkflowProgress(progressRef.current, projectId, snapshot);
   const progress = progressRef.current.progress;
@@ -132,8 +132,6 @@ export function WorkflowProgressPanel({ projectId = '', snapshot, onNextAction }
   const currentRoute = currentProvider && currentModel
     ? `后端：${currentProvider} · 模型：${currentModel}`
     : currentModel ? `模型：${currentModel}` : '';
-  const nextAction = progress.next_action?.label || (progress.status === 'completed' ? '已全部完成' : '等待当前步骤更新');
-
   return (
     <section className={`workflow-progress workflow-${progress.status || 'idle'}`} aria-labelledby="workflow-progress-title">
       <header className="workflow-progress-header">
@@ -168,16 +166,6 @@ export function WorkflowProgressPanel({ projectId = '', snapshot, onNextAction }
         <div>
           <span>当前说明</span>
           <strong>{currentMessage || currentStep?.label || '等待开始'}</strong>
-        </div>
-        <div>
-          <span>下一操作</span>
-          <strong>{nextAction}</strong>
-          {progress.next_action?.requires_confirmation ? <small>需要你确认</small> : null}
-          {progress.next_action && onNextAction ? (
-            <button className="workflow-next-action" type="button" onClick={() => onNextAction(progress.next_action)}>
-              {progress.next_action.label}
-            </button>
-          ) : null}
         </div>
         <div className={progress.error || progress.recoverable ? 'workflow-risk is-warning' : 'workflow-risk'}>
           <span>风险与恢复</span>
