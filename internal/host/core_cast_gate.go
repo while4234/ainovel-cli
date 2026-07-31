@@ -162,6 +162,13 @@ func RequireResumeCoreCastGate(st *store.Store, publish bool) error {
 	if pending {
 		return nil
 	}
+	pending, err = OriginalCharacterWorkflowPending(st)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return nil
+	}
 	return RequireManagedCoreCastGate(st, publish)
 }
 
@@ -187,4 +194,36 @@ func AdaptationCharacterWorkflowPending(st *store.Store) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// OriginalCharacterWorkflowPending reports the pre-confirmation states that
+// the Character Agent can advance during initial Foundation generation. A
+// passed review intentionally falls through to the CoreCast gate so Resume
+// cannot publish a candidate without explicit user confirmation.
+func OriginalCharacterWorkflowPending(st *store.Store) (bool, error) {
+	if st == nil {
+		return false, fmt.Errorf("core cast gate store is unavailable")
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil {
+		return false, err
+	}
+	if review == nil ||
+		review.Kind != domain.PlanningReviewKindFoundation ||
+		review.Status != domain.PlanningReviewStatusCollecting {
+		return false, nil
+	}
+
+	candidate, lifecycle, _, characterErr := tools.CurrentCharacterWorkflow(st)
+	if characterErr != nil || candidate == nil || lifecycle == nil ||
+		lifecycle.AnalysisStatus != domain.CharacterCardAnalysisCandidateReady {
+		return true, nil
+	}
+	switch lifecycle.ReviewStatus {
+	case domain.CharacterCardReviewNotReviewed, domain.CharacterCardReviewStale,
+		domain.CharacterCardReviewFailed, domain.CharacterCardReviewInProgress:
+		return true, nil
+	default:
+		return false, nil
+	}
 }

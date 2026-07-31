@@ -104,6 +104,9 @@ func (m *runtimeFallbackModel) Generate(ctx context.Context, messages []agentcor
 		if err == nil {
 			return resp, nil
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		next, retry, terminal := m.nextAfterFailure(ctx, current, attempted, err, &networkAttempt)
 		switch {
 		case retry:
@@ -133,6 +136,10 @@ func (m *runtimeFallbackModel) GenerateStream(ctx context.Context, messages []ag
 			attempted[current.provider] = true
 			source, resp, err := m.startAttempt(ctx, current, messages, tools, opts...)
 			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					out <- agentcore.StreamEvent{Type: agentcore.StreamEventError, Err: ctxErr}
+					return
+				}
 				next, retry, terminal := m.nextAfterFailure(ctx, current, attempted, err, &networkAttempt)
 				switch {
 				case retry:
@@ -182,6 +189,10 @@ func (m *runtimeFallbackModel) forwardStream(ctx context.Context, out chan<- age
 	for ev := range source {
 		switch ev.Type {
 		case agentcore.StreamEventError:
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				out <- agentcore.StreamEvent{Type: agentcore.StreamEventError, Err: ctxErr}
+				return true
+			}
 			if ev.Err != nil && !forwarded {
 				next, retry, terminal := m.nextAfterFailure(ctx, current, attempted, ev.Err, networkAttempt)
 				switch {
@@ -218,6 +229,10 @@ func (m *runtimeFallbackModel) forwardStream(ctx context.Context, out chan<- age
 		}
 	}
 
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		out <- agentcore.StreamEvent{Type: agentcore.StreamEventError, Err: ctxErr}
+		return true
+	}
 	err := &agentcore.PartialStreamError{}
 	if !forwarded {
 		next, retry, terminal := m.nextAfterFailure(ctx, current, attempted, err, networkAttempt)

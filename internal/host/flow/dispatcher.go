@@ -52,6 +52,14 @@ func NewDispatcher(coordinator *agentcore.Agent, store *storepkg.Store) *Dispatc
 // Host 在 Start/Resume 完成首条 prompt 之后启用，避免与启动流程冲突。
 func (d *Dispatcher) Enable() { d.enabled.Store(true) }
 
+// Disable closes routing before a run is canceled. This prevents a late
+// subagent boundary from enqueueing work after a manual pause or human gate.
+func (d *Dispatcher) Disable() {
+	if d != nil {
+		d.enabled.Store(false)
+	}
+}
+
 func (d *Dispatcher) IsEnabled() bool { return d != nil && d.enabled.Load() }
 
 func (d *Dispatcher) SetNormalFlowLease(lease *storepkg.NormalFlowLease) {

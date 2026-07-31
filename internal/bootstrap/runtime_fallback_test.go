@@ -571,6 +571,42 @@ func TestRuntimeAutoSwitchDoesNotSwitchProtectedError(t *testing.T) {
 	}
 }
 
+func TestRuntimeFallbackStreamCancellationDoesNotRetryClosedStream(t *testing.T) {
+	restoreRuntimeFallbackWait(t)
+	primaryModel := newCancelThenCloseRuntimeModel()
+	fallbackModel := &scriptedRuntimeModel{provider: "p2", model: "m1"}
+	primary := NewSwappableModel("p1", "m1", primaryModel)
+	controller := &runtimeFallbackControllerStub{
+		order:  []string{"p2"},
+		models: map[string]agentcore.ChatModel{"p2": fallbackModel},
+	}
+	model := newRuntimeFallbackModel("character", primary, primary, runtimeFallbackTestConfig(3), controller, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := model.GenerateStream(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	primaryModel.WaitStarted(t)
+	cancel()
+
+	var streamErr error
+	for event := range stream {
+		if event.Type == agentcore.StreamEventError {
+			streamErr = event.Err
+		}
+	}
+	if !errors.Is(streamErr, context.Canceled) {
+		t.Fatalf("stream error = %v, want context.Canceled", streamErr)
+	}
+	if primaryModel.Calls() != 1 {
+		t.Fatalf("primary calls = %d, want 1", primaryModel.Calls())
+	}
+	if fallbackModel.Calls() != 0 || len(controller.calls) != 0 {
+		t.Fatalf("cancellation triggered retry/fallback: fallback=%d controller=%d", fallbackModel.Calls(), len(controller.calls))
+	}
+}
+
 func TestRuntimeAutoSwitchCandidateProvidersTreatFallbackBackendsAsPool(t *testing.T) {
 	enabled := true
 	cfg := Config{
@@ -639,6 +675,64 @@ type emptyPreludeErrorRuntimeModel struct {
 	model    string
 	err      error
 	calls    int
+}
+
+type cancelThenCloseRuntimeModel struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+}
+
+func newCancelThenCloseRuntimeModel() *cancelThenCloseRuntimeModel {
+	return &cancelThenCloseRuntimeModel{started: make(chan struct{})}
+}
+
+func (m *cancelThenCloseRuntimeModel) Generate(ctx context.Context, _ []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	m.markStarted()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (m *cancelThenCloseRuntimeModel) GenerateStream(ctx context.Context, _ []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	m.markStarted()
+	stream := make(chan agentcore.StreamEvent)
+	go func() {
+		<-ctx.Done()
+		close(stream)
+	}()
+	return stream, nil
+}
+
+func (m *cancelThenCloseRuntimeModel) SupportsTools() bool { return true }
+
+func (m *cancelThenCloseRuntimeModel) ProviderName() string { return "p1" }
+
+func (m *cancelThenCloseRuntimeModel) Info() llm.ModelInfo {
+	return llm.ModelInfo{Provider: "p1", Name: "m1"}
+}
+
+func (m *cancelThenCloseRuntimeModel) Calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+func (m *cancelThenCloseRuntimeModel) WaitStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-m.started:
+	case <-time.After(time.Second):
+		t.Fatal("runtime model did not start")
+	}
+}
+
+func (m *cancelThenCloseRuntimeModel) markStarted() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	if m.calls == 1 {
+		close(m.started)
+	}
 }
 
 func (m *emptyPreludeErrorRuntimeModel) Generate(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (*agentcore.LLMResponse, error) {

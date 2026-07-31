@@ -419,12 +419,9 @@ func (h *Host) StartPrepared(promptText string) error {
 	if err != nil {
 		return err
 	}
-	if err := h.coordinator.Prompt(runCtx, promptText); err != nil {
+	if err := h.coordinator.Prompt(runCtx, h.initialRoutePrompt(promptText, false)); err != nil {
 		return fmt.Errorf("prompt: %w", err)
 	}
-	// 主动派发一次首条指令：若已进入写作阶段（Phase=Writing），Host 立即下达；
-	// 规划阶段 Route 返回 nil，无副作用。
-	h.router.Dispatch()
 
 	h.mu.Lock()
 	h.lifecycle = lifecycleRunning
@@ -1149,7 +1146,7 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := h.coordinator.Prompt(runCtx, prompt); err != nil {
+	if err := h.coordinator.Prompt(runCtx, h.initialRoutePrompt(prompt, true)); err != nil {
 		return "", fmt.Errorf("resume prompt: %w", err)
 	}
 	if pendingSteer != "" {
@@ -1157,17 +1154,31 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 			return "", fmt.Errorf("clear handled resume steer: %w", err)
 		}
 	}
-	// 主动派发一次首条指令，避免 Coordinator 对恢复 prompt 只回文字而 StopGuard 反复拦截。
-	h.router.DispatchFollowUp()
-
 	if !h.publishResumedLifecycle(resumeEpoch) {
 		h.observer.setAborting(true)
+		h.router.Disable()
 		h.coordinator.Abort()
+		h.coordinator.ClearAllQueues()
 		return "", fmt.Errorf("resume canceled by manual pause")
 	}
 	ownership.TransferToRun()
 	go h.waitDone()
 	return label, nil
+}
+
+// initialRoutePrompt binds the first Coordinator turn to the route computed
+// from durable state. Queueing this instruction after Prompt is racy because
+// Prompt starts the model loop asynchronously.
+func (h *Host) initialRoutePrompt(prompt string, resume bool) string {
+	state := flow.LoadState(h.store)
+	instruction := flow.Route(state)
+	if resume {
+		instruction = flow.RouteResume(state)
+	}
+	if instruction == nil {
+		return prompt
+	}
+	return strings.TrimSpace(prompt) + "\n\n" + flow.FormatMessage(instruction)
 }
 
 // finalizeLegacyCompletedBookBeforeResume closes the narrow restart gap where
@@ -1625,10 +1636,12 @@ func (h *Host) abortWithEvent(summary, level string) bool {
 	// 置位必须在 coordinator.Abort 之前：cancel 传播会立刻引发 stream init / subagent
 	// 失败事件，observer 凭此标志识别为 abort 衍生噪声并抑制。
 	h.observer.setAborting(true)
+	h.router.Disable()
 	if startup != nil {
 		startup.cancel()
 	}
 	h.coordinator.Abort()
+	h.coordinator.ClearAllQueues()
 	h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Summary: summary, Level: level})
 	return true
 }
@@ -1648,7 +1661,9 @@ func (h *Host) stopForPlanningReview() bool {
 		return false
 	}
 	h.observer.setAborting(true)
+	h.router.Disable()
 	h.coordinator.Abort()
+	h.coordinator.ClearAllQueues()
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
@@ -1688,7 +1703,9 @@ func (h *Host) stopForCharacterConfirmation() bool {
 		return false
 	}
 	h.observer.setAborting(true)
+	h.router.Disable()
 	h.coordinator.Abort()
+	h.coordinator.ClearAllQueues()
 	h.emitEvent(Event{
 		Time:     time.Now(),
 		Category: "SYSTEM",
