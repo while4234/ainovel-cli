@@ -8,12 +8,16 @@ import (
 
 const (
 	familyDeepSeek = "deepseek"
+	familyGemini   = "gemini"
 	familyGPT      = "gpt"
 	familyGrok     = "grok"
 )
 
 //go:embed global-prompt-deepseek.md
 var embeddedDeepSeekPrompt string
+
+//go:embed global-prompt-gemini.md
+var embeddedGeminiPrompt string
 
 //go:embed global-prompt-gpt.md
 var embeddedGPTPrompt string
@@ -28,10 +32,12 @@ func Text() string {
 }
 
 // TextForModel returns the prompt template selected for a provider/model name.
-// GPT/OpenAI-like models use global-prompt-gpt.md; everything else keeps the
-// DeepSeek-oriented default for backward compatibility.
+// Gemini, GPT/OpenAI-like, and Grok models use their family-specific files;
+// everything else keeps the DeepSeek-oriented default for compatibility.
 func TextForModel(model string) string {
 	switch promptFamily(model) {
+	case familyGemini:
+		return strings.TrimSpace(embeddedGeminiPrompt)
 	case familyGPT:
 		return strings.TrimSpace(embeddedGPTPrompt)
 	case familyGrok:
@@ -85,11 +91,15 @@ func Strip(systemPrompt string) string {
 
 func knownPrefixes() []string {
 	deepSeek := strings.TrimSpace(embeddedDeepSeekPrompt)
+	gemini := strings.TrimSpace(embeddedGeminiPrompt)
 	gpt := strings.TrimSpace(embeddedGPTPrompt)
 	grok := strings.TrimSpace(embeddedGrokPrompt)
-	prefixes := make([]string, 0, 3)
+	prefixes := make([]string, 0, 4)
 	if deepSeek != "" {
 		prefixes = append(prefixes, deepSeek)
+	}
+	if gemini != "" && gemini != deepSeek {
+		prefixes = append(prefixes, gemini)
 	}
 	if gpt != "" && gpt != deepSeek {
 		prefixes = append(prefixes, gpt)
@@ -106,6 +116,8 @@ func knownPrefixes() []string {
 func promptFamily(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	switch {
+	case strings.Contains(model, "gemini"):
+		return familyGemini
 	case strings.Contains(model, "grok"):
 		return familyGrok
 	case strings.Contains(model, "xai"):

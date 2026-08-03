@@ -74,6 +74,29 @@ func TestApplyForModelSelectsGPTPrompt(t *testing.T) {
 	}
 }
 
+func TestApplyForModelSelectsGeminiPrompt(t *testing.T) {
+	geminiPrefix := TextForModel("google/gemini-3.1-pro")
+	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")
+	if geminiPrefix == "" {
+		t.Fatal("Gemini global prompt must not be empty")
+	}
+	if geminiPrefix == deepSeekPrefix {
+		t.Fatal("Gemini prompt should be distinct from the DeepSeek prompt")
+	}
+	if !strings.Contains(geminiPrefix, "GEMINI 3.1 PRO - HUMAN-CENTRIC NARRATIVE ENGINE") {
+		t.Fatal("Gemini prompt does not contain the uploaded protocol marker")
+	}
+
+	got := ApplyForModel("openrouter/google/gemini-3.1-pro", "role prompt")
+
+	if !strings.HasPrefix(got, geminiPrefix+"\n\n") {
+		t.Fatalf("Gemini prompt was not selected:\n%s", got)
+	}
+	if body := Strip(got); body != "role prompt" {
+		t.Fatalf("global prompt should strip back to the role prompt, got %q", body)
+	}
+}
+
 func TestApplyForModelSelectsGrokPrompt(t *testing.T) {
 	grokPrefix := TextForModel("xai/grok-4.3-latest")
 	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")
@@ -138,6 +161,27 @@ func TestWrapModelAppliesPromptForCurrentModel(t *testing.T) {
 	systemPrompt := capture.messages[0].TextContent()
 	if !strings.HasPrefix(systemPrompt, TextForModel("openai/gpt-5.5")+"\n\n") {
 		t.Fatalf("wrapped model did not apply GPT prompt:\n%s", systemPrompt)
+	}
+	if body := Strip(systemPrompt); body != "role prompt" {
+		t.Fatalf("wrapped model should preserve only the role prompt body, got %q", body)
+	}
+}
+
+func TestWrapModelAppliesGeminiPromptForCurrentModel(t *testing.T) {
+	capture := &captureModel{provider: "openrouter", model: "google/gemini-3.1-pro"}
+	wrapped := WrapModel(capture)
+
+	_, err := wrapped.Generate(context.Background(), []agentcore.Message{
+		agentcore.SystemMsg(ApplyForModel("deepseek/deepseek-v4-pro", "role prompt")),
+		agentcore.UserMsg("hello"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	systemPrompt := capture.messages[0].TextContent()
+	if !strings.HasPrefix(systemPrompt, TextForModel("google/gemini-3.1-pro")+"\n\n") {
+		t.Fatalf("wrapped model did not apply Gemini prompt:\n%s", systemPrompt)
 	}
 	if body := Strip(systemPrompt); body != "role prompt" {
 		t.Fatalf("wrapped model should preserve only the role prompt body, got %q", body)
