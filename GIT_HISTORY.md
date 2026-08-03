@@ -4,7 +4,7 @@
 
 - Local Git is used for rollback, review, and bug investigation.
 - Secret files such as `.env`, keys, and credential files are intentionally ignored.
-- Remote pushes require explicit user instruction or a project-specific opt-in.
+- This project is opted into automatic pushes to `github/main` after each development round is validated and committed; no per-push confirmation is required unless the user revokes this preference.
 
 ## Quick Commands
 
