@@ -78,6 +78,28 @@ func TestNormalWorkflowProgressPresentsFoundationCheckpointBeforeFormalOutline(t
 	}
 }
 
+func TestNormalWorkflowProgressDoesNotSkipFoundationForReadyCoCreateDraft(t *testing.T) {
+	progress := normalWorkflowProgress("project-ready-draft", host.UISnapshot{}, &webCoCreateState{
+		Kind:     webCoCreateKindNormal,
+		CanStart: true,
+	})
+
+	if progress.CurrentStep != "foundation" || progress.Status != WorkflowStatusWaitingConfirmation {
+		t.Fatalf("ready draft progress = step %q status %q, want foundation/waiting_confirmation", progress.CurrentStep, progress.Status)
+	}
+	if progress.NextAction == nil || progress.NextAction.ID != "commit_cocreate" {
+		t.Fatalf("ready draft next action = %+v", progress.NextAction)
+	}
+	foundation := workflowStepByID(progress.Steps, "foundation")
+	chapterOutline := workflowStepByID(progress.Steps, "chapter_outline")
+	if foundation == nil || foundation.Status != WorkflowStatusWaitingConfirmation {
+		t.Fatalf("foundation step = %+v, want waiting_confirmation", foundation)
+	}
+	if chapterOutline == nil || chapterOutline.Status != WorkflowStatusIdle {
+		t.Fatalf("chapter outline step = %+v, want idle", chapterOutline)
+	}
+}
+
 func TestNormalWorkflowProgressPlanningReviewSupersedesStaleCoCreateFailure(t *testing.T) {
 	snapshot := host.UISnapshot{PlanningReview: &host.PlanningReviewSummary{
 		Status:           domain.PlanningReviewStatusPending,

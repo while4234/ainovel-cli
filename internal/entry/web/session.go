@@ -2399,7 +2399,14 @@ func (s *ProjectSession) prepareNormalFoundationGeneration(plan startup.Plan, cr
 		return err
 	}
 	st := storepkg.NewStore(s.manifest.OutputDir)
-	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
+	coreCast, err := st.CoreCast.Load()
+	if err != nil {
+		return fmt.Errorf("load core cast before Foundation generation: %w", err)
+	}
+	if coreCast != nil {
+		_, err = st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil)
+	}
+	if err != nil {
 		return fmt.Errorf("restore confirmed core cast before Foundation generation: %w", err)
 	}
 	if _, err := st.SaveFoundationPremise(nil, strings.TrimSpace(plan.RawPrompt)); err != nil {

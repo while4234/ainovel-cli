@@ -342,12 +342,9 @@ func normalWorkflowProgress(projectID string, snapshot host.UISnapshot, coCreate
 			progress.Steps = setStep(progress.Steps, "clarification", WorkflowStatusFailed, 0, 0, progress.Error)
 			progress.NextAction = nextWorkflowAction(progress, "retry_cocreate", "重试共创", false)
 		case coCreate.CanStart:
-			progress.CurrentStep = "chapter_outline"
-			if usesVolumePlan {
-				progress.CurrentStep = "volume_plan"
-			}
+			progress.CurrentStep = "foundation"
 			progress.Steps = completeStepsBefore(progress.Steps, progress.CurrentStep)
-			progress.Steps = setStep(progress.Steps, progress.CurrentStep, WorkflowStatusWaitingConfirmation, 0, 0, "共创方向已就绪，确认后保存并进入正式规划")
+			progress.Steps = setStep(progress.Steps, progress.CurrentStep, WorkflowStatusWaitingConfirmation, 0, 0, "共创方向已就绪，启动后生成并审核完整设定")
 			progress.NextAction = nextWorkflowAction(progress, "commit_cocreate", "完成共创", true)
 		default:
 			progress.NextAction = nextWorkflowAction(progress, "continue_cocreate", "继续共创", true)
