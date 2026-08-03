@@ -330,6 +330,64 @@ func TestCheckConsistencyMissingMarkerRequiresBlockingFinding(t *testing.T) {
 	}
 }
 
+func TestCheckConsistencyInvalidCharacterIDListsStableFoundationIDs(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Characters.Save([]domain.Character{
+		{ID: "char_lin_wanqing", Name: "林晚晴"},
+		{ID: "char_gu_zhong", Name: "顾钟"},
+	}); err != nil {
+		t.Fatalf("Save characters: %v", err)
+	}
+
+	err := NewCheckConsistencyTool(st).validateCharacterFindings(1, []domain.ConsistencyIssue{{
+		CharacterID:   "lin_wanqing",
+		Scene:         "scene 1",
+		Evidence:      "evidence",
+		ViolatedField: "characters",
+		Description:   "description",
+		Suggestion:    "suggestion",
+	}})
+	if err == nil {
+		t.Fatal("invalid character ID must fail")
+	}
+	for _, want := range []string{"lin_wanqing", "char_gu_zhong, char_lin_wanqing"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must include %q, got %v", want, err)
+		}
+	}
+}
+
+func TestCheckConsistencyNormalizesCharacterNameToStableID(t *testing.T) {
+	st := store.NewStore(testStoreDir(t))
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.Characters.Save([]domain.Character{
+		{ID: "char_lin_wanqing", Name: "林晚晴"},
+		{ID: "char_qi_shoukun", Name: "戚守坤"},
+	}); err != nil {
+		t.Fatalf("Save characters: %v", err)
+	}
+	findings := []domain.ConsistencyIssue{{
+		CharacterID:   "林晚晴",
+		Scene:         "scene 1",
+		Evidence:      "evidence",
+		ViolatedField: "characters",
+		Description:   "description",
+		Suggestion:    "suggestion",
+	}}
+
+	if err := NewCheckConsistencyTool(st).validateCharacterFindings(1, findings); err != nil {
+		t.Fatalf("unique StoryFoundation name should normalize: %v", err)
+	}
+	if findings[0].CharacterID != "char_lin_wanqing" {
+		t.Fatalf("character ID = %q, want stable StoryFoundation ID", findings[0].CharacterID)
+	}
+}
+
 func TestCheckConsistencyIndependentAuditFindsRepeatedKnownFact(t *testing.T) {
 	st := prepareIndependentContinuityTestStore(t)
 	model := &consistencyAuditModel{response: `{"findings":[{

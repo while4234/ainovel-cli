@@ -652,8 +652,14 @@ func TestRouteResume_RunsFinalConsistencyOnceAfterDeAIPasses(t *testing.T) {
 	if got == nil || got.Agent != "writer" || got.Chapter != 5 || !got.ResumeRecovery {
 		t.Fatalf("expected final consistency recovery, got %+v", got)
 	}
-	if !strings.Contains(got.Task, "Run check_consistency(chapter=5) once") {
-		t.Fatalf("final consistency task missing exact gate: %s", got.Task)
+	for _, want := range []string{
+		`read_chapter(chapter=5, source="draft") exactly once`,
+		"Then run check_consistency(chapter=5) once",
+		"never use MISSING_FROM_DRAFT merely because prose was absent",
+	} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("final consistency task missing %q: %s", want, got.Task)
+		}
 	}
 }
 

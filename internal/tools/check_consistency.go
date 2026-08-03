@@ -369,12 +369,30 @@ func (t *CheckConsistencyTool) validateCharacterFindings(chapter int, findings [
 		return fmt.Errorf("load StoryFoundation for consistency findings: %w", err)
 	}
 	ids := make(map[string]struct{}, len(foundation.Characters))
+	characterIDByName := make(map[string]string, len(foundation.Characters))
+	validIDs := make([]string, 0, len(foundation.Characters))
 	for _, character := range foundation.Characters {
 		ids[character.ID] = struct{}{}
+		validIDs = append(validIDs, character.ID)
+		if name := strings.TrimSpace(character.Name); name != "" {
+			characterIDByName[name] = character.ID
+		}
 	}
+	sort.Strings(validIDs)
 	for index, finding := range findings {
-		if _, ok := ids[strings.TrimSpace(finding.CharacterID)]; !ok {
-			return fmt.Errorf("findings[%d].character_id %q is not in StoryFoundation: %w", index, finding.CharacterID, errs.ErrToolArgs)
+		characterID := strings.TrimSpace(finding.CharacterID)
+		if stableID, ok := characterIDByName[characterID]; ok {
+			characterID = stableID
+			findings[index].CharacterID = stableID
+		}
+		if _, ok := ids[characterID]; !ok {
+			return fmt.Errorf(
+				"findings[%d].character_id %q is not in StoryFoundation; use one of: %s: %w",
+				index,
+				finding.CharacterID,
+				strings.Join(validIDs, ", "),
+				errs.ErrToolArgs,
+			)
 		}
 		if strings.TrimSpace(finding.Scene) == "" ||
 			strings.TrimSpace(finding.Evidence) == "" ||

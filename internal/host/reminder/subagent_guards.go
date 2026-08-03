@@ -48,6 +48,8 @@ func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredStep
 		need[s] = struct{}{}
 	}
 	var consecutive atomic.Int32
+	var latestWriterProgressSeq atomic.Int64
+	latestWriterProgressSeq.Store(baseline)
 	return func(_ context.Context, info agentcore.StopInfo) agentcore.StopDecision {
 		// 不可恢复错误：直接升级，不浪费一次催促。
 		if _, hard := hardStopReasons[info.Message.StopReason]; hard {
@@ -67,10 +69,14 @@ func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredStep
 		}
 		// 倒序扫描：新 checkpoint 在尾部，遇到 <= baseline 即可 break。
 		all := st.Checkpoints.All()
+		var writerProgressSeq int64
 		for i := len(all) - 1; i >= 0; i-- {
 			cp := all[i]
 			if cp.Seq <= baseline {
 				break
+			}
+			if writerProgressSeq == 0 && agentName == "writer" && cp.Scope.Kind == domain.ScopeChapter {
+				writerProgressSeq = cp.Seq
 			}
 			_, required := need[cp.Step]
 			// A Host-owned word-budget segment is a complete Writer dispatch,
@@ -82,6 +88,13 @@ func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredStep
 				consecutive.Store(0)
 				return agentcore.StopDecision{Allow: true}
 			}
+		}
+		if writerProgressSeq > latestWriterProgressSeq.Load() {
+			// Writer may need several validate/repair cycles before commit. A new
+			// chapter checkpoint proves durable progress, so a later end-turn is
+			// the first no-progress attempt after that work.
+			latestWriterProgressSeq.Store(writerProgressSeq)
+			consecutive.Store(0)
 		}
 		n := consecutive.Add(1)
 		if n > subagentMaxConsecutiveBlocks {
@@ -268,8 +281,8 @@ func writerConsistencyCheckBlockMessage(st *store.Store, chapter int, content st
 		return ""
 	}
 	return fmt.Sprintf(
-		"第 %d 章当前草稿尚未通过一致性审核，或审核后正文已改变。章节契约与草稿已经在本轮加载；下一次响应必须直接调用一次 check_consistency，不要再次调用 novel_context、read_chapter、draft_chapter 或 check_de_ai。逐场景核对时间、地点、POV、人物、事件顺序、信息边界、不可逆结果和下一章承接；语义相似但替换了既定起源事件或地点也必须报告为 blocking arc_beat_miss。修复全部 critical/error finding 并对同一版草稿复检通过后，才能进入后续校验。",
-		chapter,
+		"第 %d 章当前草稿尚未通过一致性审核，或审核后正文已改变。下一次响应先调用一次 read_chapter(chapter=%d, source=\"draft\") 取得当前完整草稿，再立即调用一次 check_consistency；不要调用 novel_context、draft_chapter 或 check_de_ai。不得因为新 Writer 上下文未携带正文就使用 MISSING_FROM_DRAFT；只有回读后确认计划场景确实完全缺失时才能使用该标记。逐场景核对时间、地点、POV、人物、事件顺序、信息边界、不可逆结果和下一章承接；语义相似但替换了既定起源事件或地点也必须报告为 blocking arc_beat_miss。修复全部 critical/error finding 并对同一版草稿复检通过后，才能进入后续校验。",
+		chapter, chapter,
 	)
 }
 

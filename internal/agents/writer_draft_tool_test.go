@@ -98,7 +98,7 @@ func TestWriterContextToolRejectsPlanningScopeAndMarksActivePackageAuthoritative
 		t.Fatalf("unexpected scope redirect: %+v", redirect)
 	}
 
-	activeRaw, err := tool.Execute(t.Context(), json.RawMessage(`{}`))
+	activeRaw, err := tool.Execute(t.Context(), json.RawMessage(`{"scope":"chapter","chapter":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +109,9 @@ func TestWriterContextToolRejectsPlanningScopeAndMarksActivePackageAuthoritative
 	contract, _ := active["writer_execution_contract"].(map[string]any)
 	if contract["authoritative"] != true || contract["never_invent_replacement"] != true {
 		t.Fatalf("missing authoritative Writer contract: %+v", contract)
+	}
+	if active["context_profile"] == "writer_scope_redirect" {
+		t.Fatalf("explicit active chapter scope was rejected: %+v", active)
 	}
 }
 

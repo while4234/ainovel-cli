@@ -170,6 +170,42 @@ func TestSubAgentGuard_NormalStopStillBlocks(t *testing.T) {
 	}
 }
 
+func TestWriterStopGuardResetsConsecutiveBlocksAfterDurableProgress(t *testing.T) {
+	s := newTestStore(t)
+	guard := NewWriterStopGuard(s)
+	stop := agentcore.StopInfo{
+		TurnIndex: 1,
+		Message:   agentcore.Message{StopReason: agentcore.StopReasonStop},
+	}
+
+	for i := 0; i < subagentMaxConsecutiveBlocks; i++ {
+		if decision := guard(context.Background(), stop); decision.Escalate {
+			t.Fatalf("escalated before the no-progress limit at attempt %d", i+1)
+		}
+	}
+	if _, err := s.Checkpoints.Append(
+		domain.ChapterScope(1),
+		"de_ai_batch_repair",
+		"drafts/1.draft.md",
+		"sha256:repaired",
+	); err != nil {
+		t.Fatalf("append repair checkpoint: %v", err)
+	}
+
+	decision := guard(context.Background(), stop)
+	if decision.Escalate || decision.Allow || decision.InjectMessage == "" {
+		t.Fatalf("durable Writer progress must restart blocking from one: %#v", decision)
+	}
+	for i := 1; i < subagentMaxConsecutiveBlocks; i++ {
+		if decision = guard(context.Background(), stop); decision.Escalate {
+			t.Fatalf("escalated too early after durable progress at attempt %d", i+1)
+		}
+	}
+	if decision = guard(context.Background(), stop); !decision.Escalate {
+		t.Fatalf("expected escalation after %d new no-progress blocks: %#v", subagentMaxConsecutiveBlocks+1, decision)
+	}
+}
+
 func TestArchitectStopGuardAllowsRepairArcCheckpoint(t *testing.T) {
 	s := newTestStore(t)
 	guard := NewArchitectStopGuard(s)
@@ -397,7 +433,14 @@ func TestWriterStopGuardRequiresCurrentConsistencyBeforeDeAI(t *testing.T) {
 	}
 
 	message := writerStopBlockMessage(s)
-	for _, want := range []string{"check_consistency", "时间、地点、POV", "不要再次调用 novel_context", "arc_beat_miss"} {
+	for _, want := range []string{
+		"check_consistency",
+		`read_chapter(chapter=1, source="draft")`,
+		"不得因为新 Writer 上下文未携带正文就使用 MISSING_FROM_DRAFT",
+		"时间、地点、POV",
+		"不要调用 novel_context",
+		"arc_beat_miss",
+	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("consistency reminder missing %q: %q", want, message)
 		}

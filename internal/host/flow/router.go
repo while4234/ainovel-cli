@@ -406,8 +406,8 @@ func RouteResume(s State) *Instruction {
 		return &Instruction{
 			Agent: "writer",
 			Task: fmt.Sprintf(
-				"Chapter %d has passed check_de_ai on the current draft, but its consistency receipt is stale. Do not modify prose and do not call novel_context, read_chapter, check_de_ai, plan_chapter, draft_chapter, edit_chapter, repair_de_ai_batch, or commit_chapter. Run check_consistency(chapter=%d) once against the contracted scenes. If it passes, end this turn so the Host can perform simulation and commit recovery. If it reports an actionable error, persist that report and end; the Host will dispatch one bounded consistency repair, after which both gates will be rerun.",
-				chapter, chapter,
+				"Chapter %d has passed check_de_ai on the current draft, but its consistency receipt is stale. Do not modify prose and do not call novel_context, check_de_ai, plan_chapter, draft_chapter, edit_chapter, repair_de_ai_batch, or commit_chapter. First call read_chapter(chapter=%d, source=\"draft\") exactly once so every scene check can quote the actual current draft. Then run check_consistency(chapter=%d) once against the contracted scenes; never use MISSING_FROM_DRAFT merely because prose was absent from the fresh Writer context. If it passes, end this turn so the Host can perform simulation and commit recovery. If the loaded draft proves a contracted scene is genuinely absent, persist the grounded actionable report and end; the Host will dispatch one bounded consistency repair, after which both gates will be rerun.",
+				chapter, chapter, chapter,
 			),
 			Reason:         fmt.Sprintf("run one final consistency gate for chapter %d after de-AI passes", chapter),
 			Chapter:        chapter,

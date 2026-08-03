@@ -1287,7 +1287,7 @@ func (t *writerChapterInferenceTool) validateCommitIdentity(chapter int) error {
 
 func (t *writerContextTool) Name() string { return t.inner.Name() }
 func (t *writerContextTool) Description() string {
-	return t.inner.Description() + " Writer may load the full work package only for the active chapter. Planning/status scopes are unavailable to Writer. The returned outline and canonical character workset are authoritative; use read_chapter only for bounded prior-chapter continuity."
+	return t.inner.Description() + " Writer may load the full work package only for the active chapter. Planning/status scopes are unavailable to Writer. The returned outline and canonical character workset are authoritative. Use read_chapter(source=draft) once whenever validation requires exact current-draft quotes; prior-chapter prose remains bounded continuity evidence."
 }
 func (t *writerContextTool) Label() string { return t.inner.Label() }
 func (t *writerContextTool) Schema() map[string]any {
@@ -1305,13 +1305,14 @@ func (t *writerContextTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err := json.Unmarshal(args, &raw); err != nil {
 		return t.inner.Execute(ctx, args)
 	}
-	if hasExplicitContextScope(raw["scope"]) {
+	requestedScope := explicitContextScope(raw["scope"])
+	if requestedScope != "" && requestedScope != "chapter" {
 		return json.Marshal(map[string]any{
 			"context_profile":      "writer_scope_redirect",
 			"full_context_loaded":  false,
 			"authoritative_source": "active chapter work package",
 			"do_not_retry_scope":   true,
-			"next_step":            "Call novel_context without scope. Writer must not load planning, planning_detail, planning_review, planning_audit, or status contexts.",
+			"next_step":            "Call novel_context(scope=chapter) or omit scope. Writer must not load planning, planning_detail, planning_review, planning_audit, or status contexts.",
 		})
 	}
 	chapter := inferWriterDraftChapter(t.store)
@@ -1478,11 +1479,15 @@ func keepMapKeys(values map[string]any, keys ...string) {
 }
 
 func hasExplicitContextScope(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
+	return explicitContextScope(raw) != ""
+}
+
+func explicitContextScope(raw json.RawMessage) string {
 	var scope string
-	return json.Unmarshal(raw, &scope) == nil && strings.TrimSpace(scope) != ""
+	if len(raw) == 0 || json.Unmarshal(raw, &scope) != nil {
+		return ""
+	}
+	return strings.TrimSpace(scope)
 }
 
 func newWriterDraftChapterTool(st *store.Store) agentcore.Tool {
