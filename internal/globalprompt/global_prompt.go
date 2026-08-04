@@ -11,6 +11,7 @@ const (
 	familyGemini   = "gemini"
 	familyGPT      = "gpt"
 	familyGrok     = "grok"
+	familyKimi     = "kimi"
 )
 
 //go:embed global-prompt-deepseek.md
@@ -25,6 +26,9 @@ var embeddedGPTPrompt string
 //go:embed global-prompt-grok.md
 var embeddedGrokPrompt string
 
+//go:embed global-prompt-kimi.md
+var embeddedKimiPrompt string
+
 // Text returns the embedded global prompt template after trimming surrounding
 // whitespace. It keeps the historical default as the DeepSeek prompt.
 func Text() string {
@@ -32,8 +36,8 @@ func Text() string {
 }
 
 // TextForModel returns the prompt template selected for a provider/model name.
-// Gemini, GPT/OpenAI-like, and Grok models use their family-specific files;
-// everything else keeps the DeepSeek-oriented default for compatibility.
+// Gemini, GPT/OpenAI-like, Grok, and Kimi models use their family-specific
+// files; everything else keeps the DeepSeek-oriented default for compatibility.
 func TextForModel(model string) string {
 	switch promptFamily(model) {
 	case familyGemini:
@@ -42,6 +46,8 @@ func TextForModel(model string) string {
 		return strings.TrimSpace(embeddedGPTPrompt)
 	case familyGrok:
 		return strings.TrimSpace(embeddedGrokPrompt)
+	case familyKimi:
+		return strings.TrimSpace(embeddedKimiPrompt)
 	default:
 		return strings.TrimSpace(embeddedDeepSeekPrompt)
 	}
@@ -94,7 +100,8 @@ func knownPrefixes() []string {
 	gemini := strings.TrimSpace(embeddedGeminiPrompt)
 	gpt := strings.TrimSpace(embeddedGPTPrompt)
 	grok := strings.TrimSpace(embeddedGrokPrompt)
-	prefixes := make([]string, 0, 4)
+	kimi := strings.TrimSpace(embeddedKimiPrompt)
+	prefixes := make([]string, 0, 5)
 	if deepSeek != "" {
 		prefixes = append(prefixes, deepSeek)
 	}
@@ -106,6 +113,9 @@ func knownPrefixes() []string {
 	}
 	if grok != "" && grok != deepSeek && grok != gpt {
 		prefixes = append(prefixes, grok)
+	}
+	if kimi != "" && kimi != deepSeek && kimi != gemini && kimi != gpt && kimi != grok {
+		prefixes = append(prefixes, kimi)
 	}
 	sort.SliceStable(prefixes, func(i, j int) bool {
 		return len(prefixes[i]) > len(prefixes[j])
@@ -122,6 +132,10 @@ func promptFamily(model string) string {
 		return familyGrok
 	case strings.Contains(model, "xai"):
 		return familyGrok
+	case strings.Contains(model, "kimi"):
+		return familyKimi
+	case strings.Contains(model, "moonshot"):
+		return familyKimi
 	case strings.Contains(model, "gpt"):
 		return familyGPT
 	case strings.Contains(model, "openai"):

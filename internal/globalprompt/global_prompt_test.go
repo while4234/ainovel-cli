@@ -43,6 +43,7 @@ func TestEveryModelGlobalPromptRequiresSimplifiedChineseUserFacingOutput(t *test
 		"deepseek/deepseek-v4-pro",
 		"openai/gpt-5.5",
 		"xai/grok-4.3-latest",
+		"kimi/Kimi-k3",
 	} {
 		prefix := TextForModel(model)
 		for _, contract := range []string{
@@ -146,6 +147,35 @@ func TestApplyForModelSelectsGrokPrompt(t *testing.T) {
 	}
 }
 
+func TestApplyForModelSelectsKimiPrompt(t *testing.T) {
+	kimiPrefix := TextForModel("kimi/Kimi-k3")
+	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")
+	if kimiPrefix == "" {
+		t.Fatal("Kimi global prompt must not be empty")
+	}
+	if kimiPrefix == deepSeekPrefix {
+		t.Fatal("Kimi prompt should be distinct from the DeepSeek prompt")
+	}
+
+	got := ApplyForModel("kimi/Kimi-k3", "role prompt")
+
+	if !strings.HasPrefix(got, kimiPrefix+"\n\n") {
+		t.Fatalf("Kimi prompt was not selected:\n%s", got)
+	}
+	if body := Strip(got); body != "role prompt" {
+		t.Fatalf("global prompt should strip back to the role prompt, got %q", body)
+	}
+}
+
+func TestApplyForModelSelectsKimiPromptForMoonshotProvider(t *testing.T) {
+	wantPrefix := TextForModel("kimi/Kimi-k3")
+	got := ApplyForModel("moonshot/k3", "role prompt")
+
+	if !strings.HasPrefix(got, wantPrefix+"\n\n") {
+		t.Fatalf("Moonshot provider should select the Kimi prompt:\n%s", got)
+	}
+}
+
 func TestApplyForModelReplacesExistingGlobalPrompt(t *testing.T) {
 	deepSeekPrompt := ApplyForModel("deepseek/deepseek-v4-pro", "role prompt")
 
@@ -210,6 +240,27 @@ func TestWrapModelAppliesGeminiPromptForCurrentModel(t *testing.T) {
 	systemPrompt := capture.messages[0].TextContent()
 	if !strings.HasPrefix(systemPrompt, TextForModel("google/gemini-3.1-pro")+"\n\n") {
 		t.Fatalf("wrapped model did not apply Gemini prompt:\n%s", systemPrompt)
+	}
+	if body := Strip(systemPrompt); body != "role prompt" {
+		t.Fatalf("wrapped model should preserve only the role prompt body, got %q", body)
+	}
+}
+
+func TestWrapModelAppliesKimiPromptForCurrentModel(t *testing.T) {
+	capture := &captureModel{provider: "custom-openai", model: "kimi-k3"}
+	wrapped := WrapModel(capture)
+
+	_, err := wrapped.Generate(context.Background(), []agentcore.Message{
+		agentcore.SystemMsg(ApplyForModel("deepseek/deepseek-v4-pro", "role prompt")),
+		agentcore.UserMsg("hello"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	systemPrompt := capture.messages[0].TextContent()
+	if !strings.HasPrefix(systemPrompt, TextForModel("custom-openai/kimi-k3")+"\n\n") {
+		t.Fatalf("wrapped model did not apply Kimi prompt:\n%s", systemPrompt)
 	}
 	if body := Strip(systemPrompt); body != "role prompt" {
 		t.Fatalf("wrapped model should preserve only the role prompt body, got %q", body)
