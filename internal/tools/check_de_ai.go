@@ -40,7 +40,7 @@ func NewCheckDeAITool(store *store.Store) *CheckDeAITool { return &CheckDeAITool
 
 func (t *CheckDeAITool) Name() string { return "check_de_ai" }
 func (t *CheckDeAITool) Description() string {
-	return "独立去AI化审校：初次运行前当前草稿必须已通过 check_consistency；由 repair_de_ai_batch 产生的受约束精确修订可直接复检，去AI通过后再统一运行一次最终 check_consistency。除标题泄漏、破折号、排比、模板反应、比喻和缓冲词外，还检查相邻肯否矛盾、同句首连发、连续主语段首、说明书式参数堆砌、房号等数字锚点过度复述和严重碎段；返回可直接定位的原文 examples，修改后必须重新调用。"
+	return "独立去AI化审校：初次运行前当前草稿必须已通过 check_consistency；由 repair_de_ai_batch 产生的受约束精确修订可直接复检，去AI通过后再统一运行一次最终 check_consistency。除标题泄漏、破折号、排比、模板反应、比喻和缓冲词外，还检查相邻肯否矛盾、同句首连发、连续主语段首、说明书式参数堆砌、房号等数字锚点过度复述和严重碎段；返回可直接定位的原文 examples，修改后必须重新调用。检测命中用于定位复核片段；修订先确认本书声纹与原段叙事功能，在最小上下文内保留剧情信息、人物声口、情绪强度和自然句群，再用更具体、更直接、更贴角色的表达完成替换。"
 }
 func (t *CheckDeAITool) Label() string                          { return "去AI化审校" }
 func (t *CheckDeAITool) ReadOnly(_ json.RawMessage) bool        { return false }
