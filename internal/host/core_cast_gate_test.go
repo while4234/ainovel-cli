@@ -48,7 +48,7 @@ func TestRequireResumeCoreCastGateBlocksTerminalCharacterReview(t *testing.T) {
 		}
 	})
 
-	t.Run("needs revision", func(t *testing.T) {
+	t.Run("needs revision resumes through Character repair", func(t *testing.T) {
 		st, _, binding := stagedOriginalCharacterWorkflow(t)
 		lifecycle, err := st.CharacterCards.Load(binding)
 		if err != nil {
@@ -59,9 +59,8 @@ func TestRequireResumeCoreCastGateBlocksTerminalCharacterReview(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err = RequireResumeCoreCastGate(st, true)
-		if err == nil || !strings.Contains(err.Error(), `character review status "needs_revision" requires explicit user action`) {
-			t.Fatalf("error = %v, want explicit revision boundary", err)
+		if err = RequireResumeCoreCastGate(st, true); err != nil {
+			t.Fatalf("needs-revision Character workflow was blocked: %v", err)
 		}
 	})
 }
@@ -85,6 +84,30 @@ func TestInitialResumePromptRoutesPendingOriginalWorkflowToCharacter(t *testing.
 	prompt := h.initialRoutePrompt("resume", true)
 	if !strings.Contains(prompt, "subagent(character") {
 		t.Fatalf("resume prompt did not bind Character route: %q", prompt)
+	}
+	if strings.Contains(prompt, "subagent(architect") {
+		t.Fatalf("resume prompt incorrectly routed Architect: %q", prompt)
+	}
+}
+
+func TestInitialResumePromptRoutesNeedsRevisionToCharacterRepair(t *testing.T) {
+	st, _, binding := stagedOriginalCharacterWorkflow(t)
+	lifecycle, err := st.CharacterCards.Load(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.ReviewStatus = domain.CharacterCardReviewNeedsRevision
+	if _, err := st.CharacterCards.SaveCAS(*lifecycle, lifecycle.Revision, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("", 0); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+
+	h := &Host{store: st}
+	prompt := h.initialRoutePrompt("resume", true)
+	if !strings.Contains(prompt, "subagent(character") || !strings.Contains(prompt, "character-revise-") {
+		t.Fatalf("resume prompt did not bind Character repair route: %q", prompt)
 	}
 	if strings.Contains(prompt, "subagent(architect") {
 		t.Fatalf("resume prompt incorrectly routed Architect: %q", prompt)

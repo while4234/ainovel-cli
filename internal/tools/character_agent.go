@@ -284,6 +284,9 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 	candidate.Characters = request.Characters
 	candidate.Relationships = request.Relationships
 	candidate.RelationshipsReviewed = request.RelationshipsReviewed
+	if isCharacterRevisionRun(request.RunID) {
+		preserveConfirmedCoreCastMembers(&candidate, coreCast)
+	}
 	normalized, err := domain.NormalizeStoryFoundation(candidate)
 	if err != nil {
 		return nil, fmt.Errorf("normalize character candidate: %w: %w", errs.ErrToolArgs, err)
@@ -410,6 +413,37 @@ func (t *SaveCharacterCandidateTool) Execute(_ context.Context, args json.RawMes
 	}
 	t.registry.markSubmitted(request.RunID, t.Name())
 	return characterCandidateResult(savedLifecycle, savedBinding, false)
+}
+
+func isCharacterRevisionRun(runID string) bool {
+	runID = strings.TrimSpace(runID)
+	return strings.HasPrefix(runID, "character-revise-") ||
+		strings.HasPrefix(runID, "character-adaptation-revise-")
+}
+
+func preserveConfirmedCoreCastMembers(candidate *domain.StoryFoundation, coreCast *domain.CoreCastContract) {
+	if candidate == nil || coreCast == nil || strings.TrimSpace(coreCast.ConfirmedSignature) == "" {
+		return
+	}
+	confirmed := make(map[string]domain.Character, len(coreCast.Members))
+	for _, member := range coreCast.Members {
+		confirmed[member.Character.ID] = domain.CloneCharacter(member.Character)
+	}
+	preserved := make(map[string]bool, len(confirmed))
+	for index := range candidate.Characters {
+		character, ok := confirmed[candidate.Characters[index].ID]
+		if !ok {
+			continue
+		}
+		candidate.Characters[index] = character
+		preserved[character.ID] = true
+	}
+	for _, member := range coreCast.Members {
+		if preserved[member.Character.ID] {
+			continue
+		}
+		candidate.Characters = append(candidate.Characters, domain.CloneCharacter(member.Character))
+	}
 }
 
 type SaveCharacterReviewTool struct {

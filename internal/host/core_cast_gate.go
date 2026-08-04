@@ -155,7 +155,7 @@ func RequireManagedCoreCastGate(st *store.Store, publish bool) error {
 // the staged cast before the CoreCast contract exists. Every later resume
 // still requires the ordinary confirmed gate.
 func RequireResumeCoreCastGate(st *store.Store, publish bool) error {
-	if reviewStatus := pendingCharacterReviewBoundary(st); reviewStatus != "" {
+	if reviewStatus := pendingCharacterReviewBoundary(st); reviewStatus == domain.CharacterCardReviewPassed {
 		return fmt.Errorf("character review status %q requires explicit user action before resume", reviewStatus)
 	}
 	pending, err := AdaptationCharacterWorkflowPending(st)
@@ -224,7 +224,8 @@ func OriginalCharacterWorkflowPending(st *store.Store) (bool, error) {
 	}
 	switch lifecycle.ReviewStatus {
 	case domain.CharacterCardReviewNotReviewed, domain.CharacterCardReviewStale,
-		domain.CharacterCardReviewFailed, domain.CharacterCardReviewInProgress:
+		domain.CharacterCardReviewFailed, domain.CharacterCardReviewInProgress,
+		domain.CharacterCardReviewNeedsRevision:
 		return true, nil
 	default:
 		return false, nil

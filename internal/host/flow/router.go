@@ -718,6 +718,9 @@ func routeAdaptationCharacters(state State) *Instruction {
 		return nil
 	}
 	routing := originalCharacterRouteState(state)
+	if routing.Status == "revise" {
+		return characterRevisionInstruction(routing, true)
+	}
 	switch routing.Status {
 	case "analyze":
 		return &Instruction{
@@ -746,6 +749,9 @@ func routeAdaptationCharacters(state State) *Instruction {
 
 func routeOriginalCharacters(state State) *Instruction {
 	routing := originalCharacterRouteState(state)
+	if routing.Status == "revise" {
+		return characterRevisionInstruction(routing, false)
+	}
 	switch routing.Status {
 	case "analyze":
 		return &Instruction{
@@ -772,6 +778,32 @@ func routeOriginalCharacters(state State) *Instruction {
 	}
 }
 
+func characterRevisionInstruction(routing originalCharacterRoutingState, adaptation bool) *Instruction {
+	projectMode := "original"
+	runID := "character-revise-" + routing.RunSuffix
+	instruction := "Revise the persisted candidate to resolve every blocking independent-review finding. " +
+		"Re-read character_context, preserve every confirmed CoreCast identity and fact exactly, " +
+		"change only fields required by the findings, keep every complete non-conflicting card and relationship, " +
+		"then save exactly one replacement candidate. Do not publish StoryFoundation."
+	reason := "原创角色独立审核未通过，按持久化阻断项修订候选"
+	if adaptation {
+		projectMode = "adaptation"
+		runID = "character-adaptation-revise-" + routing.RunSuffix
+		instruction = "Revise the persisted candidate to resolve every blocking independent-review finding. " +
+			"Re-read character_context, preserve source mappings and every confirmed CoreCast identity and fact exactly, " +
+			"change only fields required by the findings, keep every complete non-conflicting card and relationship, " +
+			"then save exactly one replacement candidate. Do not publish StoryFoundation."
+		reason = "改编角色独立审核未通过，按持久化阻断项修订候选"
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"run_id":       runID,
+		"mode":         string(tools.CharacterRunAnalyze),
+		"project_mode": projectMode,
+		"instruction":  instruction,
+	})
+	return &Instruction{Agent: "character", Task: string(payload), Reason: reason}
+}
+
 type originalCharacterRoutingState struct {
 	Status    string
 	RunSuffix string
@@ -788,6 +820,11 @@ func originalCharacterRouteState(state State) originalCharacterRoutingState {
 	}
 	lifecycle := state.CharacterLifecycle
 	switch lifecycle.ReviewStatus {
+	case domain.CharacterCardReviewNeedsRevision:
+		return originalCharacterRoutingState{
+			Status:    "revise",
+			RunSuffix: shortCharacterRouteDigest(state.CharacterBinding.Candidate.CharacterContentDigest, "candidate"),
+		}
 	case domain.CharacterCardReviewNotReviewed, domain.CharacterCardReviewStale,
 		domain.CharacterCardReviewFailed, domain.CharacterCardReviewInProgress:
 		return originalCharacterRoutingState{
