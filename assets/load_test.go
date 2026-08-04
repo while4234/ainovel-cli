@@ -47,6 +47,28 @@ func TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt(t *testing.T) {
 	}
 }
 
+func TestAntiAIToneFrontloadsStylePreservingCore(t *testing.T) {
+	const injectedRuneLimit = 900
+
+	runes := []rune(Load("").References.AntiAITone)
+	if len(runes) > injectedRuneLimit {
+		runes = runes[:injectedRuneLimit]
+	}
+	frontloaded := string(runes)
+
+	for _, want := range []string{
+		"本书风格",
+		"机械同义词替换",
+		"二次润色模板",
+		"电报体",
+		"单个常用词不能单独证明 AI 味",
+	} {
+		if !strings.Contains(frontloaded, want) {
+			t.Fatalf("first %d runes of anti-AI guidance missing %q", injectedRuneLimit, want)
+		}
+	}
+}
+
 func TestLoadPromptsIncludeCanonicalSimulationContractGuidance(t *testing.T) {
 	bundle := Load("")
 	cases := map[string]string{

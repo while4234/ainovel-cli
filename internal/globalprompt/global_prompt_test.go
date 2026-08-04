@@ -25,15 +25,25 @@ func TestApplyPrefixesSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestDeepSeekGlobalPromptExcludesWritingOnlyContracts(t *testing.T) {
-	prefix := TextForModel("deepseek/deepseek-v4-pro")
-	for _, writingOnly := range []string{
-		"正文生成的反模板约束",
-		"单独完成去AI化复检",
-		"破折号仅用于真实语气中断",
-	} {
-		if strings.Contains(prefix, writingOnly) {
-			t.Fatalf("writing-only contract %q leaked into the shared DeepSeek prefix", writingOnly)
+func TestEveryModelGlobalPromptAvoidsMandatoryCannedProse(t *testing.T) {
+	models := []string{
+		"deepseek/deepseek-v4-pro",
+		"google/gemini-3.1-pro",
+		"openai/gpt-5.5",
+		"xai/grok-4.3-latest",
+	}
+	for _, model := range models {
+		prefix := TextForModel(model)
+		for _, canned := range []string{
+			"极致感官",
+			"利用同义词",
+			"Prioritize heartbeat",
+			"Internal Thoughts/心理",
+			"人性摩擦力",
+		} {
+			if strings.Contains(prefix, canned) {
+				t.Fatalf("%s global prompt still mandates canned prose %q", model, canned)
+			}
 		}
 	}
 }
@@ -41,6 +51,7 @@ func TestDeepSeekGlobalPromptExcludesWritingOnlyContracts(t *testing.T) {
 func TestEveryModelGlobalPromptRequiresSimplifiedChineseUserFacingOutput(t *testing.T) {
 	for _, model := range []string{
 		"deepseek/deepseek-v4-pro",
+		"google/gemini-3.1-pro",
 		"openai/gpt-5.5",
 		"xai/grok-4.3-latest",
 	} {
