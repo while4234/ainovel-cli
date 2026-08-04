@@ -39,6 +39,33 @@ func TestRequireResumeCoreCastGateStillBlocksWithoutManagedWorkflow(t *testing.T
 	}
 }
 
+func TestRequireResumeCoreCastGateBlocksTerminalCharacterReview(t *testing.T) {
+	t.Run("passed awaiting confirmation", func(t *testing.T) {
+		st, _, _ := stagedOriginalCharacterWorkflow(t)
+		err := RequireResumeCoreCastGate(st, true)
+		if err == nil || !strings.Contains(err.Error(), `character review status "passed" requires explicit user action`) {
+			t.Fatalf("error = %v, want explicit confirmation boundary", err)
+		}
+	})
+
+	t.Run("needs revision", func(t *testing.T) {
+		st, _, binding := stagedOriginalCharacterWorkflow(t)
+		lifecycle, err := st.CharacterCards.Load(binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lifecycle.ReviewStatus = domain.CharacterCardReviewNeedsRevision
+		if _, err := st.CharacterCards.SaveCAS(*lifecycle, lifecycle.Revision, binding); err != nil {
+			t.Fatal(err)
+		}
+
+		err = RequireResumeCoreCastGate(st, true)
+		if err == nil || !strings.Contains(err.Error(), `character review status "needs_revision" requires explicit user action`) {
+			t.Fatalf("error = %v, want explicit revision boundary", err)
+		}
+	})
+}
+
 func TestInitialResumePromptRoutesPendingOriginalWorkflowToCharacter(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
