@@ -3635,6 +3635,7 @@ func mergeEditedProviderConfig(existing, incoming bootstrap.ProviderConfig, mode
 	}
 	merged.RequestTimeoutSeconds = incoming.RequestTimeoutSeconds
 	merged.ConnectivityTimeoutSeconds = incoming.ConnectivityTimeoutSeconds
+	merged.RateLimit = incoming.RateLimit
 	merged.Type = strings.TrimSpace(incoming.Type)
 	merged.Auth = strings.TrimSpace(incoming.Auth)
 	merged.AccountID = strings.TrimSpace(incoming.AccountID)
@@ -3995,6 +3996,7 @@ func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
 		pc.UseProxy == nil &&
 		pc.RequestTimeoutSeconds == 0 &&
 		pc.ConnectivityTimeoutSeconds == 0 &&
+		!pc.RateLimit.Enabled() &&
 		pc.Auth == "" &&
 		pc.AccountID == "" &&
 		pc.AuthFile == "" &&

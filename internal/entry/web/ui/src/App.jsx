@@ -751,6 +751,9 @@ function createCustomModelState() {
     use_proxy: false,
     request_timeout_seconds: defaultModelRequestTimeoutSeconds,
     connectivity_timeout_seconds: defaultModelConnectivityTimeoutSeconds,
+    requests_per_minute: '',
+    max_concurrent_requests: '',
+    rate_limit_retry_interval_seconds: '',
     network_disconnect_max_attempts: defaultModelNetworkDisconnectMaxAttempts,
     auto_switch_candidate_pool: false,
     discovered_models: [],
@@ -9846,6 +9849,39 @@ function ModelPanel({
           />
         </label>
         <label className="model-field">
+          <span>每分钟请求上限（0 为不限）</span>
+          <input
+            disabled={busy}
+            inputMode="numeric"
+            min="0"
+            type="number"
+            value={customModel.requests_per_minute}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, requests_per_minute: event.target.value }))}
+          />
+        </label>
+        <label className="model-field">
+          <span>最大并发请求（0 为不限）</span>
+          <input
+            disabled={busy}
+            inputMode="numeric"
+            min="0"
+            type="number"
+            value={customModel.max_concurrent_requests}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, max_concurrent_requests: event.target.value }))}
+          />
+        </label>
+        <label className="model-field">
+          <span>限流重试间隔（秒，0 为自动）</span>
+          <input
+            disabled={busy}
+            inputMode="numeric"
+            min="0"
+            type="number"
+            value={customModel.rate_limit_retry_interval_seconds}
+            onChange={(event) => setCustomModel((previous) => ({ ...previous, rate_limit_retry_interval_seconds: event.target.value }))}
+          />
+        </label>
+        <label className="model-field">
           <span>连通性超时</span>
           <input
             disabled={busy}
@@ -10612,6 +10648,9 @@ function modelAddExistingProviderDefaults(state, providers = [], providerName = 
     use_proxy: provider?.use_proxy === true,
     request_timeout_seconds: providerNumberDraft(provider, 'request_timeout_seconds', 'requestTimeoutSeconds'),
     connectivity_timeout_seconds: providerNumberDraft(provider, 'connectivity_timeout_seconds', 'connectivityTimeoutSeconds'),
+    requests_per_minute: providerNumberDraft(provider, 'requests_per_minute', 'requestsPerMinute'),
+    max_concurrent_requests: providerNumberDraft(provider, 'max_concurrent_requests', 'maxConcurrentRequests'),
+    rate_limit_retry_interval_seconds: providerNumberDraft(provider, 'rate_limit_retry_interval_seconds', 'rateLimitRetryIntervalSeconds'),
     network_disconnect_max_attempts: providerNumberDraft(provider, 'network_disconnect_max_attempts', 'networkDisconnectMaxAttempts'),
     auto_switch_candidate_pool: Boolean(provider?.auto_switch_candidate_pool || provider?.autoSwitchCandidatePool),
     discovered_models: []
@@ -10789,6 +10828,9 @@ function providerPayloadFields(state, fallback = {}) {
     use_proxy: Boolean(state.use_proxy),
     request_timeout_seconds: optionalModelTimeout(state.request_timeout_seconds),
     connectivity_timeout_seconds: optionalModelTimeout(state.connectivity_timeout_seconds),
+    requests_per_minute: optionalModelTimeout(state.requests_per_minute),
+    max_concurrent_requests: optionalModelTimeout(state.max_concurrent_requests),
+    rate_limit_retry_interval_seconds: optionalModelTimeout(state.rate_limit_retry_interval_seconds),
     network_disconnect_max_attempts: optionalModelTimeout(state.network_disconnect_max_attempts),
 	auto_switch_candidate_pool: Boolean(state.auto_switch_candidate_pool)
   };
