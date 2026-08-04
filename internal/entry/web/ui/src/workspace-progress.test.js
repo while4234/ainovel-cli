@@ -43,6 +43,7 @@ import {
   isProjectScopedResponseCurrent,
   isSimulationProfileActionBusy,
   isProjectRunning,
+  currentChapterMetricValue,
   libraryEntryMeta,
   normalizeCoCreateDecisionAnswers,
   outlineRevisionSuccessMessage,
@@ -458,6 +459,12 @@ describe('workspace progress state', () => {
     expect(isProjectRunning({ RuntimeState: 'running', Agents: [] })).toBe(true);
     expect(isProjectRunning({ RuntimeState: 'paused', Agents: [{ Name: 'writer', State: 'idle' }] })).toBe(false);
     expect(isProjectRunning({ RuntimeState: '', Agents: [{ Name: 'writer', State: 'working' }] })).toBe(true);
+  });
+
+  it('shows completed instead of the next chapter cursor', () => {
+    expect(currentChapterMetricValue({ RuntimeState: 'completed', CurrentChapter: 7, CompletedCount: 6, TotalChapters: 6 })).toBe('已完成');
+    expect(currentChapterMetricValue({ Phase: 'complete', current_chapter: 7 })).toBe('已完成');
+    expect(currentChapterMetricValue({ RuntimeState: 'running', CurrentChapter: 8 })).toBe(8);
   });
 
   it('keeps simulation analysis available during unrelated adaptation work', () => {

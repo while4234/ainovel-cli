@@ -376,6 +376,42 @@ func TestRoute_NeedsNewVolume(t *testing.T) {
 	}
 }
 
+func TestRoute_ShortProjectCompletesWithoutAppendingForSoftWordBudget(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4, 5, 6}, domain.FlowWriting)
+	p.TotalChapters = 6
+	p.TotalWordCount = 16920
+	s := State{
+		Progress:      p,
+		PlanningTier:  domain.PlanningTierShort,
+		LastCompleted: 6,
+		ArcBoundary: &storepkg.ArcBoundary{
+			IsArcEnd: true, IsVolumeEnd: true, NeedsNewVolume: true,
+			Volume: 1, Arc: 2,
+		},
+		HasArcReview: true, HasArcSummary: true, HasVolumeSummary: true,
+	}
+
+	got := Route(s)
+	if got == nil || got.Agent != "architect_long" {
+		t.Fatalf("expected short-project completion dispatch, got %+v", got)
+	}
+	if !strings.Contains(got.Task, "complete_book") || !strings.Contains(got.Task, "do not call append_volume") {
+		t.Fatalf("short project must complete without appending, got %q", got.Task)
+	}
+}
+
+func TestRoute_CompletedApprovedOutlineDoesNotDispatchNextChapter(t *testing.T) {
+	p := writingProgress([]int{1, 2, 3, 4, 5, 6}, domain.FlowWriting)
+	p.TotalChapters = 6
+	got := Route(State{Progress: p, LastCompleted: 6})
+	if got == nil || got.Agent != "architect_long" {
+		t.Fatalf("expected final outline completion dispatch, got %+v", got)
+	}
+	if !strings.Contains(got.Task, "chapter 6") || !strings.Contains(got.Task, "complete_book") || !strings.Contains(got.Task, "Do not write or append chapter 7") {
+		t.Fatalf("final outline task must identify chapter 6 as final, got %q", got.Task)
+	}
+}
+
 func TestRoute_AdaptationCompleteNeedsCompleteBook(t *testing.T) {
 	p := writingProgress([]int{1, 2, 3}, domain.FlowWriting)
 	s := State{

@@ -6379,7 +6379,7 @@ function StatusPanel({
       <section className="metric-grid">
         <Metric label="状态" value={snapshot?.RuntimeState || snapshot?.runtime_state || 'idle'} />
         <Metric label="章节" value={`${snapshot?.CompletedCount || 0}/${snapshot?.TotalChapters || 0}`} />
-        <Metric label="当前" value={snapshot?.CurrentChapter || snapshot?.InProgressChapter || 0} />
+        <Metric label="当前" value={currentChapterMetricValue(snapshot)} />
         <Metric label="字数" value={snapshot?.TotalWordCount || 0} />
       </section>
 
@@ -12014,6 +12014,15 @@ export function isProjectRunning(snapshot) {
     return false;
   }
   return arrayValue(snapshot, 'Agents', 'agents').some(isRunningAgent);
+}
+
+export function currentChapterMetricValue(snapshot) {
+  const status = textValue(snapshot, 'StatusLabel', 'status_label', 'RuntimeState', 'runtime_state').toLowerCase();
+  const phase = textValue(snapshot, 'Phase', 'phase').toLowerCase();
+  if (['done', 'complete', 'completed'].includes(status) || phase === 'complete') {
+    return '已完成';
+  }
+  return snapshot?.CurrentChapter || snapshot?.current_chapter || snapshot?.InProgressChapter || snapshot?.in_progress_chapter || 0;
 }
 
 function isRunningAgent(agent) {

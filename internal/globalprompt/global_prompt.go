@@ -7,12 +7,16 @@ import (
 )
 
 const (
+	familyClaude   = "claude"
 	familyDeepSeek = "deepseek"
 	familyGemini   = "gemini"
 	familyGPT      = "gpt"
 	familyGrok     = "grok"
 	familyKimi     = "kimi"
 )
+
+//go:embed global-prompt-claude.md
+var embeddedClaudePrompt string
 
 //go:embed global-prompt-deepseek.md
 var embeddedDeepSeekPrompt string
@@ -36,10 +40,13 @@ func Text() string {
 }
 
 // TextForModel returns the prompt template selected for a provider/model name.
-// Gemini, GPT/OpenAI-like, Grok, and Kimi models use their family-specific
-// files; everything else keeps the DeepSeek-oriented default for compatibility.
+// Claude, Gemini, GPT/OpenAI-like, Grok, and Kimi models use their
+// family-specific files; everything else keeps the DeepSeek-oriented default
+// for compatibility.
 func TextForModel(model string) string {
 	switch promptFamily(model) {
+	case familyClaude:
+		return strings.TrimSpace(embeddedClaudePrompt)
 	case familyGemini:
 		return strings.TrimSpace(embeddedGeminiPrompt)
 	case familyGPT:
@@ -96,12 +103,16 @@ func Strip(systemPrompt string) string {
 }
 
 func knownPrefixes() []string {
+	claude := strings.TrimSpace(embeddedClaudePrompt)
 	deepSeek := strings.TrimSpace(embeddedDeepSeekPrompt)
 	gemini := strings.TrimSpace(embeddedGeminiPrompt)
 	gpt := strings.TrimSpace(embeddedGPTPrompt)
 	grok := strings.TrimSpace(embeddedGrokPrompt)
 	kimi := strings.TrimSpace(embeddedKimiPrompt)
-	prefixes := make([]string, 0, 5)
+	prefixes := make([]string, 0, 6)
+	if claude != "" {
+		prefixes = append(prefixes, claude)
+	}
 	if deepSeek != "" {
 		prefixes = append(prefixes, deepSeek)
 	}
@@ -126,6 +137,12 @@ func knownPrefixes() []string {
 func promptFamily(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	switch {
+	case strings.Contains(model, "claude"):
+		return familyClaude
+	case strings.Contains(model, "anthropic"):
+		return familyClaude
+	case strings.Contains(model, "opus"):
+		return familyClaude
 	case strings.Contains(model, "gemini"):
 		return familyGemini
 	case strings.Contains(model, "grok"):
