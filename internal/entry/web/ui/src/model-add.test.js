@@ -13,6 +13,11 @@ import {
 } from './App.jsx';
 
 describe('model add helpers', () => {
+  it('offers only native DeepSeek V4 reasoning levels', () => {
+    expect(reasoningLevelsForModel('deepseek-v4-flash', { type: 'openai' }))
+      .toEqual(['', 'off', 'high', 'max']);
+  });
+
   it('offers xhigh reasoning for Grok 4.5', () => {
     expect(reasoningLevelsForModel('grok-4.5', { type: 'grok', auth: 'grok_oauth' }))
       .toEqual(['', 'low', 'medium', 'high', 'xhigh']);
@@ -295,6 +300,21 @@ describe('model add helpers', () => {
       auto_switch_candidate_pool: true,
       api_key: ''
     });
+  });
+
+  it('defaults an existing DeepSeek V4 Flash model to max reasoning', () => {
+    const state = modelAddModeDefaults({
+      mode: 'existing',
+      role: 'default',
+      provider: 'opencode',
+      model: 'deepseek-v4-flash'
+    }, [{
+      name: 'opencode',
+      type: 'openai',
+      models: ['deepseek-v4-flash']
+    }]);
+
+    expect(state.model_reasoning_effort).toBe('max');
   });
 
   it('starts a clean one-column new custom draft from an existing provider', () => {

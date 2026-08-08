@@ -10195,7 +10195,11 @@ function ModelPanel({
               disabled={busy}
               placeholder="model"
 			  value={customModel.model || (customModel.mode === 'preset' ? selectedPreset.model : isCodexEditor ? codexAuthDefaults.model : isGrokOAuthEditor ? grokOAuthDefaults.model : '')}
-			  onChange={(event) => setCustomModel((previous) => ({ ...previous, model: event.target.value }))}
+			  onChange={(event) => setCustomModel((previous) => ({
+				...previous,
+				model: event.target.value,
+				model_reasoning_effort: modelReasoningEffortForProvider(providers, editorModelProvider, event.target.value)
+			  }))}
             />
           )}
         </label>
@@ -10212,7 +10216,11 @@ function ModelPanel({
 				<option key={level || 'provider-default'} value={level}>{level || '服务默认'}</option>
 			  ))}
 			</select>
-			<small>{String(customModel.model || '').toLowerCase() === 'grok-4.5' ? 'Grok 4.5 支持 low / medium / high / xhigh，默认 high，不能关闭思考。' : '切换到该模型时自动使用此深度；项目或创作阶段可以单独覆盖。'}</small>
+			<small>{canonicalModelName(customModel.model) === 'deepseek-v4-flash'
+			  ? 'DeepSeek V4 Flash 原生支持关闭思考、high 和 max；新配置默认使用 max。'
+			  : String(customModel.model || '').toLowerCase() === 'grok-4.5'
+				? 'Grok 4.5 支持 low / medium / high / xhigh，默认 high，不能关闭思考。'
+				: '切换到该模型时自动使用此深度；项目或创作阶段可以单独覆盖。'}</small>
 		  </label>
 		) : null}
         {editorTestMessage ? (
@@ -10644,7 +10652,7 @@ function modelAddExistingProviderDefaults(state, providers = [], providerName = 
     api_key: '',
     base_url: provider?.base_url || '',
     model: selectedModel,
-	model_reasoning_effort: String(provider?.model_reasoning_efforts?.[selectedModel] || '').trim(),
+	model_reasoning_effort: modelReasoningEffortForProvider(providers, providerKey, selectedModel),
     use_proxy: provider?.use_proxy === true,
     request_timeout_seconds: providerNumberDraft(provider, 'request_timeout_seconds', 'requestTimeoutSeconds'),
     connectivity_timeout_seconds: providerNumberDraft(provider, 'connectivity_timeout_seconds', 'connectivityTimeoutSeconds'),
@@ -10728,13 +10736,25 @@ function mergeModelOptions(...groups) {
 
 function modelReasoningEffortForProvider(providers = [], providerName = '', model = '') {
 	const provider = providers.find((item) => item.name === providerName);
-	return String(provider?.model_reasoning_efforts?.[model] || '').trim();
+	const configured = String(provider?.model_reasoning_efforts?.[model] || '').trim();
+	return configured || defaultReasoningEffortForModel(model);
+}
+
+function defaultReasoningEffortForModel(model = '') {
+	return canonicalModelName(model) === 'deepseek-v4-flash' ? 'max' : '';
+}
+
+function canonicalModelName(model = '') {
+	return String(model || '').trim().toLowerCase().split('/').pop();
 }
 
 export function reasoningLevelsForModel(model = '', provider = {}) {
-	const normalizedModel = String(model || '').trim().toLowerCase();
+	const normalizedModel = canonicalModelName(model);
 	const providerType = String(provider?.type || '').trim().toLowerCase();
 	const providerAuth = String(provider?.auth || '').trim().toLowerCase();
+	if (normalizedModel === 'deepseek-v4-flash' || normalizedModel === 'deepseek-v4-pro') {
+		return ['', 'off', 'high', 'max'];
+	}
 	if (normalizedModel === 'grok-4.5') {
 		return ['', 'low', 'medium', 'high', 'xhigh'];
 	}
