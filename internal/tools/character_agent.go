@@ -32,7 +32,11 @@ const (
 	characterContextTextLimit   = 600
 	characterContextFactLimit   = 3
 	characterContextAliasLimit  = 6
-	characterContextMaxBytes    = 40 * 1024
+	// Character review must see the complete staged cards and relationship
+	// graph in one pass. The Character role has a 128 KiB compiled-input
+	// boundary, so a 64 KiB evidence packet leaves substantial room for its
+	// system prompt, task, tool schemas, and review response.
+	characterContextMaxBytes = 64 * 1024
 )
 
 // CharacterRunRegistry binds every run ID to one mode and to the exact
@@ -699,7 +703,6 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 		"candidate_digest":       binding.Candidate.CharacterContentDigest,
 		"input_digest":           binding.InputDigest,
 		"input_signatures":       binding.Inputs,
-		"premise":                compactCharacterText(foundation.Premise),
 		"world_rules":            compactCharacterJSON(foundation.WorldRules),
 		"current_characters":     foundation.Characters,
 		"current_relationships":  foundation.Relationships,
@@ -724,6 +727,7 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 		}
 	}
 	if projectMode == domain.CharacterCardProjectAdaptation {
+		packet["premise"] = compactCharacterText(foundation.Premise)
 		packet["core_cast"] = compactCharacterCoreCast(coreCast)
 		if userRules != nil {
 			packet["user_constraints"] = compactCharacterJSON(userRules.Payload())
@@ -739,6 +743,11 @@ func buildCharacterContext(st *store.Store, runID string, mode CharacterRunMode)
 			return nil, domain.CharacterCardBinding{}, fmt.Errorf("load original character brief: %w", reviewErr)
 		}
 		packet["creative_brief"] = compactOriginalCharacterBrief(review)
+		if review != nil && sameCharacterContextSource(foundation.Premise, review.Brief) {
+			packet["premise_source"] = "creative_brief.brief"
+		} else {
+			packet["premise"] = compactCharacterText(foundation.Premise)
+		}
 		packet["user_constraints"] = compactOriginalCharacterRules(userRules, review)
 		if coreCast != nil {
 			packet["legacy_core_cast_binding"] = map[string]any{
@@ -773,6 +782,7 @@ func compactOriginalCharacterRules(userRules *rules.Snapshot, review *domain.Pla
 	payload := userRules.Payload()
 	preferences, _ := payload["preferences"].(string)
 	if review != nil {
+		preferences = omitCharacterPreferenceSource(preferences, "startup_prompt")
 		for _, duplicate := range []string{review.StartPrompt, review.Brief} {
 			if duplicate = strings.TrimSpace(duplicate); duplicate != "" {
 				preferences = strings.ReplaceAll(preferences, duplicate, "")
@@ -781,6 +791,34 @@ func compactOriginalCharacterRules(userRules *rules.Snapshot, review *domain.Pla
 	}
 	payload["preferences"] = strings.TrimSpace(preferences)
 	return payload
+}
+
+func sameCharacterContextSource(left, right string) bool {
+	return strings.TrimSpace(left) != "" && strings.TrimSpace(left) == strings.TrimSpace(right)
+}
+
+func omitCharacterPreferenceSource(preferences, source string) string {
+	preferences = strings.TrimSpace(strings.ReplaceAll(preferences, "\r\n", "\n"))
+	source = strings.TrimSpace(source)
+	if preferences == "" || source == "" {
+		return preferences
+	}
+	header := "## [" + source + "]"
+	sections := strings.Split(preferences, "\n## [")
+	kept := make([]string, 0, len(sections))
+	for index, section := range sections {
+		if index > 0 {
+			section = "## [" + section
+		}
+		trimmed := strings.TrimSpace(section)
+		if strings.HasPrefix(trimmed, header+"\n") || trimmed == header {
+			continue
+		}
+		if trimmed != "" {
+			kept = append(kept, trimmed)
+		}
+	}
+	return strings.Join(kept, "\n\n")
 }
 
 // CurrentCharacterWorkflow returns durable Character state for deterministic
@@ -1375,8 +1413,6 @@ func compactCharacterLifecycle(value *domain.CharacterCardLifecycle) any {
 		"version":              value.Version,
 		"revision":             value.Revision,
 		"mode":                 value.Mode,
-		"candidate":            value.Candidate,
-		"input_digest":         value.InputDigest,
 		"analysis_summary":     compactCharacterText(value.AnalysisSummary),
 		"completeness":         value.Completeness,
 		"analysis_status":      value.AnalysisStatus,
@@ -1385,10 +1421,20 @@ func compactCharacterLifecycle(value *domain.CharacterCardLifecycle) any {
 		"review_summary":       compactCharacterText(value.ReviewSummary),
 		"findings":             compactCharacterJSON(value.Findings),
 		"confirmation_status":  value.ConfirmationStatus,
-		"error":                value.Error,
+		"error":                compactCharacterLifecycleError(value.Error),
 		"source_mappings":      mappings,
 		"coverage":             compactCharacterCoverageValue(value.Coverage),
 		"source_evidence_note": "mapping evidence bodies omitted; independently review against source_character_index",
+	}
+}
+
+func compactCharacterLifecycleError(value *domain.CharacterCardError) any {
+	if value == nil {
+		return nil
+	}
+	return map[string]any{
+		"class":   compactCharacterShortText(value.Class),
+		"message": compactCharacterText(value.Message),
 	}
 }
 
@@ -1450,11 +1496,22 @@ func compactCharacterRelationshipEntries(values []domain.RelationshipEntry, limi
 }
 
 func compactCharacterStrings(values []string, limit int) []string {
-	values = limitStrings(values, limit)
-	out := make([]string, 0, len(values))
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, min(len(values), limit))
+	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		if value = compactCharacterText(value); value != "" {
+			key := strings.ToLower(strings.Join(strings.Fields(value), " "))
+			if _, duplicate := seen[key]; duplicate {
+				continue
+			}
+			seen[key] = struct{}{}
 			out = append(out, value)
+			if len(out) == limit {
+				break
+			}
 		}
 	}
 	return out
@@ -1496,12 +1553,22 @@ func compactCharacterJSONValue(value any) any {
 	case string:
 		return compactCharacterText(typed)
 	case []any:
-		if len(typed) > characterContextListLimit {
-			typed = typed[:characterContextListLimit]
-		}
-		out := make([]any, 0, len(typed))
+		out := make([]any, 0, min(len(typed), characterContextListLimit))
+		seen := make(map[string]struct{}, len(typed))
 		for _, item := range typed {
-			out = append(out, compactCharacterJSONValue(item))
+			compacted := compactCharacterJSONValue(item)
+			encoded, err := json.Marshal(compacted)
+			if err == nil {
+				key := string(encoded)
+				if _, duplicate := seen[key]; duplicate {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			out = append(out, compacted)
+			if len(out) == characterContextListLimit {
+				break
+			}
 		}
 		return out
 	case map[string]any:
@@ -1516,28 +1583,32 @@ func compactCharacterJSONValue(value any) any {
 }
 
 func validateCharacterContextBudget(packet map[string]any) error {
+	budget := map[string]any{
+		"bytes":     0,
+		"max_bytes": characterContextMaxBytes,
+		"bounded":   true,
+		"strategy":  "source_deduplicated_single_pass",
+	}
+	packet["context_budget"] = budget
 	data, err := json.Marshal(packet)
 	if err != nil {
 		return fmt.Errorf("marshal bounded Character context: %w", err)
 	}
+	budget["bytes"] = len(data)
+	data, err = json.Marshal(packet)
+	if err != nil {
+		return fmt.Errorf("marshal bounded Character context with budget metadata: %w", err)
+	}
+	budget["bytes"] = len(data)
 	if len(data) > characterContextMaxBytes {
 		return fmt.Errorf(
-			"bounded Character context is %d bytes (budget %d); source character evidence must be compacted further: %w",
+			"bounded Character context is %d bytes (budget %d) after source-level deduplication; use a model-capability-aware larger packet or a reviewed batch workflow: %w",
 			len(data),
 			characterContextMaxBytes,
 			errs.ErrToolPrecondition,
 		)
 	}
-	packet["context_budget"] = map[string]any{
-		"bytes":     len(data),
-		"max_bytes": characterContextMaxBytes,
-		"bounded":   true,
-	}
 	return nil
-}
-
-func limitStrings(values []string, limit int) []string {
-	return limitSlice(values, limit)
 }
 
 func limitSlice[T any](values []T, limit int) []T {
