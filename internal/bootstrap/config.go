@@ -825,7 +825,7 @@ func (c Config) ResolveContextWindow(modelName string) (int, ContextWindowSource
 
 // ResolveReasoningEffort 返回某角色生效的推理强度原始串（off/low/medium/high/xhigh/max 或空）。
 // 优先级：角色/阶段显式值 → 阶段对应 Agent 显式值 → provider 的模型默认值
-// → 顶层默认 ReasoningEffort → ""（不覆盖，沿用服务端默认）。
+// → 顶层默认 ReasoningEffort → 内置模型默认值 → ""（不覆盖，沿用服务端默认）。
 // 值的合法性由 agents.ParseThinkingLevel 把关。
 func (c Config) ResolveReasoningEffort(role string) string {
 	role = strings.ToLower(strings.TrimSpace(role))
@@ -846,7 +846,25 @@ func (c Config) ResolveReasoningEffort(role string) string {
 			return effort
 		}
 	}
-	return strings.TrimSpace(c.ReasoningEffort)
+	if effort := strings.TrimSpace(c.ReasoningEffort); effort != "" {
+		return effort
+	}
+	return defaultReasoningEffortForModel(model)
+}
+
+func defaultReasoningEffortForModel(model string) string {
+	if canonicalModelName(model) == "deepseek-v4-flash" {
+		return "max"
+	}
+	return ""
+}
+
+func canonicalModelName(model string) string {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if slash := strings.LastIndex(normalized, "/"); slash >= 0 {
+		normalized = normalized[slash+1:]
+	}
+	return normalized
 }
 
 func (c Config) effectiveModelSelection(role string) (string, string) {

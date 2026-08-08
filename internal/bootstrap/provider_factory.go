@@ -156,6 +156,9 @@ func newLiteLLMProviderWithTransport(cfg Config, providerKey, model string, pc P
 	providerType = strings.ToLower(strings.TrimSpace(providerType))
 	switch providerType {
 	case "openai":
+		if deepSeekV4UsesNativeThinking(model) {
+			return deepseek.New(compatConfigWithTransport(pc, headers, userAgent, transport))
+		}
 		return openai.New(openai.Config{
 			API:        providerAPI(pc),
 			APIKeyFunc: staticAPIKeyFunc(pc.APIKey),
@@ -199,6 +202,15 @@ func newLiteLLMProviderWithTransport(cfg Config, providerKey, model string, pc P
 		return qwen.New(compatConfigWithTransport(pc, headers, userAgent, transport))
 	default:
 		return nil, fmt.Errorf("unknown provider %q", providerType)
+	}
+}
+
+func deepSeekV4UsesNativeThinking(model string) bool {
+	switch canonicalModelName(model) {
+	case "deepseek-v4-flash", "deepseek-v4-pro":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -228,6 +228,25 @@ func TestConfigResolveReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestConfigResolveReasoningEffortDefaultsDeepSeekV4FlashToMax(t *testing.T) {
+	cfg := Config{
+		Provider:  "opencode",
+		ModelName: "deepseek-v4-flash",
+		Providers: map[string]ProviderConfig{
+			"opencode": {Models: []string{"deepseek-v4-flash"}},
+		},
+	}
+
+	if got := cfg.ResolveReasoningEffort("writer"); got != "max" {
+		t.Fatalf("DeepSeek V4 Flash default reasoning = %q, want max", got)
+	}
+
+	cfg.ReasoningEffort = "high"
+	if got := cfg.ResolveReasoningEffort("writer"); got != "high" {
+		t.Fatalf("explicit global reasoning = %q, want high", got)
+	}
+}
+
 func TestConfigResolveStageReasoningEffort(t *testing.T) {
 	cfg := Config{
 		Provider:  "p",
