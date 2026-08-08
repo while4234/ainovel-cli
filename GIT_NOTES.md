@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-08 `9b68e80` `fix: deduplicate character review contexts`:
+  deterministically removes duplicate premise/startup/lifecycle evidence while
+  assembling Character packets, stable-deduplicates repeated list values, and
+  raises the source-deduplicated single-pass evidence ceiling from 40 to 64
+  KiB within the Character role's 128 KiB compiled-input boundary. The real
+  8-character/15-relationship review packet fell from 44,655 to 41,379 bytes
+  and completed its independent review with `passed` status.
 - 2026-07-31 `this commit` `fix: resume and complete legacy novels`: repairs
   confirmed Character bindings when only newly required gender metadata or
   user-rules evidence changed, creates a fail-closed legacy completion
