@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,6 +19,14 @@ func TestOriginalCharacterContextDeduplicatesLegacyCastAndStartupPrompt(t *testi
 	st := characterToolStore(t)
 	brief := "必须出现心腹助理沈辞，冷面能干；保留全部角色约束。"
 	startPrompt := "[创作要求]\n" + brief
+	foundation, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundation.Premise = brief
+	if _, err := st.Foundation.SaveCAS(foundation, foundation.Revision); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
 		Status: "collecting", Kind: "foundation", Brief: brief,
 		StartPrompt: startPrompt, TargetTotalWords: 200000,
@@ -27,8 +36,8 @@ func TestOriginalCharacterContextDeduplicatesLegacyCastAndStartupPrompt(t *testi
 	if err := st.UserRules.Save(&rules.Snapshot{
 		Version: rules.SnapshotVersion, Status: rules.StatusDegraded,
 		Structured:  rules.Structured{ChapterWords: &rules.WordRange{Min: 3000, Max: 5000}},
-		Preferences: "[startup_prompt]\n" + startPrompt,
-		Sources:     []string{"system_defaults", "startup_prompt"},
+		Preferences: "## [startup_prompt]\r\n\r\n归纳后的重复创作要求\r\n\r\n## [project:voice.md]\r\n\r\n保留项目独有声线规则",
+		Sources:     []string{"system_defaults", "startup_prompt", "project:voice.md"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +68,81 @@ func TestOriginalCharacterContextDeduplicatesLegacyCastAndStartupPrompt(t *testi
 	}
 	if _, exposed := packet["core_cast"]; strings.Contains(text, `"start_prompt"`) || exposed ||
 		!strings.Contains(text, `"legacy_core_cast_binding"`) ||
-		!strings.Contains(text, `"target_total_words":200000`) {
+		!strings.Contains(text, `"target_total_words":200000`) ||
+		strings.Contains(text, "归纳后的重复创作要求") ||
+		!strings.Contains(text, "保留项目独有声线规则") ||
+		packet["premise_source"] != "creative_brief.brief" {
 		t.Fatalf("original packet was not compacted safely: %s", text)
+	}
+}
+
+func TestCharacterReviewContextKeepsOneCompleteMediumCastInSinglePass(t *testing.T) {
+	st := characterToolStore(t)
+	registry := NewCharacterRunRegistry()
+	binding := readCharacterContext(t, st, registry, "medium-cast-analyze", CharacterRunAnalyze)
+
+	characters := make([]domain.Character, 0, 8)
+	for index := range 8 {
+		character := completeCharacterCandidate()[0]
+		character.ID = fmt.Sprintf("char-%02d", index)
+		character.Name = fmt.Sprintf("角色%02d", index)
+		character.Notes = strings.Repeat(fmt.Sprintf("角色%02d跨角色审查证据不可截断；", index), 120)
+		characters = append(characters, character)
+	}
+	relationships := make([]domain.CharacterRelationship, 0, 15)
+	for index := range 15 {
+		sourceIndex := index / 7
+		targetIndex := index%7 + 1
+		if targetIndex == sourceIndex {
+			targetIndex = 0
+		}
+		relationships = append(relationships, domain.CharacterRelationship{
+			ID:                fmt.Sprintf("rel-%02d", index),
+			SourceCharacterID: characters[sourceIndex].ID,
+			TargetCharacterID: characters[targetIndex].ID,
+			Type:              "professional",
+			Label:             fmt.Sprintf("关系%02d", index),
+			Direction:         "directed",
+			Status:            "planned",
+			Description:       strings.Repeat("用于全局关系连续性审核；", 6),
+			Tags:              []string{"跨角色", "跨角色", "连续性"},
+			Constraints:       []string{"不得割裂", "不得割裂"},
+		})
+	}
+	request := candidateRequest("medium-cast-analyze", "medium-cast-key", binding, characters)
+	request.Relationships = relationships
+	if _, err := NewSaveCharacterCandidateTool(st, registry).Execute(
+		context.Background(), characterJSON(t, request),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	packet, _, err := buildCharacterContext(st, "medium-cast-review", CharacterRunReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) <= 40*1024 || len(raw) > characterContextMaxBytes {
+		t.Fatalf("review packet bytes=%d, want old boundary < bytes <= %d", len(raw), characterContextMaxBytes)
+	}
+	text := string(raw)
+	for index := range 8 {
+		sentinel := fmt.Sprintf("角色%02d跨角色审查证据不可截断；", index)
+		if !strings.Contains(text, sentinel) {
+			t.Fatalf("review packet lost complete card %d", index)
+		}
+	}
+	if strings.Count(text, `"跨角色"`) != 15 || strings.Count(text, `"不得割裂"`) != 15 {
+		t.Fatalf("relationship list values were not source-deduplicated: tags=%d constraints=%d",
+			strings.Count(text, `"跨角色"`), strings.Count(text, `"不得割裂"`))
+	}
+	budget, ok := packet["context_budget"].(map[string]any)
+	if !ok || budget["bytes"] != len(raw) || budget["max_bytes"] != characterContextMaxBytes ||
+		budget["strategy"] != "source_deduplicated_single_pass" {
+		t.Fatalf("context budget metadata=%+v bytes=%d", budget, len(raw))
 	}
 }
 
