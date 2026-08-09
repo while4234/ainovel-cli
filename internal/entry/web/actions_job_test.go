@@ -283,6 +283,48 @@ func TestContinuationLongMutationAsyncReturns202AndSupportsStatusQuery(t *testin
 	}
 	close(release)
 	waitForActionStatus(t, session.actions, accepted.ActionID, ActionStatusCompleted)
+	if !session.waitForActionsIdle(2 * time.Second) {
+		t.Fatal("async continuation action did not release ownership after completion")
+	}
+}
+
+func TestWaitForActionsIdleIncludesNormalFlowLeaseRelease(t *testing.T) {
+	host := newBlockingLeaseProjectHost()
+	session, err := NewProjectSession(ProjectManifest{ID: "blocking-lease-release"}, host)
+	if err != nil {
+		t.Fatalf("NewProjectSession: %v", err)
+	}
+	defer session.Close()
+
+	action, created, err := session.StartBackgroundAction("continuation", "blocking-release", func(context.Context) error {
+		return nil
+	})
+	if err != nil || !created {
+		t.Fatalf("StartBackgroundAction = created=%v err=%v", created, err)
+	}
+	waitForActionStatus(t, session.actions, action.ActionID, ActionStatusCompleted)
+	select {
+	case <-host.releaseStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("normal-flow lease release did not start")
+	}
+
+	idle := make(chan bool, 1)
+	go func() { idle <- session.waitForActionsIdle(2 * time.Second) }()
+	select {
+	case <-idle:
+		t.Fatal("session reported idle before the normal-flow lease was released")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(host.release)
+	select {
+	case ok := <-idle:
+		if !ok {
+			t.Fatal("session did not become idle after the normal-flow lease was released")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("session idle wait did not finish after lease release")
+	}
 }
 
 func waitForActionStatus(t *testing.T, registry *ActionRegistry, actionID string, want ActionStatus) ActionRecord {
@@ -301,6 +343,32 @@ func waitForActionStatus(t *testing.T, registry *ActionRegistry, actionID string
 	action, _ := registry.Get(actionID)
 	t.Fatalf("action status = %q, want %q", action.Status, want)
 	return ActionRecord{}
+}
+
+type blockingLeaseProjectHost struct {
+	*fakeProjectHost
+	releaseStarted chan struct{}
+	release        chan struct{}
+	releaseOnce    sync.Once
+}
+
+func newBlockingLeaseProjectHost() *blockingLeaseProjectHost {
+	return &blockingLeaseProjectHost{
+		fakeProjectHost: newFakeProjectHost(),
+		releaseStarted:  make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+}
+
+func (h *blockingLeaseProjectHost) BeginNormalFlowAction(string) (func(), error) {
+	return func() {
+		h.releaseOnce.Do(func() { close(h.releaseStarted) })
+		<-h.release
+	}, nil
+}
+
+func (h *blockingLeaseProjectHost) NormalFlowActionContext(ctx context.Context) (context.Context, error) {
+	return ctx, nil
 }
 
 type blockingSnapshotProjectHost struct {

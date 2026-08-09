@@ -4391,19 +4391,16 @@ func (s *ProjectSession) beginActionKindWithNormalFlowLease(kind string, acquire
 func (s *ProjectSession) finishActionKind(kind string) {
 	kind = strings.TrimSpace(kind)
 	s.actionMu.Lock()
-	if s.actionKinds[kind] <= 1 {
-		delete(s.actionKinds, kind)
-	} else {
+	defer s.actionMu.Unlock()
+	if s.actionKinds[kind] > 1 {
 		s.actionKinds[kind]--
+		return
 	}
-	if len(s.actionKinds) > 0 {
-		s.actionMu.Unlock()
+	if len(s.actionKinds) > 1 {
+		delete(s.actionKinds, kind)
 		return
 	}
 	revisions, lease, release := s.actionRevisionStore, s.actionRevisionLease, s.actionLeaseRelease
-	s.actionRevisionStore, s.actionRevisionLease = nil, nil
-	s.actionLeaseRelease = nil
-	s.actionMu.Unlock()
 	if release != nil {
 		release()
 	}
@@ -4412,6 +4409,9 @@ func (s *ProjectSession) finishActionKind(kind string) {
 			slog.Warn("release web action revision fence failed", "module", "web", "err", err)
 		}
 	}
+	delete(s.actionKinds, kind)
+	s.actionRevisionStore, s.actionRevisionLease = nil, nil
+	s.actionLeaseRelease = nil
 }
 
 func (s *ProjectSession) beginCancellableAction(parent context.Context, kind string) (context.Context, func(), error) {

@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-09 follow-up `fix: serialize normal-flow lease cleanup`: keeps the
+  final Web action active until its durable normal-flow lease is fully
+  released, so status polling, session-idle waits, new actions, and test
+  teardown cannot race the Windows atomic state-file replacement.
+- 2026-08-09 `8779251` `fix: stabilize merged web quality gates`: registers
+  provider request governance in the production model-call inventory, makes
+  adaptation tests wait for prior analysis completion, rejects parenthesized
+  previous-draft placeholders without changing user prompts, and gives direct
+  Session tests real temporary revision stores.
 - 2026-08-09 `f5ed807` `build: refresh merged web assets`: reconciles the
   diverged local and remote `main`, integrates both previously unmerged legacy
   recovery branches, preserves the user's four local global prompts exactly,
