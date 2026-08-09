@@ -43,6 +43,7 @@ func TestEveryModelGlobalPromptRequiresSimplifiedChineseUserFacingOutput(t *test
 		"deepseek/deepseek-v4-pro",
 		"openai/gpt-5.5",
 		"xai/grok-4.3-latest",
+		"kimi/Kimi-k3",
 	} {
 		prefix := TextForModel(model)
 		for _, contract := range []string{
@@ -53,6 +54,31 @@ func TestEveryModelGlobalPromptRequiresSimplifiedChineseUserFacingOutput(t *test
 			if !strings.Contains(prefix, contract) {
 				t.Fatalf("%s global prompt is missing %q", model, contract)
 			}
+		}
+	}
+}
+
+func TestApplyForModelSelectsClaudePromptForOfficialAndCompatibleModels(t *testing.T) {
+	claudePrefix := TextForModel("anthropic/claude-opus-5.1")
+	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")
+	if claudePrefix == "" || claudePrefix == deepSeekPrefix {
+		t.Fatal("Claude prompt must be non-empty and distinct from the DeepSeek prompt")
+	}
+	if !strings.Contains(claudePrefix, "<writing_hardening>") {
+		t.Fatal("Claude prompt does not contain the uploaded protocol marker")
+	}
+
+	for _, identity := range []string{
+		"anthropic/claude-opus-5.1",
+		"claude-opus/agy-claude-opus-4-6",
+		"custom-openai/opus-5.5",
+	} {
+		got := ApplyForModel(identity, "role prompt")
+		if !strings.HasPrefix(got, claudePrefix+"\n\n") {
+			t.Fatalf("Claude prompt was not selected for %q:\n%s", identity, got)
+		}
+		if body := Strip(got); body != "role prompt" {
+			t.Fatalf("Claude prompt should strip back to the role prompt for %q, got %q", identity, body)
 		}
 	}
 }
@@ -97,6 +123,48 @@ func TestApplyForModelSelectsGeminiPrompt(t *testing.T) {
 	}
 }
 
+func TestApplyForModelSelectsGeminiPromptForCompatibleAndFutureModels(t *testing.T) {
+	wantPrefix := TextForModel("google/gemini-3.1-pro")
+	for _, identity := range []string{
+		"gemini-3-pro/假流式-gemini-3.1-pro-preview",
+		"google/gemini-3.4-pro",
+		"custom-openai/gemini-4.0-flash",
+	} {
+		got := ApplyForModel(identity, "role prompt")
+		if !strings.HasPrefix(got, wantPrefix+"\n\n") {
+			t.Fatalf("Gemini prompt was not selected for %q:\n%s", identity, got)
+		}
+	}
+}
+
+func TestGeminiGlobalPromptUsesProjectVoiceWithoutCannedHumanity(t *testing.T) {
+	prefix := TextForModel("google/gemini-3.1-pro")
+	for _, required := range []string{
+		"VOICE ALIGNMENT",
+		"SCENE FUNCTION",
+		"active project style and current role prompt",
+		"POV knowledge boundaries",
+	} {
+		if !strings.Contains(prefix, required) {
+			t.Fatalf("Gemini global prompt is missing %q", required)
+		}
+	}
+	for _, canned := range []string{
+		"{{char}}",
+		"{{user}}",
+		"{{worldinfo}}",
+		"FORBIDDEN WORD",
+		"Human Friction",
+		"INTERACTION HOOKS",
+		"PHYSIOLOGICAL DETAIL",
+		"Internal Thoughts/心理",
+	} {
+		if strings.Contains(prefix, canned) {
+			t.Fatalf("Gemini global prompt still contains canned guidance %q", canned)
+		}
+	}
+}
+
 func TestApplyForModelSelectsGrokPrompt(t *testing.T) {
 	grokPrefix := TextForModel("xai/grok-4.3-latest")
 	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")
@@ -115,6 +183,35 @@ func TestApplyForModelSelectsGrokPrompt(t *testing.T) {
 	}
 	if body := Strip(got); body != "role prompt" {
 		t.Fatalf("global prompt should strip back to the role prompt, got %q", body)
+	}
+}
+
+func TestApplyForModelSelectsKimiPrompt(t *testing.T) {
+	kimiPrefix := TextForModel("kimi/Kimi-k3")
+	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")
+	if kimiPrefix == "" {
+		t.Fatal("Kimi global prompt must not be empty")
+	}
+	if kimiPrefix == deepSeekPrefix {
+		t.Fatal("Kimi prompt should be distinct from the DeepSeek prompt")
+	}
+
+	got := ApplyForModel("kimi/Kimi-k3", "role prompt")
+
+	if !strings.HasPrefix(got, kimiPrefix+"\n\n") {
+		t.Fatalf("Kimi prompt was not selected:\n%s", got)
+	}
+	if body := Strip(got); body != "role prompt" {
+		t.Fatalf("global prompt should strip back to the role prompt, got %q", body)
+	}
+}
+
+func TestApplyForModelSelectsKimiPromptForMoonshotProvider(t *testing.T) {
+	wantPrefix := TextForModel("kimi/Kimi-k3")
+	got := ApplyForModel("moonshot/k3", "role prompt")
+
+	if !strings.HasPrefix(got, wantPrefix+"\n\n") {
+		t.Fatalf("Moonshot provider should select the Kimi prompt:\n%s", got)
 	}
 }
 
@@ -182,6 +279,48 @@ func TestWrapModelAppliesGeminiPromptForCurrentModel(t *testing.T) {
 	systemPrompt := capture.messages[0].TextContent()
 	if !strings.HasPrefix(systemPrompt, TextForModel("google/gemini-3.1-pro")+"\n\n") {
 		t.Fatalf("wrapped model did not apply Gemini prompt:\n%s", systemPrompt)
+	}
+	if body := Strip(systemPrompt); body != "role prompt" {
+		t.Fatalf("wrapped model should preserve only the role prompt body, got %q", body)
+	}
+}
+
+func TestWrapModelAppliesClaudePromptForCurrentBackend(t *testing.T) {
+	capture := &captureModel{provider: "claude-opus", model: "agy-claude-opus-4-6"}
+	wrapped := WrapModel(capture)
+
+	_, err := wrapped.Generate(context.Background(), []agentcore.Message{
+		agentcore.SystemMsg(ApplyForModel("deepseek/deepseek-v4-pro", "role prompt")),
+		agentcore.UserMsg("hello"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	systemPrompt := capture.messages[0].TextContent()
+	if !strings.HasPrefix(systemPrompt, TextForModel("claude-opus/agy-claude-opus-4-6")+"\n\n") {
+		t.Fatalf("wrapped model did not apply Claude prompt:\n%s", systemPrompt)
+	}
+	if body := Strip(systemPrompt); body != "role prompt" {
+		t.Fatalf("wrapped model should preserve only the role prompt body, got %q", body)
+	}
+}
+
+func TestWrapModelAppliesKimiPromptForCurrentModel(t *testing.T) {
+	capture := &captureModel{provider: "custom-openai", model: "kimi-k3"}
+	wrapped := WrapModel(capture)
+
+	_, err := wrapped.Generate(context.Background(), []agentcore.Message{
+		agentcore.SystemMsg(ApplyForModel("deepseek/deepseek-v4-pro", "role prompt")),
+		agentcore.UserMsg("hello"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	systemPrompt := capture.messages[0].TextContent()
+	if !strings.HasPrefix(systemPrompt, TextForModel("custom-openai/kimi-k3")+"\n\n") {
+		t.Fatalf("wrapped model did not apply Kimi prompt:\n%s", systemPrompt)
 	}
 	if body := Strip(systemPrompt); body != "role prompt" {
 		t.Fatalf("wrapped model should preserve only the role prompt body, got %q", body)

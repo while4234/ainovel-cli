@@ -531,6 +531,11 @@ func TestConfigureProviderModelRenamesAndPreservesBlankAPIKeyWithoutSelecting(t 
 			Type:    "openai",
 			API:     "responses",
 			BaseURL: "https://new.example/v1",
+			RateLimit: bootstrap.ProviderRateLimitConfig{
+				RequestsPerMinute:     5,
+				MaxConcurrentRequests: 1,
+				RetryIntervalSeconds:  15,
+			},
 		},
 		NetworkMaxAttempts:      4,
 		AutoSwitchCandidatePool: true,
@@ -544,6 +549,9 @@ func TestConfigureProviderModelRenamesAndPreservesBlankAPIKeyWithoutSelecting(t 
 	pc := next.Providers["fixed-openai"]
 	if pc.APIKey != "sk-old" || pc.Label != "Fixed" || pc.API != "responses" || pc.BaseURL != "https://new.example/v1" {
 		t.Fatalf("renamed provider config = %+v", pc)
+	}
+	if pc.RateLimit.RequestsPerMinute != 5 || pc.RateLimit.MaxConcurrentRequests != 1 || pc.RateLimit.RetryIntervalSeconds != 15 {
+		t.Fatalf("renamed provider rate limit = %+v", pc.RateLimit)
 	}
 	if !reflect.DeepEqual(next.ModelAutoSwitch.FallbackBackends, []string{"fixed-openai"}) || next.ModelAutoSwitch.EffectiveNetworkMaxAttempts() != 4 {
 		t.Fatalf("auto switch = %+v", next.ModelAutoSwitch)

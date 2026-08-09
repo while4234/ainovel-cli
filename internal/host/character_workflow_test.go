@@ -332,6 +332,34 @@ func TestEditOriginalCharacterCandidateKeepsUnreviewedLifecycleValid(t *testing.
 	}
 }
 
+func TestPendingCharacterReviewBoundaryStopsForNeedsRevision(t *testing.T) {
+	st, _, binding := stagedOriginalCharacterWorkflow(t)
+	lifecycle, err := st.CharacterCards.Load(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.ReviewStatus = domain.CharacterCardReviewNeedsRevision
+	lifecycle.ReviewSummary = "blocking conflict requires user revision"
+	lifecycle.Findings = []domain.CharacterCardReviewFinding{{
+		ID:          "blocking-conflict",
+		Scope:       domain.CharacterCardFindingGlobal,
+		Severity:    domain.CharacterCardSeverityBlocking,
+		IssueType:   "confirmed_core_cast_conflict",
+		Description: "candidate conflicts with confirmed core cast",
+		Blocking:    true,
+	}}
+	if _, err := st.CharacterCards.SaveCAS(*lifecycle, lifecycle.Revision, binding); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pendingCharacterReviewBoundary(st); got != domain.CharacterCardReviewNeedsRevision {
+		t.Fatalf("review boundary = %q, want %q", got, domain.CharacterCardReviewNeedsRevision)
+	}
+	if characterConfirmationPending(st) {
+		t.Fatal("needs-revision candidate must not be exposed as confirmable")
+	}
+}
+
 func stagedOriginalCharacterWorkflow(
 	t *testing.T,
 ) (*storepkg.Store, domain.CharacterCardCandidate, domain.CharacterCardBinding) {

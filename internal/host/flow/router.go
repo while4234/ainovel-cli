@@ -42,6 +42,7 @@ type State struct {
 	SkeletonPlanningWork *storepkg.OriginalPlanningWork
 	BlueprintVolumeCount int
 	BlueprintNextIsFinal bool
+	PlanningTier         domain.PlanningTier
 
 	// 上一个已完成章节（Progress.CompletedChapters 末尾）；为 0 表示尚未开始写作。
 	LastCompleted int
@@ -280,11 +281,35 @@ func Route(s State) *Instruction {
 			if s.AdaptationActive {
 				return s.nextChapterInstruction(p, "改编计划仍有后续章节，跳过普通扩卷")
 			}
+			if s.PlanningTier == domain.PlanningTierShort {
+				if s.CompletionAuditBlocked {
+					return nil
+				}
+				return &Instruction{
+					Agent:  "architect_long",
+					Task:   "All user-approved short-project chapters are complete. Call save_foundation type=complete_book and do not call append_volume. The total word range is a soft planning signal and must not create an unapproved extra chapter or volume.",
+					Reason: "短篇已到审核结构终点，进入完结收尾",
+				}
+			}
 			return &Instruction{
 				Agent:  "architect_long",
 				Task:   "评估后调用 save_foundation type=append_volume（继续写）或 type=complete_book（全书结束）",
 				Reason: "卷末需决定追加新卷或结束全书",
 			}
+		}
+	}
+
+	// TotalChapters is the user-approved outline boundary. Once every approved
+	// chapter is committed, route the agent to explicit book completion instead
+	// of treating NextChapter() as permission to invent another chapter.
+	if p.TotalChapters > 0 && p.LatestCompleted() >= p.TotalChapters {
+		if s.CompletionAuditBlocked {
+			return nil
+		}
+		return &Instruction{
+			Agent:  "architect_long",
+			Task:   fmt.Sprintf("The user-approved outline ends at chapter %d, and that final chapter is complete. Call save_foundation type=complete_book to close the book. Do not write or append chapter %d unless the user explicitly approves a new outline.", p.TotalChapters, p.NextChapter()),
+			Reason: "已完成用户批准的大纲最后一章，必须收尾而不是生成下一章",
 		}
 	}
 
@@ -718,6 +743,9 @@ func routeAdaptationCharacters(state State) *Instruction {
 		return nil
 	}
 	routing := originalCharacterRouteState(state)
+	if routing.Status == "revise" {
+		return characterRevisionInstruction(routing, true)
+	}
 	switch routing.Status {
 	case "analyze":
 		return &Instruction{
@@ -746,6 +774,9 @@ func routeAdaptationCharacters(state State) *Instruction {
 
 func routeOriginalCharacters(state State) *Instruction {
 	routing := originalCharacterRouteState(state)
+	if routing.Status == "revise" {
+		return characterRevisionInstruction(routing, false)
+	}
 	switch routing.Status {
 	case "analyze":
 		return &Instruction{
@@ -772,6 +803,32 @@ func routeOriginalCharacters(state State) *Instruction {
 	}
 }
 
+func characterRevisionInstruction(routing originalCharacterRoutingState, adaptation bool) *Instruction {
+	projectMode := "original"
+	runID := "character-revise-" + routing.RunSuffix
+	instruction := "Revise the persisted candidate to resolve every blocking independent-review finding. " +
+		"Re-read character_context, preserve every confirmed CoreCast identity and fact exactly, " +
+		"change only fields required by the findings, keep every complete non-conflicting card and relationship, " +
+		"then save exactly one replacement candidate. Do not publish StoryFoundation."
+	reason := "原创角色独立审核未通过，按持久化阻断项修订候选"
+	if adaptation {
+		projectMode = "adaptation"
+		runID = "character-adaptation-revise-" + routing.RunSuffix
+		instruction = "Revise the persisted candidate to resolve every blocking independent-review finding. " +
+			"Re-read character_context, preserve source mappings and every confirmed CoreCast identity and fact exactly, " +
+			"change only fields required by the findings, keep every complete non-conflicting card and relationship, " +
+			"then save exactly one replacement candidate. Do not publish StoryFoundation."
+		reason = "改编角色独立审核未通过，按持久化阻断项修订候选"
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"run_id":       runID,
+		"mode":         string(tools.CharacterRunAnalyze),
+		"project_mode": projectMode,
+		"instruction":  instruction,
+	})
+	return &Instruction{Agent: "character", Task: string(payload), Reason: reason}
+}
+
 type originalCharacterRoutingState struct {
 	Status    string
 	RunSuffix string
@@ -788,6 +845,11 @@ func originalCharacterRouteState(state State) originalCharacterRoutingState {
 	}
 	lifecycle := state.CharacterLifecycle
 	switch lifecycle.ReviewStatus {
+	case domain.CharacterCardReviewNeedsRevision:
+		return originalCharacterRoutingState{
+			Status:    "revise",
+			RunSuffix: shortCharacterRouteDigest(state.CharacterBinding.Candidate.CharacterContentDigest, "candidate"),
+		}
 	case domain.CharacterCardReviewNotReviewed, domain.CharacterCardReviewStale,
 		domain.CharacterCardReviewFailed, domain.CharacterCardReviewInProgress:
 		return originalCharacterRoutingState{

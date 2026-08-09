@@ -61,24 +61,27 @@ type apiModelAutoSwitch struct {
 }
 
 type apiModelProvider struct {
-	Name                         string            `json:"name"`
-	Label                        string            `json:"label,omitempty"`
-	TemplateProvider             string            `json:"template_provider,omitempty"`
-	Disabled                     bool              `json:"disabled,omitempty"`
-	Type                         string            `json:"type,omitempty"`
-	Auth                         string            `json:"auth,omitempty"`
-	AccountID                    string            `json:"account_id,omitempty"`
-	AuthFileConfigured           bool              `json:"auth_file_configured,omitempty"`
-	API                          string            `json:"api,omitempty"`
-	BaseURL                      string            `json:"base_url,omitempty"`
-	UseProxy                     *bool             `json:"use_proxy,omitempty"`
-	RequestTimeoutSeconds        int               `json:"request_timeout_seconds,omitempty"`
-	ConnectivityTimeoutSeconds   int               `json:"connectivity_timeout_seconds,omitempty"`
-	APIKeyConfigured             bool              `json:"key_configured,omitempty"`
-	Models                       []string          `json:"models"`
-	ModelReasoningEfforts        map[string]string `json:"model_reasoning_efforts,omitempty"`
-	NetworkDisconnectMaxAttempts int               `json:"network_disconnect_max_attempts,omitempty"`
-	AutoSwitchCandidatePool      bool              `json:"auto_switch_candidate_pool,omitempty"`
+	Name                          string            `json:"name"`
+	Label                         string            `json:"label,omitempty"`
+	TemplateProvider              string            `json:"template_provider,omitempty"`
+	Disabled                      bool              `json:"disabled,omitempty"`
+	Type                          string            `json:"type,omitempty"`
+	Auth                          string            `json:"auth,omitempty"`
+	AccountID                     string            `json:"account_id,omitempty"`
+	AuthFileConfigured            bool              `json:"auth_file_configured,omitempty"`
+	API                           string            `json:"api,omitempty"`
+	BaseURL                       string            `json:"base_url,omitempty"`
+	UseProxy                      *bool             `json:"use_proxy,omitempty"`
+	RequestTimeoutSeconds         int               `json:"request_timeout_seconds,omitempty"`
+	ConnectivityTimeoutSeconds    int               `json:"connectivity_timeout_seconds,omitempty"`
+	RequestsPerMinute             int               `json:"requests_per_minute,omitempty"`
+	MaxConcurrentRequests         int               `json:"max_concurrent_requests,omitempty"`
+	RateLimitRetryIntervalSeconds int               `json:"rate_limit_retry_interval_seconds,omitempty"`
+	APIKeyConfigured              bool              `json:"key_configured,omitempty"`
+	Models                        []string          `json:"models"`
+	ModelReasoningEfforts         map[string]string `json:"model_reasoning_efforts,omitempty"`
+	NetworkDisconnectMaxAttempts  int               `json:"network_disconnect_max_attempts,omitempty"`
+	AutoSwitchCandidatePool       bool              `json:"auto_switch_candidate_pool,omitempty"`
 }
 
 type apiModelRoute struct {
@@ -140,27 +143,30 @@ type modelDeleteRequest struct {
 }
 
 type modelProviderRequest struct {
-	Role                         string  `json:"role"`
-	OriginalProvider             string  `json:"original_provider"`
-	Provider                     string  `json:"provider"`
-	Model                        string  `json:"model"`
-	ModelReasoningEffort         *string `json:"model_reasoning_effort"`
-	Label                        string  `json:"label"`
-	TemplateProvider             string  `json:"template_provider"`
-	Disabled                     bool    `json:"disabled"`
-	Type                         string  `json:"type"`
-	Auth                         string  `json:"auth"`
-	AccountID                    string  `json:"account_id"`
-	AuthFile                     string  `json:"auth_file"`
-	APIKey                       string  `json:"api_key"`
-	BaseURL                      string  `json:"base_url"`
-	API                          string  `json:"api"`
-	UseProxy                     *bool   `json:"use_proxy"`
-	RequestTimeoutSeconds        int     `json:"request_timeout_seconds"`
-	ConnectivityTimeoutSeconds   int     `json:"connectivity_timeout_seconds"`
-	NetworkDisconnectMaxAttempts int     `json:"network_disconnect_max_attempts"`
-	AutoSwitchCandidatePool      bool    `json:"auto_switch_candidate_pool"`
-	SelectAfterSave              *bool   `json:"select_after_save"`
+	Role                          string  `json:"role"`
+	OriginalProvider              string  `json:"original_provider"`
+	Provider                      string  `json:"provider"`
+	Model                         string  `json:"model"`
+	ModelReasoningEffort          *string `json:"model_reasoning_effort"`
+	Label                         string  `json:"label"`
+	TemplateProvider              string  `json:"template_provider"`
+	Disabled                      bool    `json:"disabled"`
+	Type                          string  `json:"type"`
+	Auth                          string  `json:"auth"`
+	AccountID                     string  `json:"account_id"`
+	AuthFile                      string  `json:"auth_file"`
+	APIKey                        string  `json:"api_key"`
+	BaseURL                       string  `json:"base_url"`
+	API                           string  `json:"api"`
+	UseProxy                      *bool   `json:"use_proxy"`
+	RequestTimeoutSeconds         int     `json:"request_timeout_seconds"`
+	ConnectivityTimeoutSeconds    int     `json:"connectivity_timeout_seconds"`
+	RequestsPerMinute             int     `json:"requests_per_minute"`
+	MaxConcurrentRequests         int     `json:"max_concurrent_requests"`
+	RateLimitRetryIntervalSeconds int     `json:"rate_limit_retry_interval_seconds"`
+	NetworkDisconnectMaxAttempts  int     `json:"network_disconnect_max_attempts"`
+	AutoSwitchCandidatePool       bool    `json:"auto_switch_candidate_pool"`
+	SelectAfterSave               *bool   `json:"select_after_save"`
 }
 
 func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
@@ -177,6 +183,11 @@ func (r modelProviderRequest) providerConfig() bootstrap.ProviderConfig {
 		API:                        strings.TrimSpace(r.API),
 		RequestTimeoutSeconds:      r.RequestTimeoutSeconds,
 		ConnectivityTimeoutSeconds: r.ConnectivityTimeoutSeconds,
+		RateLimit: bootstrap.ProviderRateLimitConfig{
+			RequestsPerMinute:     r.RequestsPerMinute,
+			MaxConcurrentRequests: r.MaxConcurrentRequests,
+			RetryIntervalSeconds:  r.RateLimitRetryIntervalSeconds,
+		},
 	}
 	if r.ModelReasoningEffort != nil {
 		pc.ModelReasoningEfforts = map[string]string{
@@ -839,24 +850,27 @@ func globalModelSelection(cfg bootstrap.Config, role, fallbackRole string) (stri
 func apiProviderFromConfig(name string, pc bootstrap.ProviderConfig, models []string, autoSwitch bootstrap.ModelAutoSwitchConfig) apiModelProvider {
 	useProxy := cloneBoolPtr(pc.UseProxy)
 	return apiModelProvider{
-		Name:                         name,
-		Label:                        pc.Label,
-		TemplateProvider:             pc.TemplateProvider,
-		Disabled:                     pc.Disabled,
-		Type:                         pc.Type,
-		Auth:                         pc.Auth,
-		AccountID:                    pc.AccountID,
-		AuthFileConfigured:           strings.TrimSpace(pc.AuthFile) != "",
-		API:                          pc.API,
-		BaseURL:                      pc.BaseURL,
-		UseProxy:                     useProxy,
-		RequestTimeoutSeconds:        pc.RequestTimeoutSeconds,
-		ConnectivityTimeoutSeconds:   pc.ConnectivityTimeoutSeconds,
-		APIKeyConfigured:             strings.TrimSpace(pc.APIKey) != "",
-		Models:                       append([]string(nil), models...),
-		ModelReasoningEfforts:        cloneStringMap(pc.ModelReasoningEfforts),
-		NetworkDisconnectMaxAttempts: autoSwitch.EffectiveNetworkMaxAttempts(),
-		AutoSwitchCandidatePool:      modelAutoSwitchHasProvider(autoSwitch, name),
+		Name:                          name,
+		Label:                         pc.Label,
+		TemplateProvider:              pc.TemplateProvider,
+		Disabled:                      pc.Disabled,
+		Type:                          pc.Type,
+		Auth:                          pc.Auth,
+		AccountID:                     pc.AccountID,
+		AuthFileConfigured:            strings.TrimSpace(pc.AuthFile) != "",
+		API:                           pc.API,
+		BaseURL:                       pc.BaseURL,
+		UseProxy:                      useProxy,
+		RequestTimeoutSeconds:         pc.RequestTimeoutSeconds,
+		ConnectivityTimeoutSeconds:    pc.ConnectivityTimeoutSeconds,
+		RequestsPerMinute:             pc.RateLimit.RequestsPerMinute,
+		MaxConcurrentRequests:         pc.RateLimit.MaxConcurrentRequests,
+		RateLimitRetryIntervalSeconds: pc.RateLimit.RetryIntervalSeconds,
+		APIKeyConfigured:              strings.TrimSpace(pc.APIKey) != "",
+		Models:                        append([]string(nil), models...),
+		ModelReasoningEfforts:         cloneStringMap(pc.ModelReasoningEfforts),
+		NetworkDisconnectMaxAttempts:  autoSwitch.EffectiveNetworkMaxAttempts(),
+		AutoSwitchCandidatePool:       modelAutoSwitchHasProvider(autoSwitch, name),
 	}
 }
 
@@ -1253,6 +1267,7 @@ func providerConfigRequestIsEmpty(pc bootstrap.ProviderConfig) bool {
 		pc.UseProxy == nil &&
 		pc.RequestTimeoutSeconds == 0 &&
 		pc.ConnectivityTimeoutSeconds == 0 &&
+		!pc.RateLimit.Enabled() &&
 		pc.Auth == "" &&
 		pc.AccountID == "" &&
 		pc.AuthFile == "" &&

@@ -100,6 +100,25 @@ func TestAdaptationOutlineAuditRetryDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestProviderRateLimitValidationAndDefault(t *testing.T) {
+	if (ProviderRateLimitConfig{}).Enabled() {
+		t.Fatal("zero-value provider rate limit must remain disabled")
+	}
+	valid := ProviderRateLimitConfig{
+		RequestsPerMinute:     5,
+		MaxConcurrentRequests: 1,
+		RetryIntervalSeconds:  15,
+	}
+	if err := valid.validate("limited"); err != nil {
+		t.Fatal(err)
+	}
+	invalid := valid
+	invalid.RequestsPerMinute = -1
+	if err := invalid.validate("limited"); err == nil {
+		t.Fatal("negative requests_per_minute was accepted")
+	}
+}
+
 func TestSimulationModeDefaultsAndValidation(t *testing.T) {
 	cases := []struct {
 		name string

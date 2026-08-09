@@ -83,8 +83,10 @@ func TestRouteOriginalPlanningBuildsFoundationBeforeAnyOutline(t *testing.T) {
 		t.Fatalf("review instruction = %+v", instruction)
 	}
 	state.CharacterLifecycle.ReviewStatus = domain.CharacterCardReviewNeedsRevision
-	if instruction = routeOriginalPlanning(state); instruction != nil {
-		t.Fatalf("needs-revision candidate should wait for user/Character revision, got %+v", instruction)
+	instruction = routeOriginalPlanning(state)
+	if instruction == nil || instruction.Agent != "character" || !strings.Contains(instruction.Task, `"mode":"analyze"`) ||
+		!strings.Contains(instruction.Task, "resolve every blocking independent-review finding") {
+		t.Fatalf("needs-revision candidate should route a bounded Character repair, got %+v", instruction)
 	}
 	state.CharacterLifecycle.ReviewStatus = domain.CharacterCardReviewPassed
 	if instruction = routeOriginalPlanning(state); instruction != nil {

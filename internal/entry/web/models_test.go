@@ -999,7 +999,7 @@ func TestProjectModelAddPresetPassesProviderConfig(t *testing.T) {
 	}
 	fake := installFakeSession(t, server, manifest)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/add", bytes.NewBufferString(`{"role":"default","provider":"anthropic","label":"Anthropic","template_provider":"anthropic","type":"anthropic","api_key":"sk-test","model":"claude-sonnet-4-5","use_proxy":false,"request_timeout_seconds":120,"connectivity_timeout_seconds":12}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/models/add", bytes.NewBufferString(`{"role":"default","provider":"anthropic","label":"Anthropic","template_provider":"anthropic","type":"anthropic","api_key":"sk-test","model":"claude-sonnet-4-5","use_proxy":false,"request_timeout_seconds":120,"connectivity_timeout_seconds":12,"requests_per_minute":5,"max_concurrent_requests":1,"rate_limit_retry_interval_seconds":15}`))
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -1017,6 +1017,9 @@ func TestProjectModelAddPresetPassesProviderConfig(t *testing.T) {
 	}
 	if fake.configureProviderConfig.RequestTimeoutSeconds != 120 || fake.configureProviderConfig.ConnectivityTimeoutSeconds != 12 {
 		t.Fatalf("preset timeouts = %d/%d", fake.configureProviderConfig.RequestTimeoutSeconds, fake.configureProviderConfig.ConnectivityTimeoutSeconds)
+	}
+	if fake.configureProviderConfig.RateLimit.RequestsPerMinute != 5 || fake.configureProviderConfig.RateLimit.MaxConcurrentRequests != 1 || fake.configureProviderConfig.RateLimit.RetryIntervalSeconds != 15 {
+		t.Fatalf("preset rate limit = %+v", fake.configureProviderConfig.RateLimit)
 	}
 	if len(fake.configureProviderConfig.Models) != 0 || fake.configureProviderModel != "claude-sonnet-4-5" {
 		t.Fatalf("preset model list = %+v model=%q", fake.configureProviderConfig.Models, fake.configureProviderModel)

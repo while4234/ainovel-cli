@@ -38,7 +38,7 @@ func NewRepairDeAIBatchTool(s *store.Store) *RepairDeAIBatchTool {
 func (t *RepairDeAIBatchTool) Name() string  { return "repair_de_ai_batch" }
 func (t *RepairDeAIBatchTool) Label() string { return "去AI化分批修订" }
 func (t *RepairDeAIBatchTool) Description() string {
-	return "按最新 failed check_de_ai 报告做一小批精确文本修订（1-8 处）。每个 old_string 必须在当前草稿中唯一出现，new_string 必须是保留剧情信息后的真实重写；每批落盘后只重新 check_de_ai，去AI通过后再统一运行一次最终 check_consistency。不要用它做整章重写或机械同义词替换。"
+	return "按最新 failed check_de_ai 报告做一小批精确文本修订（1-8 处）。每个 old_string 必须在当前草稿中唯一出现，new_string 必须是保留剧情信息后的真实重写；每批落盘后只重新 check_de_ai，去AI通过后再统一运行一次最终 check_consistency。修订范围保持在命中片段及必要上下文，每处先确认原段功能与本书声纹，再用最小真实重写延续人物声口、情绪强度、自然句群和场景连续性。"
 }
 
 func (t *RepairDeAIBatchTool) ReadOnly(_ json.RawMessage) bool        { return false }

@@ -48,9 +48,15 @@ func LoadState(store *storepkg.Store) State {
 		return s
 	}
 	s.Progress = progress
+	if meta, metaErr := store.RunMeta.Load(); metaErr == nil && meta != nil {
+		s.PlanningTier = meta.PlanningTier
+	}
 	loadWriterResumeState(&s, store, progress)
 	loadAdaptationState(&s, store, progress)
 	loadContinuationState(&s, store)
+	if progress.CompletionAuditStatus != "" && progress.CompletionAuditStatus != "pass" && progress.CompletionAuditStatus != "inconclusive" {
+		s.CompletionAuditBlocked = true
+	}
 
 	if repair, rerr := store.FindDuplicateOutlineRepairBatch(progress); rerr == nil && repair != nil {
 		s.OutlineRepair = repair

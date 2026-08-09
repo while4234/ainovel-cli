@@ -54,7 +54,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   accepted a live max-effort request and the rebuilt Web service is healthy on
   port 9898. The unrelated pre-existing adaptation placeholder regression still
   fails in `internal/entry/web` (`CanStart=true`).
-- 2026-08-08 `9b68e80` `fix: deduplicate character review contexts`:
+- 2026-08-08 `674cc43` `fix: deduplicate character review contexts`:
   deterministically removes duplicate premise/startup/lifecycle evidence while
   assembling Character packets, stable-deduplicates repeated list values, and
   raises the source-deduplicated single-pass evidence ceiling from 40 to 64

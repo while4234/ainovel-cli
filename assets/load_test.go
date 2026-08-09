@@ -47,6 +47,65 @@ func TestLoadKeepsAdaptationGuidanceOutOfBaseWriterPrompt(t *testing.T) {
 	}
 }
 
+func TestAntiAITonePreservesLegacyRulesAndAddsStyleGuard(t *testing.T) {
+	guidance := Load("").References.AntiAITone
+
+	for _, want := range []string{
+		"人物性别、称谓和代词",
+		"破折号依赖 / 插入说明癖",
+		"人物功能化",
+		"记忆无破损",
+		"后期风格反弹",
+		"原文叙事功能和本书声纹",
+		"采用三遍法",
+		"场景由可见反馈接力",
+		"审查与返修证据",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("anti-AI guidance missing %q", want)
+		}
+	}
+}
+
+func TestAntiAIToneFrontloadsRuntimeGuidance(t *testing.T) {
+	const injectedRuneLimit = 900
+
+	runes := []rune(Load("").References.AntiAITone)
+	if len(runes) > injectedRuneLimit {
+		runes = runes[:injectedRuneLimit]
+	}
+	frontloaded := string(runes)
+	for _, want := range []string{
+		"原文叙事功能和本书声纹",
+		"去泛化",
+		"去书面腔",
+		"回自然感",
+		"场景由可见反馈接力",
+		"最小改写",
+	} {
+		if !strings.Contains(frontloaded, want) {
+			t.Fatalf("first %d runes of anti-AI guidance missing %q", injectedRuneLimit, want)
+		}
+	}
+}
+
+func TestEveryStyleAddsDeAIStylePreservationWithoutReplacingGenreRules(t *testing.T) {
+	styles := Load("").Styles
+	for id, style := range styles {
+		for _, want := range []string{
+			"去AI味叙事约束",
+			"去AI味返工优先级",
+			"去AI味保真约束",
+			"因果锚点",
+			"最小有效修改",
+		} {
+			if !strings.Contains(style, want) {
+				t.Fatalf("style %s missing %q", id, want)
+			}
+		}
+	}
+}
+
 func TestLoadPromptsIncludeCanonicalSimulationContractGuidance(t *testing.T) {
 	bundle := Load("")
 	cases := map[string]string{

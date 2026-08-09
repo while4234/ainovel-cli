@@ -911,6 +911,9 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 				return json.Marshal(result)
 			}
 		}
+		if err := t.store.RefreshCompletionRevalidationEvidence(); err != nil {
+			return nil, fmt.Errorf("refresh completion revalidation evidence: %w: %w", errs.ErrStoreWrite, err)
+		}
 		if err := t.store.Progress.MarkComplete(); err != nil {
 			return nil, fmt.Errorf("mark complete: %w: %w", errs.ErrStoreWrite, err)
 		}

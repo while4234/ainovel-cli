@@ -39,6 +39,32 @@ func TestRequireResumeCoreCastGateStillBlocksWithoutManagedWorkflow(t *testing.T
 	}
 }
 
+func TestRequireResumeCoreCastGateBlocksTerminalCharacterReview(t *testing.T) {
+	t.Run("passed awaiting confirmation", func(t *testing.T) {
+		st, _, _ := stagedOriginalCharacterWorkflow(t)
+		err := RequireResumeCoreCastGate(st, true)
+		if err == nil || !strings.Contains(err.Error(), `character review status "passed" requires explicit user action`) {
+			t.Fatalf("error = %v, want explicit confirmation boundary", err)
+		}
+	})
+
+	t.Run("needs revision resumes through Character repair", func(t *testing.T) {
+		st, _, binding := stagedOriginalCharacterWorkflow(t)
+		lifecycle, err := st.CharacterCards.Load(binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lifecycle.ReviewStatus = domain.CharacterCardReviewNeedsRevision
+		if _, err := st.CharacterCards.SaveCAS(*lifecycle, lifecycle.Revision, binding); err != nil {
+			t.Fatal(err)
+		}
+
+		if err = RequireResumeCoreCastGate(st, true); err != nil {
+			t.Fatalf("needs-revision Character workflow was blocked: %v", err)
+		}
+	})
+}
+
 func TestInitialResumePromptRoutesPendingOriginalWorkflowToCharacter(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {
@@ -58,6 +84,30 @@ func TestInitialResumePromptRoutesPendingOriginalWorkflowToCharacter(t *testing.
 	prompt := h.initialRoutePrompt("resume", true)
 	if !strings.Contains(prompt, "subagent(character") {
 		t.Fatalf("resume prompt did not bind Character route: %q", prompt)
+	}
+	if strings.Contains(prompt, "subagent(architect") {
+		t.Fatalf("resume prompt incorrectly routed Architect: %q", prompt)
+	}
+}
+
+func TestInitialResumePromptRoutesNeedsRevisionToCharacterRepair(t *testing.T) {
+	st, _, binding := stagedOriginalCharacterWorkflow(t)
+	lifecycle, err := st.CharacterCards.Load(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle.ReviewStatus = domain.CharacterCardReviewNeedsRevision
+	if _, err := st.CharacterCards.SaveCAS(*lifecycle, lifecycle.Revision, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("", 0); err != nil {
+		t.Fatalf("Progress.Init: %v", err)
+	}
+
+	h := &Host{store: st}
+	prompt := h.initialRoutePrompt("resume", true)
+	if !strings.Contains(prompt, "subagent(character") || !strings.Contains(prompt, "character-revise-") {
+		t.Fatalf("resume prompt did not bind Character repair route: %q", prompt)
 	}
 	if strings.Contains(prompt, "subagent(architect") {
 		t.Fatalf("resume prompt incorrectly routed Architect: %q", prompt)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -212,6 +213,67 @@ func TestCharacterCandidateEditInvalidatesPriorReview(t *testing.T) {
 	if lifecycle == nil || lifecycle.ReviewStatus != domain.CharacterCardReviewStale ||
 		lifecycle.ConfirmationStatus != domain.CharacterCardUnconfirmed {
 		t.Fatalf("edited candidate lifecycle = %+v", lifecycle)
+	}
+}
+
+func TestCharacterRevisionRunPreservesConfirmedCoreCastMembers(t *testing.T) {
+	st := characterToolStore(t)
+	confirmedCharacter := completeCharacterCandidate()[0]
+	foundation, err := st.Foundation.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundation.Characters = []domain.Character{confirmedCharacter}
+	foundation.RelationshipsReviewed = true
+	if _, err := st.Foundation.SaveCAS(foundation, foundation.Revision); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := st.CoreCast.SaveGateBinding(store.CoreCastGateBinding{
+		Mode: domain.CoreCastModeNormal, DraftRevision: 1, DraftHash: "confirmed-draft",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coreCast, err := st.CoreCast.SaveCAS(domain.CoreCastContract{
+		Version: domain.CoreCastContractVersion, Mode: domain.CoreCastModeNormal,
+		DraftRevision: gate.DraftRevision, DraftHash: gate.DraftHash,
+		Members: []domain.CoreCastMember{{
+			Character: confirmedCharacter, Importance: domain.CoreCastImportanceProtagonist,
+			Origin: domain.CoreCastOriginOriginal, MainlineFunction: confirmedCharacter.Role,
+			InclusionRationale: "confirmed fixture", NoCoreRelationships: true,
+		}},
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.CoreCast.ConfirmCAS(coreCast.Revision, coreCast.ContentSignature, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	confirmedCoreCast, err := st.CoreCast.Load()
+	if err != nil || confirmedCoreCast == nil || len(confirmedCoreCast.Members) != 1 {
+		t.Fatalf("confirmed CoreCast = %+v, %v", confirmedCoreCast, err)
+	}
+	expectedCharacter := confirmedCoreCast.Members[0].Character
+
+	registry := NewCharacterRunRegistry()
+	runID := "character-revise-confirmed"
+	binding := readCharacterContext(t, st, registry, runID, CharacterRunAnalyze)
+	changed := domain.CloneCharacter(confirmedCharacter)
+	changed.Goal = "A conflicting replacement goal."
+	changed.KeyBackstory[0].Impact = "A conflicting replacement backstory."
+	saveCharacterCandidate(t, st, registry, runID, "character-revise-key", binding, []domain.Character{changed})
+
+	staged, err := st.CharacterCards.LoadCandidate()
+	if err != nil || staged == nil {
+		t.Fatalf("staged candidate = %+v, %v", staged, err)
+	}
+	if len(staged.Foundation.Characters) != 1 ||
+		!reflect.DeepEqual(staged.Foundation.Characters[0], expectedCharacter) {
+		t.Fatalf("revision changed confirmed CoreCast member: %+v", staged.Foundation.Characters)
+	}
+	if len(staged.ProjectedCast.Members) != 1 ||
+		!reflect.DeepEqual(staged.ProjectedCast.Members[0].Character, expectedCharacter) {
+		t.Fatalf("projected CoreCast drifted: %+v", staged.ProjectedCast.Members)
 	}
 }
 

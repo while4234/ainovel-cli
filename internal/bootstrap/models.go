@@ -525,6 +525,7 @@ func createModelFromConfig(cfg Config, providerKey, model string, pc ProviderCon
 		if err != nil {
 			return nil, err
 		}
+		m = wrapProviderGovernance(providerKey, pc, m)
 		cache[cacheKey] = m
 		return m, nil
 	}
@@ -536,6 +537,7 @@ func createModelFromConfig(cfg Config, providerKey, model string, pc ProviderCon
 		if err != nil {
 			return nil, err
 		}
+		m = wrapProviderGovernance(providerKey, pc, m)
 		cache[cacheKey] = m
 		return m, nil
 	}
@@ -543,6 +545,7 @@ func createModelFromConfig(cfg Config, providerKey, model string, pc ProviderCon
 		if err != nil {
 			return nil, err
 		}
+		m = wrapProviderGovernance(providerKey, pc, m)
 		cache[cacheKey] = m
 		return m, nil
 	}
@@ -565,7 +568,7 @@ func createModelFromConfig(cfg Config, providerKey, model string, pc ProviderCon
 	if err != nil {
 		return nil, fmt.Errorf("provider %s (%s): %w: %w", providerKey, providerType, errs.ErrProvider, err)
 	}
-	wrapped := globalprompt.WrapModel(m)
+	wrapped := wrapProviderGovernance(providerKey, pc, globalprompt.WrapModel(m))
 	cache[cacheKey] = wrapped
 	return wrapped, nil
 }

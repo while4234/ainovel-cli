@@ -272,20 +272,21 @@ func NormalizeAdaptationOutlineAuditRetryMaxAttempts(attempts int) (int, error) 
 
 // ProviderConfig 定义单个 LLM 提供商的凭证。
 type ProviderConfig struct {
-	Label                      string   `json:"label,omitempty"`
-	TemplateProvider           string   `json:"template_provider,omitempty"`
-	Disabled                   bool     `json:"disabled,omitempty"`
-	UseProxy                   *bool    `json:"use_proxy,omitempty"`
-	RequestTimeoutSeconds      int      `json:"request_timeout_seconds,omitempty"`
-	ConnectivityTimeoutSeconds int      `json:"connectivity_timeout_seconds,omitempty"`
-	AuthFile                   string   `json:"auth_file,omitempty"`
-	Type                       string   `json:"type,omitempty"`       // API 协议类型（openai/anthropic/gemini），自定义代理时指定
-	Auth                       string   `json:"auth,omitempty"`       // 认证模式：空/api_key/grok_oauth
-	AccountID                  string   `json:"account_id,omitempty"` // Grok OAuth 账号 ID；token 存在 ~/.ainovel/auth/grok.json
-	API                        string   `json:"api,omitempty"`        // OpenAI 协议 endpoint：chat（默认）/ responses
-	APIKey                     string   `json:"api_key,omitempty"`    // API Key
-	BaseURL                    string   `json:"base_url,omitempty"`   // API Base URL
-	Models                     []string `json:"models,omitempty"`     // 可选模型列表，供 TUI 切换时展示
+	Label                      string                  `json:"label,omitempty"`
+	TemplateProvider           string                  `json:"template_provider,omitempty"`
+	Disabled                   bool                    `json:"disabled,omitempty"`
+	UseProxy                   *bool                   `json:"use_proxy,omitempty"`
+	RequestTimeoutSeconds      int                     `json:"request_timeout_seconds,omitempty"`
+	ConnectivityTimeoutSeconds int                     `json:"connectivity_timeout_seconds,omitempty"`
+	RateLimit                  ProviderRateLimitConfig `json:"rate_limit,omitzero"`
+	AuthFile                   string                  `json:"auth_file,omitempty"`
+	Type                       string                  `json:"type,omitempty"`       // API 协议类型（openai/anthropic/gemini），自定义代理时指定
+	Auth                       string                  `json:"auth,omitempty"`       // 认证模式：空/api_key/grok_oauth
+	AccountID                  string                  `json:"account_id,omitempty"` // Grok OAuth 账号 ID；token 存在 ~/.ainovel/auth/grok.json
+	API                        string                  `json:"api,omitempty"`        // OpenAI 协议 endpoint：chat（默认）/ responses
+	APIKey                     string                  `json:"api_key,omitempty"`    // API Key
+	BaseURL                    string                  `json:"base_url,omitempty"`   // API Base URL
+	Models                     []string                `json:"models,omitempty"`     // 可选模型列表，供 TUI 切换时展示
 	// ModelReasoningEfforts stores the default reasoning level for each
 	// provider/model pair. A role or workflow-stage override still wins.
 	ModelReasoningEfforts map[string]string `json:"model_reasoning_efforts,omitempty"`
@@ -296,6 +297,31 @@ type ProviderConfig struct {
 	// Extra 透传给 provider 级配置（litellm.ProviderConfig.Extra），用于 HTTP
 	// headers、user_agent、anthropic_beta 等客户端/传输层选项。
 	Extra map[string]any `json:"extra,omitempty"`
+}
+
+// ProviderRateLimitConfig bounds requests sent through one provider
+// credential. Zero values preserve the historical unlimited behavior.
+type ProviderRateLimitConfig struct {
+	RequestsPerMinute     int `json:"requests_per_minute,omitempty"`
+	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty"`
+	RetryIntervalSeconds  int `json:"retry_interval_seconds,omitempty"`
+}
+
+func (c ProviderRateLimitConfig) Enabled() bool {
+	return c.RequestsPerMinute > 0 || c.MaxConcurrentRequests > 0 || c.RetryIntervalSeconds > 0
+}
+
+func (c ProviderRateLimitConfig) validate(provider string) error {
+	if c.RequestsPerMinute < 0 || c.RequestsPerMinute > 60000 {
+		return fmt.Errorf("provider %q rate_limit.requests_per_minute must be between 0 and 60000: %w", provider, errs.ErrConfig)
+	}
+	if c.MaxConcurrentRequests < 0 || c.MaxConcurrentRequests > 1024 {
+		return fmt.Errorf("provider %q rate_limit.max_concurrent_requests must be between 0 and 1024: %w", provider, errs.ErrConfig)
+	}
+	if c.RetryIntervalSeconds < 0 || c.RetryIntervalSeconds > 3600 {
+		return fmt.Errorf("provider %q rate_limit.retry_interval_seconds must be between 0 and 3600: %w", provider, errs.ErrConfig)
+	}
+	return nil
 }
 
 const (
@@ -712,6 +738,9 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 	}
 	if pc.ConnectivityTimeoutSeconds < 0 {
 		return fmt.Errorf("provider %q connectivity_timeout_seconds must be >= 0: %w", name, errs.ErrConfig)
+	}
+	if err := pc.RateLimit.validate(name); err != nil {
+		return err
 	}
 	switch auth := strings.ToLower(strings.TrimSpace(pc.Auth)); auth {
 	case "", "api_key":

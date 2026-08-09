@@ -235,6 +235,9 @@ func mergeConfig(base, overlay Config) Config {
 			if v.ConnectivityTimeoutSeconds > 0 {
 				existing.ConnectivityTimeoutSeconds = v.ConnectivityTimeoutSeconds
 			}
+			if v.RateLimit.Enabled() {
+				existing.RateLimit = v.RateLimit
+			}
 			if v.Type != "" {
 				existing.Type = v.Type
 			}

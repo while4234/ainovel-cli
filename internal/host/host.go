@@ -188,13 +188,14 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 			h.stopForPlanningReview()
 			return
 		}
-		// Character review is a durable human-confirmation boundary. Stop the
-		// active Coordinator immediately after the review subagent persists a
-		// passing result; otherwise the same model turn can freelance an
-		// Architect dispatch before the user has published the candidate.
-		if h != nil && characterConfirmationPending(store) {
-			h.stopForCharacterConfirmation()
-			return
+		// Every terminal Character review is a durable user-action boundary.
+		// Stop before the same Coordinator turn can freelance an Architect
+		// dispatch while the candidate still needs revision or confirmation.
+		if h != nil {
+			if reviewStatus := pendingCharacterReviewBoundary(store); reviewStatus != "" {
+				h.stopForCharacterReview(reviewStatus)
+				return
+			}
 		}
 		if router != nil {
 			router.Dispatch()
@@ -1674,19 +1675,59 @@ func (h *Host) stopForPlanningReview() bool {
 }
 
 func characterConfirmationPending(st *storepkg.Store) bool {
+	return pendingCharacterReviewBoundary(st) == domain.CharacterCardReviewPassed
+}
+
+func pendingCharacterReviewBoundary(st *storepkg.Store) domain.CharacterCardReviewStatus {
 	if st == nil {
-		return false
+		return ""
 	}
 	candidate, lifecycle, binding, err := tools.CurrentCharacterWorkflow(st)
 	if err != nil || candidate == nil || lifecycle == nil {
+		return ""
+	}
+	if lifecycle.AnalysisStatus != domain.CharacterCardAnalysisCandidateReady ||
+		lifecycle.ConfirmationStatus != domain.CharacterCardUnconfirmed ||
+		lifecycle.Candidate != binding.Candidate ||
+		lifecycle.ReviewedCandidate != binding.Candidate ||
+		lifecycle.ReviewedInputDigest != binding.InputDigest {
+		return ""
+	}
+	switch lifecycle.ReviewStatus {
+	case domain.CharacterCardReviewPassed, domain.CharacterCardReviewNeedsRevision:
+		return lifecycle.ReviewStatus
+	default:
+		return ""
+	}
+}
+
+func (h *Host) stopForCharacterReview(reviewStatus domain.CharacterCardReviewStatus) bool {
+	if reviewStatus == domain.CharacterCardReviewPassed {
+		return h.stopForCharacterConfirmation()
+	}
+	if reviewStatus != domain.CharacterCardReviewNeedsRevision {
 		return false
 	}
-	return lifecycle.AnalysisStatus == domain.CharacterCardAnalysisCandidateReady &&
-		lifecycle.ReviewStatus == domain.CharacterCardReviewPassed &&
-		lifecycle.ConfirmationStatus == domain.CharacterCardUnconfirmed &&
-		lifecycle.Candidate == binding.Candidate &&
-		lifecycle.ReviewedCandidate == binding.Candidate &&
-		lifecycle.ReviewedInputDigest == binding.InputDigest
+	h.mu.Lock()
+	running := h.lifecycle == lifecycleRunning
+	if running {
+		h.lifecycle = lifecycleIdle
+	}
+	h.mu.Unlock()
+	if !running {
+		return false
+	}
+	h.observer.setAborting(true)
+	h.router.Disable()
+	h.coordinator.Abort()
+	h.coordinator.ClearAllQueues()
+	h.emitEvent(Event{
+		Time:     time.Now(),
+		Category: "SYSTEM",
+		Summary:  "角色独立审核发现阻断问题，等待用户修订角色候选",
+		Level:    "warn",
+	})
+	return true
 }
 
 // stopForCharacterConfirmation ends the active run at the persisted reviewed
@@ -3594,6 +3635,7 @@ func mergeEditedProviderConfig(existing, incoming bootstrap.ProviderConfig, mode
 	}
 	merged.RequestTimeoutSeconds = incoming.RequestTimeoutSeconds
 	merged.ConnectivityTimeoutSeconds = incoming.ConnectivityTimeoutSeconds
+	merged.RateLimit = incoming.RateLimit
 	merged.Type = strings.TrimSpace(incoming.Type)
 	merged.Auth = strings.TrimSpace(incoming.Auth)
 	merged.AccountID = strings.TrimSpace(incoming.AccountID)
@@ -3954,6 +3996,7 @@ func providerConfigIsEmpty(pc bootstrap.ProviderConfig) bool {
 		pc.UseProxy == nil &&
 		pc.RequestTimeoutSeconds == 0 &&
 		pc.ConnectivityTimeoutSeconds == 0 &&
+		!pc.RateLimit.Enabled() &&
 		pc.Auth == "" &&
 		pc.AccountID == "" &&
 		pc.AuthFile == "" &&
