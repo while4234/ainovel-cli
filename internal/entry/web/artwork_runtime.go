@@ -6,19 +6,24 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/voocel/agentcore"
 	artworkpkg "github.com/voocel/ainovel-cli/internal/artwork"
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 )
+
+type artworkPromptModelFactory func(ProjectManifest) (agentcore.ChatModel, artworkpkg.TextModelSnapshot, error)
 
 type artworkRuntime struct {
 	server *Server
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu      sync.Mutex
-	stores  map[string]*artworkpkg.WorkspaceStore
-	running map[string]struct{}
-	http    artworkpkg.HTTPDoer
-	wg      sync.WaitGroup
+	mu                 sync.Mutex
+	stores             map[string]*artworkpkg.WorkspaceStore
+	running            map[string]struct{}
+	http               artworkpkg.HTTPDoer
+	promptModelFactory artworkPromptModelFactory
+	wg                 sync.WaitGroup
 }
 
 func newArtworkRuntime(server *Server) *artworkRuntime {
@@ -26,9 +31,36 @@ func newArtworkRuntime(server *Server) *artworkRuntime {
 	runtime := &artworkRuntime{
 		server: server, ctx: ctx, cancel: cancel,
 		stores: make(map[string]*artworkpkg.WorkspaceStore), running: make(map[string]struct{}),
+		promptModelFactory: server.newArtworkPromptModel,
 	}
 	runtime.recoverExistingProjects()
 	return runtime
+}
+
+func (s *Server) newArtworkPromptModel(manifest ProjectManifest) (agentcore.ChatModel, artworkpkg.TextModelSnapshot, error) {
+	cfg := projectBaseModelConfig(s.currentConfig())
+	projectCfg, found, err := s.store.loadProjectConfig(manifest)
+	if err != nil {
+		return nil, artworkpkg.TextModelSnapshot{}, err
+	}
+	if found {
+		cfg = bootstrap.MergeConfig(cfg, projectCfg)
+	}
+	cfg.FillDefaults()
+	if err := cfg.ValidateBase(); err != nil {
+		return nil, artworkpkg.TextModelSnapshot{}, err
+	}
+	model, err := bootstrap.NewProviderModelWithConfig(cfg, cfg.Provider, cfg.ModelName, cfg.DefaultProviderConfig())
+	if err != nil {
+		return nil, artworkpkg.TextModelSnapshot{}, err
+	}
+	reasoningEffort := cfg.ResolveReasoningEffort("default")
+	configured := bootstrap.NewSwappableModel(cfg.Provider, cfg.ModelName, model)
+	configured.SetThinking(reasoningEffort)
+	return configured, artworkpkg.TextModelSnapshot{
+		Provider: cfg.Provider, Model: cfg.ModelName,
+		ReasoningEffort: reasoningEffort,
+	}, nil
 }
 
 func (a *artworkRuntime) close() {

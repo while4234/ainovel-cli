@@ -199,6 +199,10 @@ func (s *WorkspaceStore) Workspace(limit int) (WorkspaceSnapshot, error) {
 	if err != nil {
 		return WorkspaceSnapshot{}, err
 	}
+	promptJobs, err := s.ListPromptJobs("", limit, "")
+	if err != nil {
+		return WorkspaceSnapshot{}, err
+	}
 	assets, err := s.ListAssets("", limit)
 	if err != nil {
 		return WorkspaceSnapshot{}, err
@@ -207,7 +211,7 @@ func (s *WorkspaceStore) Workspace(limit int) (WorkspaceSnapshot, error) {
 	if err != nil {
 		return WorkspaceSnapshot{}, err
 	}
-	return WorkspaceSnapshot{SchemaVersion: WorkspaceSchemaVersion, Drafts: drafts, Jobs: jobs, Assets: assets, Applied: applied}, nil
+	return WorkspaceSnapshot{SchemaVersion: WorkspaceSchemaVersion, Drafts: drafts, PromptJobs: promptJobs, Jobs: jobs, Assets: assets, Applied: applied}, nil
 }
 
 type ReconcileResult struct {
@@ -258,6 +262,40 @@ func (s *WorkspaceStore) Reconcile() (ReconcileResult, error) {
 	jobs, err := s.readAllJobsUnlocked()
 	if err != nil {
 		return result, err
+	}
+	promptJobs, err := s.readAllPromptJobsUnlocked()
+	if err != nil {
+		return result, err
+	}
+	for _, job := range promptJobs {
+		if job.Status != PromptJobQueued && job.Status != PromptJobRunning {
+			continue
+		}
+		draft, draftErr := s.readDraftUnlocked(job.DraftID)
+		if draftErr == nil && draft.CurrentPromptJobID == job.ID && validateRecordID(draft.CurrentPromptVersionID) == nil {
+			if _, promptErr := s.readPromptVersionUnlocked(draft.CurrentPromptVersionID); promptErr == nil {
+				now := s.now()
+				job.Status = PromptJobSucceeded
+				job.PromptVersionID = draft.CurrentPromptVersionID
+				job.ErrorCode = ""
+				job.UpdatedAt = now
+				job.FinishedAt = &now
+				path, _ := s.path("prompt-jobs", job.ID)
+				if err := writeJSONAtomic(path, job, false); err != nil {
+					return result, err
+				}
+				continue
+			}
+		}
+		now := s.now()
+		job.Status = PromptJobFailed
+		job.ErrorCode = "prompt_generation_interrupted"
+		job.UpdatedAt = now
+		job.FinishedAt = &now
+		path, _ := s.path("prompt-jobs", job.ID)
+		if err := writeJSONAtomic(path, job, false); err != nil {
+			return result, err
+		}
 	}
 	for _, job := range jobs {
 		switch job.Status {

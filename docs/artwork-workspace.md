@@ -13,6 +13,7 @@ stored as a separate JSON file; image bytes are never embedded in JSON.
 output/artwork/
   schema.json
   drafts/<draft-id>.json
+  prompt-jobs/<prompt-job-id>.json
   prompts/<prompt-version-id>.json
   jobs/<job-id>.json
   assets/<asset-id>.json
@@ -33,6 +34,50 @@ credential only when it executes the queued job.
 The normalized endpoint and provider-delivery details remain internal job
 fields. Public job responses contain stable request metadata and safe error
 codes only.
+
+## AI prompt sources and freshness
+
+AI prompt drafting is an isolated artwork operation; it does not invoke or
+change Coordinator, Writer, Editor, or StoryFoundation publication. It uses the
+project's configured default text provider/model through the normal provider
+construction, rate-limit, reasoning, and diagnostic boundaries, but supplies a
+dedicated versioned artwork template instead of a user global creative prompt.
+
+The source mapping is deliberately AINovel-native and read-only:
+
+- A book/cover snapshot contains the published `StoryFoundation`, formal
+  layered or flat outline, and already-existing volume, arc, and chapter
+  summaries.
+- A volume illustration contains the Foundation, selected volume outline, and
+  existing summaries, with chapter-outline evidence where no summary exists.
+- A chapter illustration selects an existing chapter summary first, otherwise
+  bounded final chapter prose, and finally its formal outline entry.
+- A character portrait contains the selected canonical character card, cards
+  connected by canonical relationships, those relationships, and canonical
+  world rules. It never reads whole-manuscript prose.
+
+Fragments are deterministically ordered, limited to 64 fragments, 8 KiB per
+fragment, and 32 KiB of exact source text. Missing summaries are never created
+as a read side effect. The stored digest covers the schema version, work type,
+scope and scope ID, prompt-template version, and the exact post-bound source
+fragments. Prompt jobs, completed AI prompt versions, image jobs, and assets
+retain that immutable snapshot plus only the safe text-model fields (provider,
+model, and reasoning effort).
+
+Each explicit prompt job makes at most one application-level text-model call.
+The result is editable plain text limited to 4000 Unicode characters; empty or
+oversized output fails the job without a JSON/format repair call or an
+automatic application retry. A provider/model failure leaves the original
+manual prompt untouched, so manual editing and image submission remain usable.
+
+Draft detail and image submission recompute current source freshness on the
+server. List and workspace reads do not walk novel source data or mutate draft
+timestamps/order. If the exact current digest differs from the AI prompt's
+source digest, image submission fails until the user confirms that current
+digest with the draft's `expected_version`. The image job and resulting asset
+then persist the original digest, confirmed digest, confirmation time, and
+exact submitted source snapshot. Any later source change requires a new
+confirmation.
 
 ## Job lifecycle and one-shot execution
 
@@ -91,9 +136,14 @@ All workspace routes are under `/api/projects/{project_id}/artwork`:
 
 - `GET /` returns the workspace summary.
 - `GET|POST /drafts`, `GET|PATCH|DELETE /drafts/{id}` manage drafts.
+- `POST /drafts/{id}/generate-prompt` creates or idempotently returns a
+  one-call text prompt job.
+- `GET /prompt-jobs`, `GET /prompt-jobs/{id}`, and
+  `GET /drafts/{id}/prompt-jobs` expose safe prompt history; prompt-job detail
+  includes the immutable exact bounded source snapshot.
 - `POST /drafts/{id}/generate-image` creates or reuses a durable image job.
-- `POST /drafts/{id}/confirm-stale-prompt` is the source-freshness confirmation
-  boundary for a later AI-prompt feature; manual prompts are not stale.
+- `POST /drafts/{id}/confirm-stale-prompt` confirms the server-recomputed
+  current digest through draft-version CAS; manual prompts are never stale.
 - `GET /jobs`, `GET /jobs/{id}` return safe job history.
 - `GET /assets`, `GET|DELETE /assets/{id}` manage gallery metadata.
 - `GET /assets/{id}/content` serves inline bytes and

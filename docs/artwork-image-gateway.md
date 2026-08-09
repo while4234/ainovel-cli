@@ -39,6 +39,12 @@ only from the selected registry capability. It always submits `n: 1` and
 decoded image sizes, and marks a connection interruption before a response as
 uncertain delivery. Callers must not retry an uncertain delivery automatically.
 
+For AI-authored artwork drafts, the gateway receives the exact editable plain
+text stored in the immutable prompt version. Prompt generation does not add a
+second image-side transformation, expansion, or repair call. Source snapshot,
+model audit, and stale-confirmation provenance stay in the project artwork
+workspace; no text-provider credential is copied into image requests.
+
 The durable project-scoped store, one-shot worker, recovery rules, and gallery
 HTTP APIs are documented in [Project Artwork Workspace](artwork-workspace.md).
 

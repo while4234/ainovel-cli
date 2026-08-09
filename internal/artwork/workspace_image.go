@@ -212,10 +212,21 @@ func assetFromJob(job ImageJob, prompt ArtworkPromptVersion, image ValidatedImag
 		DraftVersion: job.DraftVersion, PromptVersionID: prompt.ID, JobID: job.ID,
 		WorkType: job.WorkType, Scope: job.Scope, ScopeID: job.ScopeID,
 		Prompt: prompt.Prompt, PromptSource: prompt.Source,
-		ReusedFromAssetID: prompt.SourceAssetID, Request: job.Request, Origin: "generation",
+		ReusedFromAssetID: prompt.SourceAssetID,
+		SourceSnapshot:    cloneSourceSnapshot(job.SourceSnapshot),
+		StaleConfirmation: cloneStaleConfirmation(job.StaleConfirmation),
+		Request:           job.Request, Origin: "generation",
 		FileName: job.AssetID + image.Extension, MIMEType: image.MIMEType,
 		Width: image.Width, Height: image.Height, SHA256: image.SHA256, CreatedAt: createdAt,
 	}
+}
+
+func cloneStaleConfirmation(value *StalePromptConfirmation) *StalePromptConfirmation {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func (s *WorkspaceStore) completeJobSuccessUnlocked(job ImageJob, asset Asset) error {
@@ -302,6 +313,16 @@ func validateAsset(asset Asset) error {
 	}
 	if _, err := hex.DecodeString(asset.SHA256); err != nil {
 		return errors.New("artwork asset digest is invalid")
+	}
+	if asset.SourceSnapshot != nil {
+		if asset.PromptSource != PromptSourceAI || validateSourceSnapshot(*asset.SourceSnapshot) != nil || asset.SourceSnapshot.WorkType != asset.WorkType || asset.SourceSnapshot.Scope != asset.Scope || asset.SourceSnapshot.ScopeID != asset.ScopeID {
+			return errors.New("artwork asset source provenance is invalid")
+		}
+	}
+	if asset.StaleConfirmation != nil {
+		if asset.SourceSnapshot == nil || asset.StaleConfirmation.OriginalSourceDigest == "" || asset.StaleConfirmation.ConfirmedSourceDigest != asset.SourceSnapshot.Digest || asset.StaleConfirmation.ConfirmedAt.IsZero() {
+			return errors.New("artwork asset stale confirmation is invalid")
+		}
 	}
 	return nil
 }

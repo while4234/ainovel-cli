@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-09 `this commit` `feat: add artwork prompt provenance`: adds
+  one-call plain-text artwork prompt jobs using bounded AINovel-native book,
+  volume, chapter, and character contexts; exact immutable source/model/prompt
+  lineage; server-recomputed stale detection and CAS confirmation; and source
+  provenance carried through image jobs and assets. Focused Artwork, Web API,
+  assets, global-prompt/bootstrap regressions, the CLI build, and diff checks
+  pass with fake text/image transports only; the four user global prompts are
+  byte-identical and no live model, AI2API, or image request was made.
 - 2026-08-09 `this commit` `feat: add durable artwork workspace`: adds the
   project-scoped schema-v1 draft/prompt/job/asset store, one-shot background
   image worker, immutable validated images, protected gallery APIs, operation

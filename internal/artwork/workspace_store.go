@@ -91,13 +91,17 @@ func (s *WorkspaceStore) UpdateDraft(id string, patch DraftPatch) (Draft, error)
 	if draft.Version != patch.ExpectedVersion {
 		return Draft{}, &VersionConflictError{Expected: patch.ExpectedVersion, Actual: draft.Version}
 	}
+	sourceScopeChanged := false
 	if patch.WorkType != nil {
+		sourceScopeChanged = sourceScopeChanged || draft.WorkType != *patch.WorkType
 		draft.WorkType = *patch.WorkType
 	}
 	if patch.Scope != nil {
+		sourceScopeChanged = sourceScopeChanged || draft.Scope != *patch.Scope
 		draft.Scope = *patch.Scope
 	}
 	if patch.ScopeID != nil {
+		sourceScopeChanged = sourceScopeChanged || draft.ScopeID != *patch.ScopeID
 		draft.ScopeID = *patch.ScopeID
 	}
 	if patch.Prompt != nil {
@@ -107,8 +111,17 @@ func (s *WorkspaceStore) UpdateDraft(id string, patch DraftPatch) (Draft, error)
 		draft.SourceSignature = ""
 		draft.CurrentSourceSignature = ""
 		draft.ConfirmedSignature = ""
+		draft.ConfirmedAt = nil
 		draft.SourceStatus = "current"
 		draft.IsStale = false
+		draft.CurrentPromptVersionID = ""
+	}
+	if sourceScopeChanged && patch.Prompt == nil && draft.PromptSource == PromptSourceAI {
+		draft.CurrentSourceSignature = ""
+		draft.ConfirmedSignature = ""
+		draft.ConfirmedAt = nil
+		draft.SourceStatus = "unknown"
+		draft.IsStale = true
 	}
 	if patch.ModelID != nil {
 		draft.ModelID = *patch.ModelID
@@ -178,10 +191,53 @@ func (s *WorkspaceStore) ConfirmStalePrompt(id string, expectedVersion int64, si
 		return Draft{}, fmt.Errorf("%w: artwork prompt source changed", ErrConflict)
 	}
 	draft.ConfirmedSignature = signature
+	now := s.now()
+	draft.ConfirmedAt = &now
 	draft.SourceStatus = "confirmed"
 	draft.IsStale = false
 	draft.Version++
-	draft.UpdatedAt = s.now()
+	draft.UpdatedAt = now
+	path, _ := s.path("drafts", id)
+	if err := writeJSONAtomic(path, draft, false); err != nil {
+		return Draft{}, err
+	}
+	return draft, nil
+}
+
+func (s *WorkspaceStore) ConfirmStalePromptCurrent(id string, expectedVersion int64, expectedSignature string, current SourceSnapshot) (Draft, error) {
+	if expectedVersion <= 0 {
+		return Draft{}, errors.New("expected_version must be positive")
+	}
+	expectedSignature = strings.TrimSpace(expectedSignature)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	draft, err := s.readDraftUnlocked(id)
+	if err != nil {
+		return Draft{}, err
+	}
+	if draft.Version != expectedVersion {
+		return Draft{}, &VersionConflictError{Expected: expectedVersion, Actual: draft.Version}
+	}
+	if draft.PromptSource != PromptSourceAI || draft.SourceSignature == "" {
+		return Draft{}, fmt.Errorf("%w: artwork prompt has no AI source provenance", ErrConflict)
+	}
+	if err := validateSnapshotForDraft(current, draft); err != nil {
+		return Draft{}, err
+	}
+	if current.Digest == draft.SourceSignature {
+		return Draft{}, fmt.Errorf("%w: artwork prompt is not stale", ErrConflict)
+	}
+	if expectedSignature == "" || expectedSignature != current.Digest {
+		return Draft{}, fmt.Errorf("%w: artwork prompt source changed", ErrConflict)
+	}
+	now := s.now()
+	draft.CurrentSourceSignature = current.Digest
+	draft.ConfirmedSignature = current.Digest
+	draft.ConfirmedAt = &now
+	draft.SourceStatus = "confirmed"
+	draft.IsStale = false
+	draft.Version++
+	draft.UpdatedAt = now
 	path, _ := s.path("drafts", id)
 	if err := writeJSONAtomic(path, draft, false); err != nil {
 		return Draft{}, err
@@ -263,11 +319,16 @@ func validateDraft(draft Draft) error {
 	if draft.Prompt == "" || len([]byte(draft.Prompt)) > MaxPromptBytes {
 		return fmt.Errorf("artwork prompt must contain 1-%d UTF-8 bytes", MaxPromptBytes)
 	}
-	if draft.PromptSource != PromptSourceManual && draft.PromptSource != PromptSourceReuse {
+	if draft.PromptSource != PromptSourceManual && draft.PromptSource != PromptSourceReuse && draft.PromptSource != PromptSourceAI {
 		return errors.New("artwork prompt source is invalid")
 	}
 	if draft.PromptSource == PromptSourceReuse && validateRecordID(draft.SourceAssetID) != nil {
 		return errors.New("reused artwork source asset is invalid")
+	}
+	if draft.PromptSource == PromptSourceAI {
+		if len(draft.SourceSignature) != 64 || validateRecordID(draft.CurrentPromptVersionID) != nil || validateRecordID(draft.CurrentPromptJobID) != nil {
+			return errors.New("AI artwork prompt provenance is invalid")
+		}
 	}
 	switch draft.WorkType {
 	case WorkTypeCover:
@@ -279,8 +340,8 @@ func validateDraft(draft Draft) error {
 			return errors.New("character portrait artwork requires character scope_id")
 		}
 	case WorkTypeIllustration:
-		if draft.Scope != "project" && draft.Scope != "chapter" && draft.Scope != "scene" {
-			return errors.New("illustration artwork scope must be project, chapter, or scene")
+		if draft.Scope != "project" && draft.Scope != "volume" && draft.Scope != "chapter" && draft.Scope != "scene" {
+			return errors.New("illustration artwork scope must be project, volume, chapter, or scene")
 		}
 		if draft.Scope == "project" && draft.ScopeID != "" {
 			return errors.New("project illustration scope_id must be empty")
@@ -302,6 +363,14 @@ func validateDraft(draft Draft) error {
 }
 
 func (s *WorkspaceStore) SubmitGeneration(draftID string, expectedVersion int64, idempotencyKey, gatewayEndpoint string) (ImageJob, bool, error) {
+	return s.submitGeneration(draftID, expectedVersion, idempotencyKey, gatewayEndpoint, nil)
+}
+
+func (s *WorkspaceStore) SubmitGenerationChecked(draftID string, expectedVersion int64, idempotencyKey, gatewayEndpoint string, current SourceSnapshot) (ImageJob, bool, error) {
+	return s.submitGeneration(draftID, expectedVersion, idempotencyKey, gatewayEndpoint, &current)
+}
+
+func (s *WorkspaceStore) submitGeneration(draftID string, expectedVersion int64, idempotencyKey, gatewayEndpoint string, current *SourceSnapshot) (ImageJob, bool, error) {
 	if expectedVersion <= 0 {
 		return ImageJob{}, false, errors.New("expected_version must be positive")
 	}
@@ -328,6 +397,27 @@ func (s *WorkspaceStore) SubmitGeneration(draftID string, expectedVersion int64,
 	if draft.Version != expectedVersion {
 		return ImageJob{}, false, &VersionConflictError{Expected: expectedVersion, Actual: draft.Version}
 	}
+	var sourceSnapshot *SourceSnapshot
+	var staleConfirmation *StalePromptConfirmation
+	if draft.PromptSource == PromptSourceAI {
+		if current == nil {
+			return ImageJob{}, false, ErrStalePrompt
+		}
+		if err := validateSnapshotForDraft(*current, draft); err != nil {
+			return ImageJob{}, false, err
+		}
+		sourceSnapshot = cloneSourceSnapshot(current)
+		if current.Digest != draft.SourceSignature {
+			if draft.ConfirmedSignature != current.Digest || draft.ConfirmedAt == nil {
+				return ImageJob{}, false, ErrStalePrompt
+			}
+			staleConfirmation = &StalePromptConfirmation{
+				OriginalSourceDigest:  draft.SourceSignature,
+				ConfirmedSourceDigest: current.Digest,
+				ConfirmedAt:           *draft.ConfirmedAt,
+			}
+		}
+	}
 	jobs, err := s.readAllJobsUnlocked()
 	if err != nil {
 		return ImageJob{}, false, err
@@ -347,25 +437,9 @@ func (s *WorkspaceStore) SubmitGeneration(draftID string, expectedVersion int64,
 		AspectRatio: requestOptions.AspectRatio, Resolution: requestOptions.Resolution,
 		ResponseFormat: "b64_json",
 	}
-	promptFingerprint, err := fingerprint(struct {
-		DraftID      string
-		DraftVersion int64
-		Prompt       string
-		Source       PromptSource
-		SourceAsset  string
-	}{draft.ID, draft.Version, draft.Prompt, draft.PromptSource, draft.SourceAssetID})
+	promptVersion, err := s.promptVersionForSubmissionUnlocked(draft)
 	if err != nil {
 		return ImageJob{}, false, err
-	}
-	promptVersion := ArtworkPromptVersion{
-		SchemaVersion: WorkspaceSchemaVersion,
-		ID:            deterministicID("prompt", promptFingerprint), DraftID: draft.ID,
-		DraftVersion: draft.Version, Prompt: draft.Prompt, Source: draft.PromptSource,
-		SourceAssetID: draft.SourceAssetID, CreatedAt: s.now(),
-	}
-	promptPath, _ := s.path("prompts", promptVersion.ID)
-	if err := writeJSONAtomic(promptPath, promptVersion, true); err != nil && !os.IsExist(err) {
-		return ImageJob{}, false, fmt.Errorf("persist immutable artwork prompt version: %w", err)
 	}
 	requestFingerprint, err := fingerprint(struct {
 		DraftID         string
@@ -373,7 +447,9 @@ func (s *WorkspaceStore) SubmitGeneration(draftID string, expectedVersion int64,
 		PromptVersionID string
 		Request         ProviderRequestSnapshot
 		GatewayEndpoint string
-	}{draft.ID, draft.Version, promptVersion.ID, request, gatewayEndpoint})
+		SourceDigest    string
+		ConfirmedDigest string
+	}{draft.ID, draft.Version, promptVersion.ID, request, gatewayEndpoint, sourceDigest(sourceSnapshot), confirmedDigest(staleConfirmation)})
 	if err != nil {
 		return ImageJob{}, false, err
 	}
@@ -386,6 +462,7 @@ func (s *WorkspaceStore) SubmitGeneration(draftID string, expectedVersion int64,
 		AssetID:         deterministicID("asset", jobID), Status: JobQueued, Request: request,
 		Internal:           JobInternalSnapshot{GatewayEndpoint: gatewayEndpoint, Delivery: DeliveryNotSent},
 		IdempotencyKeyHash: keyHash, RequestFingerprint: requestFingerprint,
+		SourceSnapshot: sourceSnapshot, StaleConfirmation: staleConfirmation,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	jobPath, _ := s.path("jobs", job.ID)
@@ -393,6 +470,54 @@ func (s *WorkspaceStore) SubmitGeneration(draftID string, expectedVersion int64,
 		return ImageJob{}, false, fmt.Errorf("persist queued artwork job: %w", err)
 	}
 	return job, false, nil
+}
+
+func (s *WorkspaceStore) promptVersionForSubmissionUnlocked(draft Draft) (ArtworkPromptVersion, error) {
+	if draft.PromptSource == PromptSourceAI && validateRecordID(draft.CurrentPromptVersionID) == nil {
+		prompt, err := s.readPromptVersionUnlocked(draft.CurrentPromptVersionID)
+		if err != nil {
+			return ArtworkPromptVersion{}, err
+		}
+		if prompt.Prompt != draft.Prompt || prompt.Source != PromptSourceAI || prompt.SourceSnapshot == nil || prompt.SourceSnapshot.Digest != draft.SourceSignature {
+			return ArtworkPromptVersion{}, errors.New("current AI artwork prompt version does not match draft provenance")
+		}
+		return prompt, nil
+	}
+	promptFingerprint, err := fingerprint(struct {
+		DraftID      string
+		DraftVersion int64
+		Prompt       string
+		Source       PromptSource
+		SourceAsset  string
+	}{draft.ID, draft.Version, draft.Prompt, draft.PromptSource, draft.SourceAssetID})
+	if err != nil {
+		return ArtworkPromptVersion{}, err
+	}
+	promptVersion := ArtworkPromptVersion{
+		SchemaVersion: WorkspaceSchemaVersion,
+		ID:            deterministicID("prompt", promptFingerprint), DraftID: draft.ID,
+		DraftVersion: draft.Version, Prompt: draft.Prompt, Source: draft.PromptSource,
+		SourceAssetID: draft.SourceAssetID, CreatedAt: s.now(),
+	}
+	promptPath, _ := s.path("prompts", promptVersion.ID)
+	if err := writeJSONAtomic(promptPath, promptVersion, true); err != nil && !os.IsExist(err) {
+		return ArtworkPromptVersion{}, fmt.Errorf("persist immutable artwork prompt version: %w", err)
+	}
+	return promptVersion, nil
+}
+
+func sourceDigest(snapshot *SourceSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	return snapshot.Digest
+}
+
+func confirmedDigest(confirmation *StalePromptConfirmation) string {
+	if confirmation == nil {
+		return ""
+	}
+	return confirmation.ConfirmedSourceDigest
 }
 
 func (s *WorkspaceStore) GetJob(id string) (ImageJob, error) {
@@ -428,6 +553,16 @@ func validateJob(job ImageJob) error {
 	}
 	if job.CreatedAt.IsZero() || job.UpdatedAt.IsZero() || job.Request.CatalogVersion == "" || job.Request.ResponseFormat != "b64_json" {
 		return errors.New("artwork job snapshot is invalid")
+	}
+	if job.SourceSnapshot != nil {
+		if job.PromptSource != PromptSourceAI || validateSourceSnapshot(*job.SourceSnapshot) != nil || job.SourceSnapshot.WorkType != job.WorkType || job.SourceSnapshot.Scope != job.Scope || job.SourceSnapshot.ScopeID != job.ScopeID {
+			return errors.New("artwork job source provenance is invalid")
+		}
+	}
+	if job.StaleConfirmation != nil {
+		if job.SourceSnapshot == nil || job.StaleConfirmation.OriginalSourceDigest == "" || job.StaleConfirmation.ConfirmedSourceDigest != job.SourceSnapshot.Digest || job.StaleConfirmation.ConfirmedAt.IsZero() {
+			return errors.New("artwork job stale confirmation is invalid")
+		}
 	}
 	switch job.Status {
 	case JobQueued, JobRunning, JobSucceeded, JobFailed, JobInterruptedUnknown:
@@ -570,6 +705,11 @@ func (s *WorkspaceStore) readPromptVersionUnlocked(id string) (ArtworkPromptVers
 	}
 	if prompt.SchemaVersion != WorkspaceSchemaVersion || prompt.ID != id || prompt.Prompt == "" {
 		return ArtworkPromptVersion{}, errors.New("immutable artwork prompt version is invalid")
+	}
+	if prompt.Source == PromptSourceAI {
+		if validateRecordID(prompt.PromptJobID) != nil || prompt.SourceSnapshot == nil || validateSourceSnapshot(*prompt.SourceSnapshot) != nil || prompt.Model == nil || prompt.Model.Provider == "" || prompt.Model.Model == "" {
+			return ArtworkPromptVersion{}, errors.New("immutable AI artwork prompt provenance is invalid")
+		}
 	}
 	return prompt, nil
 }

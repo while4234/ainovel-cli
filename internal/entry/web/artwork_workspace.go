@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	artworkpkg "github.com/voocel/ainovel-cli/internal/artwork"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 type artworkDraftRequest struct {
@@ -37,6 +38,11 @@ type artworkGenerationRequest struct {
 	IdempotencyKey  string `json:"idempotency_key"`
 }
 
+type artworkPromptJobDetail struct {
+	artworkpkg.PromptJobView
+	Source artworkpkg.SourceSnapshot `json:"source_snapshot"`
+}
+
 type artworkAssetHTTPView struct {
 	artworkpkg.AssetView
 	ContentURL  string `json:"content_url"`
@@ -61,7 +67,9 @@ func (s *Server) handleProjectArtwork(w http.ResponseWriter, r *http.Request, pr
 	}
 	switch parts[0] {
 	case "drafts":
-		s.handleArtworkDraftRoute(w, r, projectID, workspace, parts[1:])
+		s.handleArtworkDraftRoute(w, r, manifest, workspace, parts[1:])
+	case "prompt-jobs":
+		s.handleArtworkPromptJobRoute(w, r, workspace, parts[1:], "")
 	case "jobs":
 		s.handleArtworkJobRoute(w, r, workspace, parts[1:])
 	case "assets":
@@ -100,13 +108,13 @@ func (s *Server) handleArtworkWorkspaceRoot(w http.ResponseWriter, r *http.Reque
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"schema_version": snapshot.SchemaVersion,
-		"drafts":         snapshot.Drafts, "jobs": snapshot.Jobs,
+		"drafts":         snapshot.Drafts, "prompt_jobs": snapshot.PromptJobs, "jobs": snapshot.Jobs,
 		"assets":  map[string]any{"items": assets, "next_cursor": snapshot.Assets.NextCursor},
 		"applied": snapshot.Applied,
 	})
 }
 
-func (s *Server) handleArtworkDraftRoute(w http.ResponseWriter, r *http.Request, projectID string, store *artworkpkg.WorkspaceStore, parts []string) {
+func (s *Server) handleArtworkDraftRoute(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, store *artworkpkg.WorkspaceStore, parts []string) {
 	if len(parts) == 0 {
 		s.handleArtworkDraftCollection(w, r, store)
 		return
@@ -118,10 +126,14 @@ func (s *Server) handleArtworkDraftRoute(w http.ResponseWriter, r *http.Request,
 	draftID := parts[0]
 	if len(parts) == 2 {
 		switch parts[1] {
+		case "generate-prompt":
+			s.handleArtworkGeneratePrompt(w, r, manifest, store, draftID)
 		case "generate-image":
-			s.handleArtworkGenerate(w, r, projectID, store, draftID)
+			s.handleArtworkGenerate(w, r, manifest, store, draftID)
 		case "confirm-stale-prompt":
-			s.handleArtworkConfirmStale(w, r, store, draftID)
+			s.handleArtworkConfirmStale(w, r, manifest, store, draftID)
+		case "prompt-jobs":
+			s.handleArtworkPromptJobRoute(w, r, store, nil, draftID)
 		default:
 			http.NotFound(w, r)
 		}
@@ -134,7 +146,16 @@ func (s *Server) handleArtworkDraftRoute(w http.ResponseWriter, r *http.Request,
 			writeArtworkWorkspaceError(w, err, false)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"draft": draft.Public()})
+		view := draft.Public()
+		if draft.PromptSource == artworkpkg.PromptSourceAI {
+			snapshot, snapshotErr := buildArtworkSourceSnapshot(manifest, draft)
+			if snapshotErr != nil {
+				writeArtworkWorkspaceError(w, snapshotErr, false)
+				return
+			}
+			view = draft.PublicWithFreshness(snapshot)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"draft": view})
 	case http.MethodPatch:
 		var request artworkDraftPatchRequest
 		if err := decodeJSONBody(r, &request); err != nil {
@@ -165,6 +186,69 @@ func (s *Server) handleArtworkDraftRoute(w http.ResponseWriter, r *http.Request,
 	default:
 		writeArtworkWorkspaceMethodError(w)
 	}
+}
+
+func (s *Server) handleArtworkGeneratePrompt(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, workspace *artworkpkg.WorkspaceStore, draftID string) {
+	if r.Method != http.MethodPost {
+		writeArtworkWorkspaceMethodError(w)
+		return
+	}
+	var request artworkGenerationRequest
+	if err := decodeJSONBody(r, &request); err != nil {
+		writeArtworkWorkspaceError(w, err, true)
+		return
+	}
+	key, err := artworkIdempotencyKey(r, request.IdempotencyKey, true)
+	if err != nil {
+		writeArtworkWorkspaceError(w, err, true)
+		return
+	}
+	draft, err := workspace.GetDraft(draftID)
+	if err != nil {
+		writeArtworkWorkspaceError(w, err, false)
+		return
+	}
+	source, err := buildArtworkSourceSnapshot(manifest, draft)
+	if err != nil {
+		writeArtworkWorkspaceError(w, err, false)
+		return
+	}
+	model, modelSnapshot, err := s.artworkRuntime.promptModelFactory(manifest)
+	if err != nil {
+		writeArtworkError(w, http.StatusConflict, "prompt_model_unavailable", "configured text model is unavailable; manual prompt editing remains available", artworkpkg.DeliveryNotSent)
+		return
+	}
+	job, reused, err := workspace.CreatePromptJob(draftID, request.ExpectedVersion, key, source, modelSnapshot)
+	if err != nil {
+		writeArtworkWorkspaceError(w, err, true)
+		return
+	}
+	if reused {
+		writeJSON(w, http.StatusOK, map[string]any{"job": job.Public(), "reused": true})
+		return
+	}
+	job, err = workspace.BeginPromptJob(job.ID)
+	if err != nil {
+		_ = workspace.CompletePromptJobFailure(job.ID, artworkpkg.PromptFailureCode(err), artworkpkg.PromptUsageSnapshot{})
+		writeArtworkPromptGenerationError(w, err, job.Public())
+		return
+	}
+	generator := artworkpkg.PromptGenerator{Model: model, Template: s.bundle.Prompts.Artwork, Store: storepkg.NewStore(manifest.OutputDir)}
+	prompt, usage, err := generator.GeneratePrompt(r.Context(), source)
+	if err != nil {
+		_ = workspace.CompletePromptJobFailure(job.ID, artworkpkg.PromptFailureCode(err), usage)
+		failed, _ := workspace.GetPromptJob(job.ID)
+		writeArtworkPromptGenerationError(w, err, failed.Public())
+		return
+	}
+	job, draft, err = workspace.CompletePromptJob(job.ID, prompt, usage)
+	if err != nil {
+		_ = workspace.CompletePromptJobFailure(job.ID, artworkpkg.PromptFailureCode(err), usage)
+		failed, _ := workspace.GetPromptJob(job.ID)
+		writeArtworkPromptGenerationError(w, err, failed.Public())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"job": job.Public(), "draft": draft.PublicWithFreshness(source), "reused": false})
 }
 
 func (s *Server) handleArtworkDraftCollection(w http.ResponseWriter, r *http.Request, store *artworkpkg.WorkspaceStore) {
@@ -207,7 +291,7 @@ func (s *Server) handleArtworkDraftCollection(w http.ResponseWriter, r *http.Req
 	}
 }
 
-func (s *Server) handleArtworkGenerate(w http.ResponseWriter, r *http.Request, projectID string, store *artworkpkg.WorkspaceStore, draftID string) {
+func (s *Server) handleArtworkGenerate(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, store *artworkpkg.WorkspaceStore, draftID string) {
 	if r.Method != http.MethodPost {
 		writeArtworkWorkspaceMethodError(w)
 		return
@@ -227,14 +311,25 @@ func (s *Server) handleArtworkGenerate(w http.ResponseWriter, r *http.Request, p
 		writeArtworkError(w, http.StatusConflict, "gateway_not_configured", "image gateway is not configured", artworkpkg.DeliveryNotSent)
 		return
 	}
-	job, reused, err := store.SubmitGeneration(draftID, request.ExpectedVersion, key, config.BaseURL)
+	draft, err := store.GetDraft(draftID)
 	if err != nil {
-		writeArtworkWorkspaceError(w, err, true)
+		writeArtworkWorkspaceError(w, err, false)
 		return
 	}
-	manifest, err := s.store.projectManifestWithoutTouch(projectID)
+	var job artworkpkg.ImageJob
+	var reused bool
+	if draft.PromptSource == artworkpkg.PromptSourceAI {
+		source, sourceErr := buildArtworkSourceSnapshot(manifest, draft)
+		if sourceErr != nil {
+			writeArtworkWorkspaceError(w, sourceErr, false)
+			return
+		}
+		job, reused, err = store.SubmitGenerationChecked(draftID, request.ExpectedVersion, key, config.BaseURL, source)
+	} else {
+		job, reused, err = store.SubmitGeneration(draftID, request.ExpectedVersion, key, config.BaseURL)
+	}
 	if err != nil {
-		writeProjectManifestError(w, err)
+		writeArtworkWorkspaceError(w, err, true)
 		return
 	}
 	s.artworkRuntime.schedule(manifest, store, job.ID)
@@ -245,7 +340,7 @@ func (s *Server) handleArtworkGenerate(w http.ResponseWriter, r *http.Request, p
 	writeJSON(w, status, map[string]any{"job": job.Public(), "reused": reused})
 }
 
-func (s *Server) handleArtworkConfirmStale(w http.ResponseWriter, r *http.Request, store *artworkpkg.WorkspaceStore, draftID string) {
+func (s *Server) handleArtworkConfirmStale(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, store *artworkpkg.WorkspaceStore, draftID string) {
 	if r.Method != http.MethodPost {
 		writeArtworkWorkspaceMethodError(w)
 		return
@@ -258,12 +353,67 @@ func (s *Server) handleArtworkConfirmStale(w http.ResponseWriter, r *http.Reques
 		writeArtworkWorkspaceError(w, err, true)
 		return
 	}
-	draft, err := store.ConfirmStalePrompt(draftID, request.ExpectedVersion, request.SourceSignature)
+	draft, err := store.GetDraft(draftID)
+	if err != nil {
+		writeArtworkWorkspaceError(w, err, false)
+		return
+	}
+	if draft.PromptSource != artworkpkg.PromptSourceAI {
+		writeArtworkWorkspaceError(w, artworkpkg.ErrConflict, false)
+		return
+	}
+	source, err := buildArtworkSourceSnapshot(manifest, draft)
+	if err != nil {
+		writeArtworkWorkspaceError(w, err, false)
+		return
+	}
+	draft, err = store.ConfirmStalePromptCurrent(draftID, request.ExpectedVersion, request.SourceSignature, source)
 	if err != nil {
 		writeArtworkWorkspaceError(w, err, true)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"draft": draft.Public()})
+	writeJSON(w, http.StatusOK, map[string]any{"draft": draft.PublicWithFreshness(source)})
+}
+
+func (s *Server) handleArtworkPromptJobRoute(w http.ResponseWriter, r *http.Request, store *artworkpkg.WorkspaceStore, parts []string, draftID string) {
+	if r.Method != http.MethodGet {
+		writeArtworkWorkspaceMethodError(w)
+		return
+	}
+	if len(parts) == 0 {
+		limit, err := artworkListLimit(r)
+		if err != nil {
+			writeArtworkWorkspaceError(w, err, true)
+			return
+		}
+		if draftID == "" {
+			draftID = strings.TrimSpace(r.URL.Query().Get("draft_id"))
+		}
+		page, err := store.ListPromptJobs(r.URL.Query().Get("cursor"), limit, draftID)
+		if err != nil {
+			writeArtworkWorkspaceError(w, err, false)
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+		return
+	}
+	if len(parts) != 1 || draftID != "" {
+		http.NotFound(w, r)
+		return
+	}
+	job, err := store.GetPromptJob(parts[0])
+	if err != nil {
+		writeArtworkWorkspaceError(w, err, false)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job": artworkPromptJobDetail{PromptJobView: job.Public(), Source: job.Source}})
+}
+
+func buildArtworkSourceSnapshot(manifest ProjectManifest, draft artworkpkg.Draft) (artworkpkg.SourceSnapshot, error) {
+	return artworkpkg.BuildSourceSnapshot(
+		storepkg.NewStore(manifest.OutputDir), draft.WorkType, draft.Scope, draft.ScopeID,
+		artworkpkg.ArtworkPromptTemplateVersion,
+	)
 }
 
 func (s *Server) handleArtworkJobRoute(w http.ResponseWriter, r *http.Request, store *artworkpkg.WorkspaceStore, parts []string) {
@@ -471,6 +621,10 @@ func writeArtworkWorkspaceError(w http.ResponseWriter, err error, requestMayBeIn
 		writeArtworkError(w, http.StatusConflict, "idempotency_conflict", "idempotency key was already used for another artwork request", artworkpkg.DeliveryNotSent)
 	case errors.Is(err, artworkpkg.ErrAppliedAsset):
 		writeArtworkError(w, http.StatusConflict, "asset_is_applied", "applied artwork assets cannot be deleted", artworkpkg.DeliveryNotSent)
+	case errors.Is(err, artworkpkg.ErrStalePrompt):
+		writeArtworkError(w, http.StatusConflict, "stale_prompt_confirmation_required", "artwork prompt source changed; confirm the current source digest before image generation", artworkpkg.DeliveryNotSent)
+	case errors.Is(err, artworkpkg.ErrSourceUnavailable):
+		writeArtworkError(w, http.StatusConflict, "artwork_source_unavailable", "published artwork source is unavailable for the selected scope", artworkpkg.DeliveryNotSent)
 	case errors.Is(err, artworkpkg.ErrConflict):
 		writeArtworkError(w, http.StatusConflict, "artwork_conflict", "artwork operation conflicts with current project state", artworkpkg.DeliveryNotSent)
 	case errors.Is(err, artworkpkg.ErrInvalidCursor):
@@ -480,4 +634,26 @@ func writeArtworkWorkspaceError(w http.ResponseWriter, err error, requestMayBeIn
 	default:
 		writeArtworkError(w, http.StatusInternalServerError, "artwork_storage_failed", "artwork workspace operation failed", artworkpkg.DeliveryNotSent)
 	}
+}
+
+func writeArtworkPromptGenerationError(w http.ResponseWriter, err error, job artworkpkg.PromptJobView) {
+	status := http.StatusInternalServerError
+	code := artworkpkg.PromptFailureCode(err)
+	message := "artwork prompt generation failed"
+	var versionErr *artworkpkg.VersionConflictError
+	switch {
+	case errors.As(err, &versionErr):
+		status = http.StatusConflict
+		message = "artwork draft changed before the generated prompt could be saved"
+	case errors.Is(err, artworkpkg.ErrPromptEmpty), errors.Is(err, artworkpkg.ErrPromptTooLong):
+		status = http.StatusUnprocessableEntity
+		message = "configured text model returned an invalid artwork prompt"
+	case errors.Is(err, artworkpkg.ErrPromptModel):
+		status = http.StatusBadGateway
+		message = "configured text model could not generate an artwork prompt"
+	}
+	writeJSON(w, status, map[string]any{
+		"error": map[string]any{"code": code, "message": message, "delivery": artworkpkg.DeliveryNotSent},
+		"job":   job,
+	})
 }

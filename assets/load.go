@@ -22,6 +22,7 @@ var stylesFS embed.FS
 
 // Prompts 表示嵌入的提示词集合。
 type Prompts struct {
+	Artwork                     string
 	Coordinator                 string
 	ArchitectShort              string
 	ArchitectLong               string
@@ -125,6 +126,10 @@ func loadReferences(style string) tools.References {
 
 func loadPrompts() Prompts {
 	return Prompts{
+		// Artwork is intentionally not wrapped in the user global prompt. Its
+		// dedicated template is versioned with the source snapshot and is the
+		// complete system instruction for this isolated one-call workflow.
+		Artwork:                     strings.TrimSpace(mustRead(promptsFS, "prompts/artwork.md")),
 		Coordinator:                 loadRolePrompt("prompts/coordinator.md", "coordinator"),
 		ArchitectShort:              loadRolePrompt("prompts/architect-short.md", "architect"),
 		ArchitectLong:               loadRolePrompt("prompts/architect-long.md", "architect"),

@@ -20,6 +20,8 @@ func TestProductionModelCallInventoryIsExplicit(t *testing.T) {
 		"internal/bootstrap/provider_rate_limit.go",
 		"internal/bootstrap/provider_factory.go",
 		"internal/bootstrap/runtime_fallback.go",
+		"internal/artwork/prompt_generator.go",
+		"internal/artwork/workspace_worker.go",
 		"internal/globalprompt/model.go",
 		"internal/host/adapt/runner.go",
 		"internal/host/adapt/semantic_audit.go",

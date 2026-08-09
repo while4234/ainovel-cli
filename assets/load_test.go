@@ -18,8 +18,23 @@ func TestLoadPromptsApplyGlobalPrompt(t *testing.T) {
 	for i := 0; i < value.NumField(); i++ {
 		name := typ.Field(i).Name
 		prompt := value.Field(i).String()
+		if name == "Artwork" {
+			continue
+		}
 		if !strings.HasPrefix(prompt, prefix) {
 			t.Fatalf("%s prompt does not start with the global prompt", name)
+		}
+	}
+}
+
+func TestArtworkPromptIsDedicatedAndNotGlobalWrapped(t *testing.T) {
+	prompt := Load("").Prompts.Artwork
+	if strings.HasPrefix(prompt, globalprompt.Text()) {
+		t.Fatal("artwork prompt must not inherit the mutable user global prompt")
+	}
+	for _, want := range []string{"one editable image-generation prompt", "bounded published evidence", "at most 4000 Unicode characters", "Do not return JSON"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("artwork prompt missing %q", want)
 		}
 	}
 }

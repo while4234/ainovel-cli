@@ -2,8 +2,10 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,9 +15,207 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/assets"
 	artworkpkg "github.com/voocel/ainovel-cli/internal/artwork"
+	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/globalprompt"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestArtworkPromptAPIUsesOneCallAndRequiresCurrentDigestConfirmation(t *testing.T) {
+	imageBytes := fixedArtworkPNG(t)
+	var gatewayCalls atomic.Int32
+	var forwardedPrompt atomic.Value
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gatewayCalls.Add(1)
+		var request struct {
+			Prompt string `json:"prompt"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode image request: %v", err)
+		}
+		forwardedPrompt.Store(request.Prompt)
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"b64_json": base64.StdEncoding.EncodeToString(imageBytes)}}})
+	}))
+	defer gateway.Close()
+
+	cfg := testWebConfig(t)
+	cfg.ImageGateway = &artworkpkg.ImageGatewayConfig{BaseURL: gateway.URL, APIKey: "fake-image-key", DefaultModel: "a2e", RequestTimeoutSeconds: 10}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	project, err := server.store.CreateProject("Artwork Prompt API")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectStore := storepkg.NewStore(project.OutputDir)
+	if err := projectStore.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectStore.Foundation.SaveCAS(domain.StoryFoundation{Premise: "A lighthouse defends a winter harbor."}, 0); err != nil {
+		t.Fatal(err)
+	}
+	volumeID := domain.LegacyStructureID(project.ID, domain.StructureKindVolume, "volume-1")
+	arcID := domain.LegacyStructureID(project.ID, domain.StructureKindArc, "volume-1/arc-1")
+	chapterID := domain.LegacyStructureID(project.ID, domain.StructureKindChapter, "volume-1/arc-1/chapter-1")
+	if err := projectStore.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		ID: volumeID, Index: 1, Title: "Winter Harbor", Theme: "hope",
+		Arcs: []domain.ArcOutline{{ID: arcID, Index: 1, Title: "Storm", Goal: "relight the beacon", Chapters: []domain.OutlineEntry{{ID: chapterID, Chapter: 1, Title: "The Beacon", CoreEvent: "the lamp fails", Hook: "a blue flame appears"}}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := projectStore.Summaries.SaveSummary(domain.ChapterSummary{Chapter: 1, Summary: "The keeper discovers a blue flame."}); err != nil {
+		t.Fatal(err)
+	}
+
+	textModel := &artworkWebPromptModel{response: "exact editable generated prompt"}
+	server.artworkRuntime.promptModelFactory = func(ProjectManifest) (agentcore.ChatModel, artworkpkg.TextModelSnapshot, error) {
+		return globalprompt.WrapModel(textModel), artworkpkg.TextModelSnapshot{Provider: "fake-provider", Model: "fake-text", ReasoningEffort: "low"}, nil
+	}
+	handler := server.Handler()
+	base := "/api/projects/" + project.ID + "/artwork"
+	created := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts", `{"work_type":"cover","scope":"project","prompt":"manual fallback","model_id":"a2e","size":"1080x1080","idempotency_key":"prompt-draft"}`, "")
+	var createPayload struct {
+		Draft artworkpkg.DraftView `json:"draft"`
+	}
+	decodeArtworkResponse(t, created, &createPayload)
+	draft := createPayload.Draft
+
+	promptRequest := `{"expected_version":1,"idempotency_key":"prompt-call-one"}`
+	generated := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts/"+draft.ID+"/generate-prompt", promptRequest, "")
+	if generated.Code != http.StatusCreated {
+		t.Fatalf("generate prompt status=%d body=%s", generated.Code, generated.Body.String())
+	}
+	var generatedPayload struct {
+		Job   artworkpkg.PromptJobView `json:"job"`
+		Draft artworkpkg.DraftView     `json:"draft"`
+	}
+	decodeArtworkResponse(t, generated, &generatedPayload)
+	draft = generatedPayload.Draft
+	if textModel.calls != 1 || draft.Prompt != textModel.response || draft.PromptSource != artworkpkg.PromptSourceAI || generatedPayload.Job.Status != artworkpkg.PromptJobSucceeded {
+		t.Fatalf("model calls=%d draft=%+v job=%+v", textModel.calls, draft, generatedPayload.Job)
+	}
+	if len(textModel.messages) != 2 || textModel.messages[0].TextContent() != server.bundle.Prompts.Artwork || strings.HasPrefix(textModel.messages[0].TextContent(), globalprompt.Text()) {
+		t.Fatalf("artwork system prompt was not isolated: %+v", textModel.messages)
+	}
+	repeated := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts/"+draft.ID+"/generate-prompt", promptRequest, "")
+	if repeated.Code != http.StatusOK || textModel.calls != 1 {
+		t.Fatalf("idempotent prompt status=%d calls=%d body=%s", repeated.Code, textModel.calls, repeated.Body.String())
+	}
+
+	jobDetail := performProjectArtworkRequest(t, handler, http.MethodGet, base+"/prompt-jobs/"+generatedPayload.Job.ID, "", "")
+	history := performProjectArtworkRequest(t, handler, http.MethodGet, base+"/drafts/"+draft.ID+"/prompt-jobs", "", "")
+	workspace := performProjectArtworkRequest(t, handler, http.MethodGet, base, "", "")
+	if jobDetail.Code != http.StatusOK || history.Code != http.StatusOK || workspace.Code != http.StatusOK {
+		t.Fatalf("prompt query status detail/history/workspace=%d/%d/%d", jobDetail.Code, history.Code, workspace.Code)
+	}
+	if strings.Contains(jobDetail.Body.String(), "fake-image-key") || strings.Contains(jobDetail.Body.String(), gateway.URL) || !strings.Contains(jobDetail.Body.String(), generatedPayload.Job.SourceDigest) {
+		t.Fatalf("prompt detail leaked configuration or lost provenance: %s", jobDetail.Body.String())
+	}
+
+	if err := projectStore.Summaries.SaveSummary(domain.ChapterSummary{Chapter: 1, Summary: "The blue flame moves into the storm."}); err != nil {
+		t.Fatal(err)
+	}
+	detail := performProjectArtworkRequest(t, handler, http.MethodGet, base+"/drafts/"+draft.ID, "", "")
+	var detailPayload struct {
+		Draft artworkpkg.DraftView `json:"draft"`
+	}
+	decodeArtworkResponse(t, detail, &detailPayload)
+	stale := detailPayload.Draft
+	if !stale.IsStale || stale.SourceStatus != "stale" || stale.CurrentSourceSignature == "" || stale.CurrentSourceSignature == stale.SourceSignature || !stale.UpdatedAt.Equal(draft.UpdatedAt) {
+		t.Fatalf("stale detail mutated or missed freshness: before=%+v after=%+v", draft, stale)
+	}
+	staleSubmit := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts/"+draft.ID+"/generate-image", `{"expected_version":2,"idempotency_key":"stale-image"}`, "")
+	if staleSubmit.Code != http.StatusConflict || !strings.Contains(staleSubmit.Body.String(), "stale_prompt_confirmation_required") || gatewayCalls.Load() != 0 {
+		t.Fatalf("stale submit status=%d calls=%d body=%s", staleSubmit.Code, gatewayCalls.Load(), staleSubmit.Body.String())
+	}
+	wrongConfirm := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts/"+draft.ID+"/confirm-stale-prompt", `{"expected_version":2,"source_signature":"wrong-digest"}`, "")
+	if wrongConfirm.Code != http.StatusConflict {
+		t.Fatalf("wrong confirmation status=%d body=%s", wrongConfirm.Code, wrongConfirm.Body.String())
+	}
+	confirmBody, _ := json.Marshal(map[string]any{"expected_version": 2, "source_signature": stale.CurrentSourceSignature})
+	confirmedResponse := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts/"+draft.ID+"/confirm-stale-prompt", string(confirmBody), "")
+	if confirmedResponse.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", confirmedResponse.Code, confirmedResponse.Body.String())
+	}
+	var confirmedPayload struct {
+		Draft artworkpkg.DraftView `json:"draft"`
+	}
+	decodeArtworkResponse(t, confirmedResponse, &confirmedPayload)
+	confirmed := confirmedPayload.Draft
+	if confirmed.Version != 3 || confirmed.ConfirmedSignature != stale.CurrentSourceSignature || confirmed.ConfirmedAt == nil {
+		t.Fatalf("confirmed draft=%+v", confirmed)
+	}
+
+	imageResponse := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts/"+draft.ID+"/generate-image", `{"expected_version":3,"idempotency_key":"confirmed-image"}`, "")
+	if imageResponse.Code != http.StatusAccepted {
+		t.Fatalf("confirmed image status=%d body=%s", imageResponse.Code, imageResponse.Body.String())
+	}
+	var imagePayload struct {
+		Job artworkpkg.ImageJobView `json:"job"`
+	}
+	decodeArtworkResponse(t, imageResponse, &imagePayload)
+	completed := waitForArtworkJob(t, handler, base, imagePayload.Job.ID, artworkpkg.JobSucceeded)
+	if gatewayCalls.Load() != 1 || forwardedPrompt.Load() != textModel.response || completed.StaleConfirmation == nil || completed.StaleConfirmation.ConfirmedSourceDigest != stale.CurrentSourceSignature {
+		t.Fatalf("image forwarding calls=%d prompt=%v job=%+v", gatewayCalls.Load(), forwardedPrompt.Load(), completed)
+	}
+	assetResponse := performProjectArtworkRequest(t, handler, http.MethodGet, base+"/assets/"+completed.AssetID, "", "")
+	if !strings.Contains(assetResponse.Body.String(), stale.CurrentSourceSignature) || !strings.Contains(assetResponse.Body.String(), textModel.response) {
+		t.Fatalf("asset lost prompt/source provenance: %s", assetResponse.Body.String())
+	}
+}
+
+func TestArtworkPromptModelUnavailableKeepsManualImageGenerationUsable(t *testing.T) {
+	imageBytes := fixedArtworkPNG(t)
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"b64_json": base64.StdEncoding.EncodeToString(imageBytes)}}})
+	}))
+	defer gateway.Close()
+	cfg := testWebConfig(t)
+	cfg.ImageGateway = &artworkpkg.ImageGatewayConfig{BaseURL: gateway.URL, APIKey: "fake", DefaultModel: "a2e", RequestTimeoutSeconds: 10}
+	server := NewServer(cfg, assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	server.artworkRuntime.promptModelFactory = func(ProjectManifest) (agentcore.ChatModel, artworkpkg.TextModelSnapshot, error) {
+		return nil, artworkpkg.TextModelSnapshot{}, errors.New("text model unavailable")
+	}
+	project, _ := server.store.CreateProject("Manual Artwork Fallback")
+	projectStore := storepkg.NewStore(project.OutputDir)
+	_ = projectStore.Init()
+	_, _ = projectStore.Foundation.SaveCAS(domain.StoryFoundation{Premise: "manual fallback source"}, 0)
+	handler := server.Handler()
+	base := "/api/projects/" + project.ID + "/artwork"
+	created := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts", `{"work_type":"cover","scope":"project","prompt":"manual prompt remains usable","model_id":"a2e","size":"1080x1080","idempotency_key":"manual-fallback"}`, "")
+	var payload struct {
+		Draft artworkpkg.DraftView `json:"draft"`
+	}
+	decodeArtworkResponse(t, created, &payload)
+	unavailable := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts/"+payload.Draft.ID+"/generate-prompt", `{"expected_version":1,"idempotency_key":"unavailable-prompt"}`, "")
+	if unavailable.Code != http.StatusConflict || !strings.Contains(unavailable.Body.String(), "prompt_model_unavailable") {
+		t.Fatalf("unavailable prompt status=%d body=%s", unavailable.Code, unavailable.Body.String())
+	}
+	image := performProjectArtworkRequest(t, handler, http.MethodPost, base+"/drafts/"+payload.Draft.ID+"/generate-image", `{"expected_version":1,"idempotency_key":"manual-image"}`, "")
+	if image.Code != http.StatusAccepted {
+		t.Fatalf("manual image status=%d body=%s", image.Code, image.Body.String())
+	}
+}
+
+type artworkWebPromptModel struct {
+	calls    int
+	response string
+	messages []agentcore.Message
+}
+
+func (m *artworkWebPromptModel) Generate(_ context.Context, messages []agentcore.Message, _ []agentcore.ToolSpec, _ ...agentcore.CallOption) (*agentcore.LLMResponse, error) {
+	m.calls++
+	m.messages = append([]agentcore.Message(nil), messages...)
+	return &agentcore.LLMResponse{Message: agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.TextBlock(m.response)}}}, nil
+}
+
+func (m *artworkWebPromptModel) GenerateStream(context.Context, []agentcore.Message, []agentcore.ToolSpec, ...agentcore.CallOption) (<-chan agentcore.StreamEvent, error) {
+	return nil, errors.New("unexpected stream call")
+}
+
+func (m *artworkWebPromptModel) SupportsTools() bool { return false }
 
 func TestArtworkWorkspaceAPIEndToEndWithFakeGateway(t *testing.T) {
 	imageBytes := fixedArtworkPNG(t)
