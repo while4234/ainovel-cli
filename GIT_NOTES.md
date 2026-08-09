@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-08 `034f45d` `feat: optimize DeepSeek V4 Flash reasoning`:
+  exposes only the native off/high/max reasoning choices, defaults V4 Flash to
+  max unless an explicit role/model/global override exists, and routes the
+  model through DeepSeek's native thinking protocol even on an OpenAI-compatible
+  relay. Bootstrap and all 420 Web UI tests pass; the configured OpenCode relay
+  accepted a live max-effort request and the rebuilt Web service is healthy on
+  port 9898. The unrelated pre-existing adaptation placeholder regression still
+  fails in `internal/entry/web` (`CanStart=true`).
 - 2026-08-08 `9b68e80` `fix: deduplicate character review contexts`:
   deterministically removes duplicate premise/startup/lifecycle evidence while
   assembling Character packets, stable-deduplicates repeated list values, and
@@ -61,7 +69,11 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   independent Ed25519 receipt canonicalization, and removes two deterministic
   audit false positives. Real validation completed `插翅难飞` at 55/55 chapters
   and 221,710 words with a signed 132-layer completion audit.
-- 2026-07-31 `this commit` `fix: expose interrupted adaptation planning`:
+- 2026-07-31 `this commit` `fix: allow bounded full-book outline audits`:
+  raises only `adapt_planner_audit` to a 128 KiB compiled-input boundary so
+  the bounded full-book pre-writing outline audit can include all confirmed
+  detail batches. The real 21-chapter audit package was 114,689 bytes.
+- 2026-07-31 `0706faa` `fix: expose interrupted adaptation planning`:
   marks durable adaptation generation as paused and recoverable when no live
   proposal action exists after a server restart, while preserving the normal
   running presentation for active generation. The workflow panel now exposes

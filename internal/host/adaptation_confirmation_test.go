@@ -409,6 +409,33 @@ func TestHostResumeFailsClosedWithoutDurableCoreCastBinding(t *testing.T) {
 	}
 }
 
+func TestResumeCoreCastGateAllowsPendingAdaptationCharacterRun(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	signature := strings.Repeat("a", 64)
+	if _, err := st.CoreCast.SaveGateBinding(storepkg.CoreCastGateBinding{
+		Mode:                 domain.CoreCastModeAdaptation,
+		DraftRevision:        1,
+		DraftHash:            "adaptation-draft",
+		SourceSignature:      signature,
+		AdaptationIntentHash: signature,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Adaptation.SetPlanningWorkflowStage(
+		domain.AdaptationPlanningStageTargetFoundationGenerating,
+		-1,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RequireResumeCoreCastGate(st, true); err != nil {
+		t.Fatalf("pending adaptation Character run was blocked before it could create CoreCast: %v", err)
+	}
+}
+
 func adaptationConfirmationProposalFixture(t *testing.T, st *storepkg.Store) domain.AdaptationPlan {
 	t.Helper()
 	plan := domain.AdaptationPlan{
