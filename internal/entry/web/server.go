@@ -47,6 +47,7 @@ type Server struct {
 	static           fs.FS
 	sourceDownloader simulationSourceDownloader
 	resumeScheduler  *ResumeScheduler
+	artworkRuntime   *artworkRuntime
 	schedulerMu      sync.Mutex
 	schedulerCancel  context.CancelFunc
 	schedulerDone    chan struct{}
@@ -139,6 +140,7 @@ func NewServer(cfg bootstrap.Config, bundle assets.Bundle, runtimeRoot string) *
 		sourceDownloader: newSimulationSourceDownloader(runtimeRoot),
 	}
 	s.sessions = NewSessionManager(cfg, bundle, store)
+	s.artworkRuntime = newArtworkRuntime(s)
 	s.resumeScheduler = NewResumeScheduler(runtimeRoot, ResumeSchedulerDeps{
 		LoadConfig: func() (bootstrap.ResumeScheduleConfig, error) {
 			return s.currentConfig().ResumeSchedule, nil
@@ -201,6 +203,9 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Close() {
+	if s.artworkRuntime != nil {
+		s.artworkRuntime.close()
+	}
 	s.schedulerMu.Lock()
 	cancel := s.schedulerCancel
 	done := s.schedulerDone
@@ -467,6 +472,10 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(action, "manuscript/") {
 		s.handleManuscriptRoute(w, r, id, action)
+		return
+	}
+	if action == "artwork" || strings.HasPrefix(action, "artwork/") {
+		s.handleProjectArtwork(w, r, id, strings.TrimPrefix(strings.TrimPrefix(action, "artwork"), "/"))
 		return
 	}
 	switch action {

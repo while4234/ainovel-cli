@@ -1,7 +1,7 @@
 # AI2API Image Gateway
 
 AINovel uses one optional global AI2API gateway for image-model discovery and
-future artwork generation. Configure it only in the global
+project artwork generation. Configure it only in the global
 `~/.ainovel/config.json`; project overlays do not override or persist the
 gateway credential.
 
@@ -39,9 +39,12 @@ only from the selected registry capability. It always submits `n: 1` and
 decoded image sizes, and marks a connection interruption before a response as
 uncertain delivery. Callers must not retry an uncertain delivery automatically.
 
+The durable project-scoped store, one-shot worker, recovery rules, and gallery
+HTTP APIs are documented in [Project Artwork Workspace](artwork-workspace.md).
+
 ## Test safety
 
 Automated tests use `httptest` servers or fake transports only. They must never
 call a live model, a paid gateway, or any real `/v1/images/generations`
 endpoint. Live gateway verification and live image generation are deliberately
-outside the PR-01 validation contract.
+outside the automated validation contract.

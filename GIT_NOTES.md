@@ -46,7 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
-- 2026-08-09 `this commit` `feat: add AI2API image gateway foundation`: adds
+- 2026-08-09 `this commit` `feat: add durable artwork workspace`: adds the
+  project-scoped schema-v1 draft/prompt/job/asset store, one-shot background
+  image worker, immutable validated images, protected gallery APIs, operation
+  journals, restart reconciliation, and clone-safe job handling. Focused
+  Artwork tests, Web pipeline and clone regressions, the CLI build, formatting,
+  and diff checks pass using only fake transports, local `httptest` gateways,
+  and fixed small images; no live image request was made.
+- 2026-08-09 `20a39e1` `feat: add AI2API image gateway foundation`: adds
   global-only normalized image-gateway configuration, secret-safe config and
   model APIs, a versioned 12-enabled/3-disabled StarWriter capability registry,
   and a bounded one-shot AI2API client with explicit uncertain-delivery errors.

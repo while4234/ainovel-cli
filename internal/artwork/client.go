@@ -171,13 +171,17 @@ func (c *GatewayClient) Generate(ctx context.Context, input GenerateRequest) (Ge
 	var result struct {
 		Data []struct {
 			B64JSON string `json:"b64_json"`
+			URL     string `json:"url"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(responseBody, &result); err != nil || len(result.Data) != 1 {
 		return GeneratedImage{}, &GatewayError{Code: "gateway_malformed_response", Message: "image gateway returned invalid image data", Delivery: DeliveryResponded}
 	}
 	encoded := strings.TrimSpace(result.Data[0].B64JSON)
-	if encoded == "" || base64.StdEncoding.DecodedLen(len(encoded)) > MaxImageBytes {
+	if encoded == "" {
+		return GeneratedImage{}, &GatewayError{Code: "gateway_missing_b64_json", Message: "image gateway did not return required b64_json image data", Delivery: DeliveryResponded}
+	}
+	if base64.StdEncoding.DecodedLen(len(encoded)) > MaxImageBytes {
 		return GeneratedImage{}, &GatewayError{Code: "gateway_image_too_large", Message: "image gateway response exceeds the image size limit", Delivery: DeliveryResponded}
 	}
 	decoded, err := base64.StdEncoding.DecodeString(encoded)

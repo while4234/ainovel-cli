@@ -6,6 +6,7 @@ require (
 	github.com/chromedp/chromedp v0.14.2
 	github.com/voocel/agentcore v1.7.9
 	github.com/voocel/litellm v1.8.5
+	golang.org/x/image v0.43.0
 	golang.org/x/text v0.38.0
 )
 
@@ -16,6 +17,5 @@ require (
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
-	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 )

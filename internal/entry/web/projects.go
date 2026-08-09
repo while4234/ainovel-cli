@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
+	"github.com/voocel/ainovel-cli/internal/artwork"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/host"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
@@ -215,12 +217,17 @@ func (s *ProjectStore) cloneProject(sourceID, name string, replan bool) (Project
 	}()
 
 	if err := storepkg.WithCloneReadyStoryFoundationSnapshot(source.OutputDir, func() error {
-		return cloneProjectTree(source.RootDir, stagingRoot)
+		return artwork.WithCloneSnapshot(source.OutputDir, func() error {
+			return cloneProjectTree(source.RootDir, stagingRoot)
+		})
 	}); err != nil {
 		return ProjectManifest{}, err
 	}
 	if err := rebaseClonedProjectJSON(stagingRoot, source.RootDir, finalRoot); err != nil {
 		return ProjectManifest{}, err
+	}
+	if err := artwork.PrepareClonedWorkspace(filepath.Join(stagingRoot, "output")); err != nil {
+		return ProjectManifest{}, fmt.Errorf("prepare cloned artwork workspace: %w", err)
 	}
 	clonedRevisions := storepkg.NewRevisionStore(filepath.Join(stagingRoot, "output"))
 	if err := clonedRevisions.DetachClonedNormalFlowLease(); err != nil {
@@ -231,7 +238,7 @@ func (s *ProjectStore) cloneProject(sourceID, name string, replan bool) (Project
 			return ProjectManifest{}, fmt.Errorf("prepare replanning clone: %w", err)
 		}
 	}
-	if err := os.Rename(stagingRoot, finalRoot); err != nil {
+	if err := installClonedProject(stagingRoot, finalRoot); err != nil {
 		return ProjectManifest{}, fmt.Errorf("install cloned project: %w", err)
 	}
 	stagingRoot = ""
@@ -261,6 +268,23 @@ func (s *ProjectStore) cloneProject(sourceID, name string, replan bool) (Project
 	}
 	installed = true
 	return manifest, nil
+}
+
+func installClonedProject(stagingRoot, finalRoot string) error {
+	err := os.Rename(stagingRoot, finalRoot)
+	if err == nil || runtime.GOOS != "windows" {
+		return err
+	}
+	// Windows scanners can briefly retain a handle after the last cloned file
+	// is closed. Retrying the exact atomic rename does not broaden its target or
+	// alter history, and avoids exposing a partially installed project.
+	for attempt := 1; attempt <= 5; attempt++ {
+		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
+		if err = os.Rename(stagingRoot, finalRoot); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 var replanningSourceArtifacts = []string{
@@ -417,7 +441,7 @@ func cloneProgramOwnedDirectory(relative string) bool {
 	}
 	root := strings.Split(rel, "/")[0]
 	switch root {
-	case "chapters", "summaries", "structure", "meta", "novel", "logs", "checkpoints", "sessions", "exports":
+	case "chapters", "summaries", "structure", "meta", "novel", "logs", "checkpoints", "sessions", "exports", "artwork":
 		return true
 	default:
 		return false
@@ -453,6 +477,9 @@ func cloneProgramOwnedPath(path string) bool {
 		return false
 	}
 	rel := strings.TrimPrefix(path, "output/")
+	if strings.HasPrefix(rel, "artwork/") {
+		return cloneProgramOwnedArtworkPath(rel)
+	}
 	if rel == "meta/runtime" || strings.HasPrefix(rel, "meta/runtime/") {
 		return false
 	}
@@ -468,6 +495,42 @@ func cloneProgramOwnedPath(path string) bool {
 	default:
 		return false
 	}
+}
+
+func cloneProgramOwnedArtworkPath(relative string) bool {
+	parts := strings.Split(relative, "/")
+	if len(parts) == 2 && parts[0] == "artwork" && parts[1] == "schema.json" {
+		return true
+	}
+	if len(parts) != 3 || parts[0] != "artwork" {
+		return false
+	}
+	directory, name := parts[1], parts[2]
+	switch directory {
+	case "drafts", "prompts", "jobs", "assets", "apply", "journals":
+		return strings.HasSuffix(name, ".json") && cloneArtworkSafeID(strings.TrimSuffix(name, ".json"))
+	case "images":
+		extension := filepath.Ext(name)
+		return (extension == ".png" || extension == ".jpg" || extension == ".webp") && cloneArtworkSafeID(strings.TrimSuffix(name, extension))
+	case "staging":
+		base := strings.Split(name, ".")[0]
+		return (strings.HasSuffix(name, ".pending") || strings.HasSuffix(name, ".delete")) && cloneArtworkSafeID(base)
+	default:
+		return false
+	}
+}
+
+func cloneArtworkSafeID(id string) bool {
+	if len(id) < 3 || len(id) > 128 {
+		return false
+	}
+	for index, char := range id {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || (index > 0 && char == '-') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func cloneAllowedExtension(path string, extensions ...string) bool {
