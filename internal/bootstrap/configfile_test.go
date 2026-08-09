@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/voocel/ainovel-cli/internal/artwork"
 	"github.com/voocel/ainovel-cli/internal/errs"
 )
 
@@ -42,6 +43,75 @@ func TestMergeConfigScheduledResumeFields(t *testing.T) {
 	}
 	if len(merged.ResumeSchedule.DailyTimes) != 1 || merged.ResumeSchedule.DailyTimes[0] != "15:00" {
 		t.Fatalf("project enabled overlay replaced global times: %#v", merged.ResumeSchedule.DailyTimes)
+	}
+}
+
+func TestMergeConfigKeepsImageGatewayGlobalOnly(t *testing.T) {
+	base := Config{ImageGateway: &artwork.ImageGatewayConfig{BaseURL: "https://global.example", APIKey: "global-secret"}}
+	overlay := Config{ImageGateway: &artwork.ImageGatewayConfig{BaseURL: "https://project.example", APIKey: "project-secret"}}
+
+	merged := MergeConfig(base, overlay)
+	if merged.ImageGateway == nil || merged.ImageGateway.BaseURL != "https://global.example" || merged.ImageGateway.APIKey != "global-secret" {
+		t.Fatalf("project overlay changed global image gateway: %+v", merged.ImageGateway)
+	}
+}
+
+func TestLoadConfigNormalizesGlobalImageGatewayAndIgnoresProjectOverride(t *testing.T) {
+	writeGlobal(t, `{
+  "provider": "openrouter",
+  "model": "model",
+  "providers": {"openrouter": {"api_key": "llm-key"}},
+  "image_gateway": {
+    "base_url": "https://gateway.example/proxy/v1/images/generations",
+    "api_key": "global-image-key"
+  }
+}`)
+	project := t.TempDir()
+	t.Chdir(project)
+	writeProjectConfig(t, `{
+  "image_gateway": {
+    "base_url": "https://project.example/v1",
+    "api_key": "project-image-key"
+  }
+}`)
+
+	config, err := LoadConfig("")
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if config.ImageGateway == nil {
+		t.Fatal("global image gateway was not loaded")
+	}
+	if config.ImageGateway.BaseURL != "https://gateway.example/proxy" || config.ImageGateway.APIKey != "global-image-key" {
+		t.Fatalf("image gateway = %+v", config.ImageGateway)
+	}
+	if config.ImageGateway.DefaultModel != artwork.DefaultModelID || config.ImageGateway.RequestTimeoutSeconds != artwork.DefaultGatewayRequestTimeoutSeconds {
+		t.Fatalf("image gateway defaults = %+v", config.ImageGateway)
+	}
+}
+
+func TestLoadConfigAllowsExplicitConfigToReplaceGlobalImageGateway(t *testing.T) {
+	writeGlobal(t, `{
+  "provider": "openrouter",
+  "model": "global-model",
+  "providers": {"openrouter": {"api_key": "llm-key"}},
+  "image_gateway": {"base_url": "https://global.example", "api_key": "global-image-key"}
+}`)
+	t.Chdir(t.TempDir())
+	overridePath := filepath.Join(t.TempDir(), "override.json")
+	if err := os.WriteFile(overridePath, []byte(`{
+  "model": "override-model",
+  "image_gateway": {"base_url": "https://override.example/v1", "api_key": "override-image-key"}
+}`), 0o600); err != nil {
+		t.Fatalf("write override: %v", err)
+	}
+
+	config, err := LoadConfig(overridePath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if config.ImageGateway == nil || config.ImageGateway.BaseURL != "https://override.example" || config.ImageGateway.APIKey != "override-image-key" {
+		t.Fatalf("explicit image gateway = %+v", config.ImageGateway)
 	}
 }
 

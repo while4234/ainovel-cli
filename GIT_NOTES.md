@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-09 `this commit` `feat: add AI2API image gateway foundation`: adds
+  global-only normalized image-gateway configuration, secret-safe config and
+  model APIs, a versioned 12-enabled/3-disabled StarWriter capability registry,
+  and a bounded one-shot AI2API client with explicit uncertain-delivery errors.
+  All generation and verification coverage uses local `httptest` servers or
+  fake transports; no live image endpoint is called. Bootstrap, focused
+  Artwork/Web tests, the CLI build, and diff checks pass through
+  `go-project.cmd`.
 - 2026-08-09 follow-up `fix: serialize normal-flow lease cleanup`: keeps the
   final Web action active until its durable normal-flow lease is fully
   released, so status polling, session-idle waits, new actions, and test

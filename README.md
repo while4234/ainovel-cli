@@ -394,6 +394,8 @@ Grok 账号登录会打开 xAI 授权链接；如果本机 loopback 回调不可
 
 `providers.<name>.api` 仅对 `type: "openai"` 或内置 `openai` 生效，用于选择 OpenAI 协议 endpoint：`chat`（默认，`/v1/chat/completions`）或 `responses`（`/v1/responses`）。Codex 类代理通常需要配置为 `responses`。
 
+`image_gateway` 是独立的全局 AI2API 图片网关配置，不参与项目级配置合并，也不会写入项目 `.ainovel/config.json`。Web API 只公开 `has_api_key`，不会回传密钥；`POST /api/artwork/config/verify` 只执行带认证的 `GET /v1/models`，不会生成图片。完整契约、模型清单与离线测试边界见 [`docs/artwork-image-gateway.md`](docs/artwork-image-gateway.md)。
+
 `simulation_mode` 控制仿写画像的使用强度，可选值为 `normal` / `reinforced`；省略或留空时默认是 `normal`，新项目也默认使用 `normal`。
 
 Web 右侧的“定时”页签可以配置多个每日恢复时间。服务按 `resume_schedule.timezone` 的墙钟时间扫描全部项目；项目级“设定”可单独关闭。定时恢复只继续已经启动但被中断的生成流程，等待分卷、提案、共创建议或续写审核时不会自动推进。程序当天晚于配置时间启动或从休眠恢复时，遗漏的时间点会合并补跑一次。

@@ -547,6 +547,7 @@ func sanitizeLegacyConfig(path string) ([]byte, error) {
 	cfg.PersistProjectConfig = nil
 	cfg.ProjectOwnedProviders = nil
 	cfg.RuntimeRoot = ""
+	cfg.ImageGateway = nil
 	cfg.Proxy = ""
 	cfg.Notify = bootstrap.NotifyConfig{}
 	for name, provider := range cfg.Providers {

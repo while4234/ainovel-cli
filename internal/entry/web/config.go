@@ -4,6 +4,10 @@ import "github.com/voocel/ainovel-cli/internal/bootstrap"
 
 func cloneWebConfig(cfg bootstrap.Config) bootstrap.Config {
 	out := cfg
+	if cfg.ImageGateway != nil {
+		imageGateway := *cfg.ImageGateway
+		out.ImageGateway = &imageGateway
+	}
 	out.ResumeSchedule.DailyTimes = append([]string(nil), cfg.ResumeSchedule.DailyTimes...)
 	if cfg.ScheduledResumeEnabled != nil {
 		enabled := *cfg.ScheduledResumeEnabled

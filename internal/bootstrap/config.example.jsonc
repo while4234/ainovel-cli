@@ -13,6 +13,17 @@
   // Values like "127.0.0.1:7897" are normalized to "http://127.0.0.1:7897".
   "proxy": "http://127.0.0.1:7897",
 
+  // Optional global AI2API image gateway. This credential is never copied to
+  // project overlays. Root, /v1, and /v1/images/generations URLs normalize to
+  // the same gateway root. Replace the placeholders locally; never commit a
+  // real key. Image requests default to one 330-second, non-retried attempt.
+  "image_gateway": {
+    "base_url": "http://127.0.0.1:8000",
+    "api_key": "replace-with-ai2api-key",
+    "default_model": "a2e",
+    "request_timeout_seconds": 330
+  },
+
   // Provider 凭证库。key 自定义，用作上面 provider 字段引用的目标。
   // 已知 provider（openai/anthropic/gemini/openrouter/deepseek/qwen/glm/grok/mimo/ollama/bedrock）
   // 可省略 type；自定义代理必须显式声明 type 指明 API 协议。

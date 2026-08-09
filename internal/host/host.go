@@ -4060,6 +4060,7 @@ func (h *Host) projectOverlayConfigLocked() bootstrap.Config {
 	}
 	overlay.ProjectOwnedProviders = cloneBoolMap(h.cfg.PersistProviders)
 	overlay.Providers = h.projectOverlayProvidersLocked(overlay)
+	overlay.ImageGateway = nil
 	return overlay
 }
 
@@ -4374,6 +4375,10 @@ func appendUniqueString(values []string, value string) []string {
 
 func cloneProjectConfig(cfg bootstrap.Config) bootstrap.Config {
 	out := cfg
+	if cfg.ImageGateway != nil {
+		imageGateway := *cfg.ImageGateway
+		out.ImageGateway = &imageGateway
+	}
 	out.ResumeSchedule.DailyTimes = append([]string(nil), cfg.ResumeSchedule.DailyTimes...)
 	if cfg.ScheduledResumeEnabled != nil {
 		enabled := *cfg.ScheduledResumeEnabled

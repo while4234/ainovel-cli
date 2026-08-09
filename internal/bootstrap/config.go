@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore/llm"
+	"github.com/voocel/ainovel-cli/internal/artwork"
 	"github.com/voocel/ainovel-cli/internal/codexauth"
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/models"
@@ -487,6 +488,10 @@ type Config struct {
 
 	// WebRuntimeRoot is the optional config-file override for web project storage.
 	RuntimeRoot string `json:"runtime_root,omitempty"`
+
+	// ImageGateway is global-only. Project overlays neither override nor persist
+	// the shared AI2API credential.
+	ImageGateway *artwork.ImageGatewayConfig `json:"image_gateway,omitempty"`
 
 	// ResumeSchedule is global. Project overlays only use
 	// ScheduledResumeEnabled and never replace the global daily times.

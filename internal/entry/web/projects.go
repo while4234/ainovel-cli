@@ -1048,6 +1048,9 @@ func (s *ProjectStore) loadProjectConfig(manifest ProjectManifest) (bootstrap.Co
 		}
 		return bootstrap.Config{}, false, fmt.Errorf("load project config %s: %w", path, err)
 	}
+	// Image gateway credentials are global-only and are never carried forward
+	// from a project overlay, including legacy hand-written overlays.
+	cfg.ImageGateway = nil
 	return cfg, true, nil
 }
 

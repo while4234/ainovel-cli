@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/voocel/ainovel-cli/internal/artwork"
 )
 
 var saveConfigMu sync.Mutex
@@ -70,6 +72,7 @@ func LoadConfig(flagPath string) (Config, error) {
 		case err != nil:
 			slog.Warn("全局配置解析失败，已忽略（可被项目级/--config 覆盖）", "module", "config", "path", p, "err", err)
 		case found:
+			global.ImageGateway = normalizeLoadedImageGateway(global.ImageGateway)
 			cfg = global
 		}
 	}
@@ -90,10 +93,27 @@ func LoadConfig(flagPath string) (Config, error) {
 		if err != nil {
 			return cfg, fmt.Errorf("load config %s: %w", flagPath, err)
 		}
+		overrideImageGateway := override.ImageGateway
+		override.ImageGateway = nil
 		cfg = mergeConfig(cfg, override)
+		if overrideImageGateway != nil {
+			cfg.ImageGateway = normalizeLoadedImageGateway(overrideImageGateway)
+		}
 	}
 
 	return cfg, nil
+}
+
+func normalizeLoadedImageGateway(config *artwork.ImageGatewayConfig) *artwork.ImageGatewayConfig {
+	if config == nil {
+		return nil
+	}
+	normalized, err := config.Normalized()
+	if err != nil {
+		slog.Warn("全局图片网关配置无效，已忽略", "module", "config", "err", err)
+		return nil
+	}
+	return &normalized
 }
 
 // loadOptionalJSON 读取一个可选的配置文件：
@@ -149,6 +169,8 @@ func MergeConfig(base, overlay Config) Config {
 
 // mergeConfig 将 overlay 合并到 base 上。非零值字段覆盖，map 按 key 合并。
 func mergeConfig(base, overlay Config) Config {
+	// ImageGateway is deliberately not merged. It is a global credential and
+	// project overlays must not shadow or inherit it into local persistence.
 	if overlay.ResumeSchedule.DailyTimes != nil {
 		base.ResumeSchedule.DailyTimes = append([]string(nil), overlay.ResumeSchedule.DailyTimes...)
 	}
