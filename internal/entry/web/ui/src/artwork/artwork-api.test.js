@@ -6,6 +6,7 @@ import {
   listArtworkAssets,
   loadArtworkScopeCatalog,
   saveArtworkGatewayConfig,
+  unapplyArtworkAsset,
   updateArtworkDraft
 } from './artwork-api.js';
 
@@ -22,12 +23,15 @@ describe('artwork API helpers', () => {
     await createArtworkDraft('project / one', { work_type: 'cover', idempotency_key: 'create-1' });
     await updateArtworkDraft('project / one', 'draft / one', { expected_version: 1, prompt: 'fog' });
     await generateArtworkImage('project / one', 'draft / one', { expected_version: 2, idempotency_key: 'image-1' });
+    await unapplyArtworkAsset('project / one', 'asset / one');
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       '/api/projects/project%20%2F%20one/artwork/drafts',
       '/api/projects/project%20%2F%20one/artwork/drafts/draft%20%2F%20one',
-      '/api/projects/project%20%2F%20one/artwork/drafts/draft%20%2F%20one/generate-image'
+      '/api/projects/project%20%2F%20one/artwork/drafts/draft%20%2F%20one/generate-image',
+      '/api/projects/project%20%2F%20one/artwork/assets/asset%20%2F%20one/apply'
     ]);
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ expected_version: 1, prompt: 'fog' });
+    expect(fetchMock.mock.calls[3][1].method).toBe('DELETE');
   });
 
   it('keeps API keys write-only and sends clear only when requested', async () => {

@@ -45,8 +45,9 @@ type artworkPromptJobDetail struct {
 
 type artworkAssetHTTPView struct {
 	artworkpkg.AssetView
-	ContentURL  string `json:"content_url"`
-	DownloadURL string `json:"download_url"`
+	ContentURL        string `json:"content_url"`
+	DownloadURL       string `json:"download_url"`
+	AppliedContentURL string `json:"applied_content_url,omitempty"`
 }
 
 func (s *Server) handleProjectArtwork(w http.ResponseWriter, r *http.Request, projectID, action string) {
@@ -481,7 +482,18 @@ func (s *Server) handleArtworkAssetRoute(w http.ResponseWriter, r *http.Request,
 			s.handleArtworkAssetContent(w, r, store, assetID, false)
 		case "download":
 			s.handleArtworkAssetContent(w, r, store, assetID, true)
+		case "applied-content":
+			s.handleArtworkAppliedAssetContent(w, r, store, assetID)
 		case "apply":
+			if r.Method == http.MethodDelete {
+				if err := store.UnapplyAsset(assetID); err != nil {
+					writeArtworkWorkspaceError(w, err, false)
+					return
+				}
+				asset, _ := store.GetAsset(assetID)
+				writeJSON(w, http.StatusOK, map[string]any{"asset": artworkAssetResponse(projectID, asset)})
+				return
+			}
 			if r.Method != http.MethodPost {
 				writeArtworkWorkspaceMethodError(w)
 				return
@@ -517,6 +529,29 @@ func (s *Server) handleArtworkAssetRoute(w http.ResponseWriter, r *http.Request,
 	default:
 		writeArtworkWorkspaceMethodError(w)
 	}
+}
+
+func (s *Server) handleArtworkAppliedAssetContent(w http.ResponseWriter, r *http.Request, store *artworkpkg.WorkspaceStore, assetID string) {
+	if r.Method != http.MethodGet {
+		writeArtworkWorkspaceMethodError(w)
+		return
+	}
+	asset, err := store.GetAsset(assetID)
+	if err != nil {
+		writeArtworkWorkspaceError(w, err, false)
+		return
+	}
+	state, content, err := store.ReadAppliedDerivative(asset.WorkType, asset.Scope, asset.ScopeID)
+	if err != nil || state.AssetID != assetID {
+		writeArtworkWorkspaceError(w, artworkpkg.ErrNotFound, false)
+		return
+	}
+	w.Header().Set("Content-Type", state.Derivative.MIMEType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(content)
 }
 
 func (s *Server) handleArtworkAssetContent(w http.ResponseWriter, r *http.Request, store *artworkpkg.WorkspaceStore, assetID string, download bool) {
@@ -572,7 +607,11 @@ func (s *Server) handleArtworkAssetReuse(w http.ResponseWriter, r *http.Request,
 
 func artworkAssetResponse(projectID string, asset artworkpkg.AssetView) artworkAssetHTTPView {
 	base := "/api/projects/" + url.PathEscape(projectID) + "/artwork/assets/" + url.PathEscape(asset.ID)
-	return artworkAssetHTTPView{AssetView: asset, ContentURL: base + "/content", DownloadURL: base + "/download"}
+	response := artworkAssetHTTPView{AssetView: asset, ContentURL: base + "/content", DownloadURL: base + "/download"}
+	if asset.Applied {
+		response.AppliedContentURL = base + "/applied-content"
+	}
+	return response
 }
 
 func artworkListLimit(r *http.Request) (int, error) {

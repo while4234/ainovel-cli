@@ -127,6 +127,7 @@ describe('foundation components', () => {
     };
     const markup = renderToStaticMarkup(<CharacterEditor
       value={[]}
+      portraits={{ 'support-shen': { assetID: 'portrait-1', contentURL: '/api/portrait-1/applied-content' } }}
       relationships={[]}
       disabled
       onChange={() => {}}
@@ -142,6 +143,8 @@ describe('foundation components', () => {
     />);
     expect(markup).toContain('沈辞');
     expect(markup).toContain('男主心腹助理');
+    expect(markup).toContain('src="/api/portrait-1/applied-content"');
+    expect(markup).toContain('沈辞的已应用肖像');
     expect(markup).toContain('角色目录');
     expect(markup).toContain('显示 1 / 共 1');
     expect(markup).toMatch(/<button id="character-confirm-action" class="tool-button accent" type="button"><svg[^>]*>[\s\S]*确认角色卡并继续<\/button>/);

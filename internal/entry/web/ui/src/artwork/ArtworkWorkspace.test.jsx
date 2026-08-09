@@ -29,7 +29,7 @@ const workspace = (patch = {}) => ({
   drafts: { items: [draft(), portrait], next_cursor: 'draft-next' },
   prompt_jobs: { items: [] },
   jobs: { items: [] },
-  assets: { items: [asset(), asset({ id: 'a2', applied: true, content_url: '/api/projects/p1/artwork/assets/a2/content' })], next_cursor: 'asset-next' },
+  assets: { items: [asset(), asset({ id: 'a2', applied: true, content_url: '/api/projects/p1/artwork/assets/a2/content', applied_content_url: '/api/projects/p1/artwork/assets/a2/applied-content' })], next_cursor: 'asset-next' },
   applied: [{ target: 'cover:project:', asset_id: 'a2' }],
   ...patch
 });
@@ -57,6 +57,7 @@ beforeEach(() => {
   api.downloadArtworkAsset.mockResolvedValue({ fileName: 'cover.png' });
   api.reuseArtworkAsset.mockResolvedValue({ draft: draft({ id: 'd-reuse', version: 1, prompt_source: 'reuse' }), reused: false });
   api.applyArtworkAsset.mockImplementation(async (_project, id) => ({ asset: asset({ id, applied: true }), applied_to: 'book-cover' }));
+  api.unapplyArtworkAsset.mockImplementation(async (_project, id) => ({ asset: asset({ id, applied: false }) }));
   api.deleteArtworkAsset.mockResolvedValue(null);
   api.deleteArtworkDraft.mockResolvedValue(null);
   api.saveArtworkGatewayConfig.mockResolvedValue(gateway);
@@ -136,7 +137,7 @@ describe('ArtworkWorkspace', () => {
     expect(api.generateArtworkImage.mock.calls[0][2]).toMatchObject({ expected_version: 2, idempotency_key: 'image-key' });
   });
 
-  it('supports cursor loading, Blob download, immutable reuse, apply, and protected delete', async () => {
+  it('supports cursor loading, Blob download, immutable reuse, apply, unapply, and protected delete', async () => {
     await renderWorkspace();
     await act(async () => button('加载更多草稿').click()); await settle();
     await act(async () => button('加载更多图片').click()); await settle();
@@ -154,6 +155,9 @@ describe('ArtworkWorkspace', () => {
     expect(api.applyArtworkAsset).toHaveBeenCalledWith('p1', 'a1');
     expect(reusedFirstCard.querySelector('[aria-label="删除图片"]').disabled).toBe(true);
     expect(container.querySelectorAll('[aria-label="删除图片"]')[1].disabled).toBe(false);
+    await act(async () => reusedFirstCard.querySelector('[aria-label="取消应用图片"]').click()); await settle();
+    expect(api.unapplyArtworkAsset).toHaveBeenCalledWith('p1', 'a1');
+    expect(reusedFirstCard.querySelector('[aria-label="删除图片"]').disabled).toBe(false);
   });
 
   it('deletes only a non-applied asset after explicit confirmation', async () => {

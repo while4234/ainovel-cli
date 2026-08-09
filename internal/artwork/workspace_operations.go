@@ -11,10 +11,12 @@ import (
 )
 
 type applyJournal struct {
-	SchemaVersion int        `json:"schema_version"`
-	Operation     string     `json:"operation"`
-	State         ApplyState `json:"state"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	SchemaVersion int         `json:"schema_version"`
+	Operation     string      `json:"operation"`
+	State         ApplyState  `json:"state"`
+	Previous      *ApplyState `json:"previous,omitempty"`
+	Phase         string      `json:"phase,omitempty"`
+	UpdatedAt     time.Time   `json:"updated_at"`
 }
 
 type deleteJournal struct {
@@ -41,16 +43,35 @@ func (s *WorkspaceStore) ApplyAsset(id string) (ApplyState, error) {
 		return ApplyState{}, err
 	}
 	target := applyTarget(asset)
+	var previous *ApplyState
 	for _, existing := range states {
-		if existing.Target == target && existing.AssetID == asset.ID {
+		if existing.Target != target {
+			continue
+		}
+		copy := existing
+		previous = &copy
+		if existing.AssetID == asset.ID && appliedStateMatchesAsset(existing, asset) &&
+			verifyAppliedDerivativeFile(filepath.Join(s.root, "derivatives", existing.Derivative.FileName), existing.Derivative) == nil {
 			return existing, nil
 		}
+		break
+	}
+	derivative, err := s.installAppliedDerivativeUnlocked(asset)
+	if err != nil {
+		return ApplyState{}, errors.New("managed artwork image could not be prepared for application")
 	}
 	state := ApplyState{
 		SchemaVersion: WorkspaceSchemaVersion, Target: target,
-		AssetID: asset.ID, AppliedAt: s.now(),
+		AssetID: asset.ID, WorkType: asset.WorkType, Scope: asset.Scope, ScopeID: asset.ScopeID,
+		Derivative: derivative, AppliedAt: s.now(),
 	}
-	journal := applyJournal{SchemaVersion: WorkspaceSchemaVersion, Operation: "apply", State: state, UpdatedAt: s.now()}
+	if err := s.injectFault("apply_after_derivative_install"); err != nil {
+		return ApplyState{}, err
+	}
+	journal := applyJournal{
+		SchemaVersion: WorkspaceSchemaVersion, Operation: "apply", State: state,
+		Previous: previous, Phase: "derivative_installed", UpdatedAt: s.now(),
+	}
 	journalID := "apply-" + deterministicID("op", state.Target)
 	journalPath, _ := s.path("journals", journalID)
 	if err := writeJSONAtomic(journalPath, journal, false); err != nil {
@@ -66,6 +87,11 @@ func (s *WorkspaceStore) ApplyAsset(id string) (ApplyState, error) {
 	if err := s.injectFault("apply_after_state"); err != nil {
 		return ApplyState{}, err
 	}
+	if previous != nil && previous.Derivative.FileName != "" && previous.Derivative.FileName != state.Derivative.FileName {
+		if err := s.removeDerivativeUnlocked(previous.Derivative.FileName); err != nil {
+			return ApplyState{}, err
+		}
+	}
 	if err := os.Remove(journalPath); err != nil && !os.IsNotExist(err) {
 		return ApplyState{}, err
 	}
@@ -76,7 +102,58 @@ func (s *WorkspaceStore) ApplyAsset(id string) (ApplyState, error) {
 }
 
 func applyTarget(asset Asset) string {
-	return string(asset.WorkType) + ":" + asset.Scope + ":" + asset.ScopeID
+	return appliedTarget(asset.WorkType, asset.Scope, asset.ScopeID)
+}
+
+func (s *WorkspaceStore) UnapplyAsset(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	asset, err := s.readCommittedAssetUnlocked(id)
+	if err != nil {
+		return err
+	}
+	states, err := s.readAppliedUnlocked()
+	if err != nil {
+		return err
+	}
+	target := applyTarget(asset)
+	var current *ApplyState
+	for _, state := range states {
+		if state.Target == target && state.AssetID == id {
+			copy := state
+			current = &copy
+			break
+		}
+	}
+	if current == nil {
+		return ErrConflict
+	}
+	journal := applyJournal{
+		SchemaVersion: WorkspaceSchemaVersion, Operation: "unapply", State: *current,
+		Previous: current, Phase: "prepared", UpdatedAt: s.now(),
+	}
+	journalID := "apply-" + deterministicID("op", target)
+	journalPath, _ := s.path("journals", journalID)
+	if err := writeJSONAtomic(journalPath, journal, false); err != nil {
+		return err
+	}
+	statePath := filepath.Join(s.root, "apply", deterministicID("target", target)+".json")
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := syncDirectory(filepath.Dir(statePath)); err != nil {
+		return err
+	}
+	if err := s.injectFault("unapply_after_state"); err != nil {
+		return err
+	}
+	if err := s.removeDerivativeUnlocked(current.Derivative.FileName); err != nil {
+		return err
+	}
+	if err := os.Remove(journalPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return syncDirectory(filepath.Dir(journalPath))
 }
 
 func (s *WorkspaceStore) ListApplied() ([]ApplyState, error) {
@@ -96,13 +173,30 @@ func (s *WorkspaceStore) readAppliedUnlocked() ([]ApplyState, error) {
 		if err := readJSONFile(path, &state); err != nil {
 			return nil, err
 		}
-		if state.SchemaVersion != WorkspaceSchemaVersion || state.Target == "" || validateRecordID(state.AssetID) != nil || state.AppliedAt.IsZero() {
+		if err := validateApplyState(state); err != nil {
 			return nil, errors.New("artwork apply state is invalid")
 		}
 		states = append(states, state)
 	}
 	sort.Slice(states, func(i, j int) bool { return states[i].Target < states[j].Target })
 	return states, nil
+}
+
+func validateApplyState(state ApplyState) error {
+	if state.SchemaVersion != WorkspaceSchemaVersion || state.Target == "" || validateRecordID(state.AssetID) != nil || state.AppliedAt.IsZero() {
+		return errors.New("artwork apply state is invalid")
+	}
+	legacy := state.WorkType == "" && state.Scope == "" && state.ScopeID == "" && state.Derivative == (AppliedDerivative{})
+	if legacy {
+		return nil
+	}
+	if state.WorkType != WorkTypeCover && state.WorkType != WorkTypeIllustration && state.WorkType != WorkTypeCharacterPortrait {
+		return errors.New("artwork apply work_type is invalid")
+	}
+	if state.Target != appliedTarget(state.WorkType, state.Scope, state.ScopeID) {
+		return errors.New("artwork apply target is invalid")
+	}
+	return validateAppliedDerivative(state.Derivative)
 }
 
 func (s *WorkspaceStore) isAssetAppliedUnlocked(id string) (bool, error) {
@@ -220,6 +314,41 @@ type ReconcileResult struct {
 	FinalizedAssets     int
 	RemovedOrphans      int
 	RemovedMissingAsset int
+	RepairedApplied     int
+	RemovedDerivatives  int
+}
+
+// ReconcileApplied repairs only local applied-media transactions and files.
+// It is safe for presentation/export reads because it never transitions image
+// or prompt jobs and never schedules gateway work.
+func (s *WorkspaceStore) ReconcileApplied() (ReconcileResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.initializeUnlocked(); err != nil {
+		return ReconcileResult{}, err
+	}
+	result := ReconcileResult{}
+	paths, err := jsonRecordPaths(filepath.Join(s.root, "journals"))
+	if err != nil {
+		return result, err
+	}
+	for _, path := range paths {
+		if !strings.HasPrefix(filepath.Base(path), "apply-") {
+			continue
+		}
+		if err := s.reconcileApplyJournalUnlocked(path); err != nil {
+			return result, err
+		}
+	}
+	if err := s.reconcileAppliedStateUnlocked(&result); err != nil {
+		return result, err
+	}
+	removed, err := s.removeOrphanDerivativesUnlocked()
+	if err != nil {
+		return result, err
+	}
+	result.RemovedDerivatives = removed
+	return result, nil
 }
 
 func (s *WorkspaceStore) Reconcile() (ReconcileResult, error) {
@@ -328,9 +457,14 @@ func (s *WorkspaceStore) Reconcile() (ReconcileResult, error) {
 		return result, err
 	}
 	result.RemovedOrphans += orphans
-	if err := s.removeDanglingApplyStateUnlocked(); err != nil {
+	if err := s.reconcileAppliedStateUnlocked(&result); err != nil {
 		return result, err
 	}
+	removedDerivatives, err := s.removeOrphanDerivativesUnlocked()
+	if err != nil {
+		return result, err
+	}
+	result.RemovedDerivatives += removedDerivatives
 	return result, nil
 }
 
@@ -366,7 +500,7 @@ func (s *WorkspaceStore) reconcileCommittedAssetsUnlocked(result *ReconcileResul
 	return nil
 }
 
-func (s *WorkspaceStore) removeDanglingApplyStateUnlocked() error {
+func (s *WorkspaceStore) reconcileAppliedStateUnlocked(result *ReconcileResult) error {
 	paths, err := jsonRecordPaths(filepath.Join(s.root, "apply"))
 	if err != nil {
 		return err
@@ -376,13 +510,44 @@ func (s *WorkspaceStore) removeDanglingApplyStateUnlocked() error {
 		if err := readJSONFile(path, &state); err != nil {
 			return err
 		}
-		if _, err := s.readAssetUnlocked(state.AssetID); errors.Is(err, ErrNotFound) {
+		asset, err := s.readCommittedAssetUnlocked(state.AssetID)
+		if errors.Is(err, ErrNotFound) {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return err
 			}
+			if err := s.removeDerivativeUnlocked(state.Derivative.FileName); err != nil {
+				return err
+			}
+			continue
 		} else if err != nil {
 			return err
 		}
+		derivativePath := filepath.Join(s.root, "derivatives", state.Derivative.FileName)
+		if appliedStateMatchesAsset(state, asset) && verifyAppliedDerivativeFile(derivativePath, state.Derivative) == nil {
+			continue
+		}
+		derivative, err := s.installAppliedDerivativeUnlocked(asset)
+		if err != nil {
+			if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+				return removeErr
+			}
+			if removeErr := s.removeDerivativeUnlocked(state.Derivative.FileName); removeErr != nil {
+				return removeErr
+			}
+			continue
+		}
+		upgraded := ApplyState{
+			SchemaVersion: WorkspaceSchemaVersion, Target: applyTarget(asset), AssetID: asset.ID,
+			WorkType: asset.WorkType, Scope: asset.Scope, ScopeID: asset.ScopeID,
+			Derivative: derivative, AppliedAt: state.AppliedAt,
+		}
+		if upgraded.AppliedAt.IsZero() {
+			upgraded.AppliedAt = s.now()
+		}
+		if err := writeJSONAtomic(path, upgraded, false); err != nil {
+			return err
+		}
+		result.RepairedApplied++
 	}
 	return nil
 }
@@ -493,17 +658,77 @@ func (s *WorkspaceStore) reconcileApplyJournalUnlocked(path string) error {
 	if err := readJSONFile(path, &journal); err != nil {
 		return err
 	}
-	if journal.SchemaVersion != WorkspaceSchemaVersion || journal.Operation != "apply" {
+	if journal.SchemaVersion != WorkspaceSchemaVersion || (journal.Operation != "apply" && journal.Operation != "unapply") {
 		return errors.New("artwork apply journal is invalid")
 	}
-	if _, err := s.readAssetUnlocked(journal.State.AssetID); err != nil {
-		return err
-	}
 	statePath := filepath.Join(s.root, "apply", deterministicID("target", journal.State.Target)+".json")
+	if journal.Operation == "unapply" {
+		var installed ApplyState
+		if err := readJSONFile(statePath, &installed); err == nil && installed.AssetID == journal.State.AssetID {
+			if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := s.removeDerivativeUnlocked(journal.State.Derivative.FileName); err != nil {
+			return err
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	asset, err := s.readCommittedAssetUnlocked(journal.State.AssetID)
+	if err != nil {
+		restoredPrevious := false
+		if journal.Previous != nil {
+			if previousAsset, previousErr := s.readCommittedAssetUnlocked(journal.Previous.AssetID); previousErr == nil {
+				derivative, installErr := s.installAppliedDerivativeUnlocked(previousAsset)
+				if installErr != nil {
+					return installErr
+				}
+				restored := *journal.Previous
+				restored.WorkType, restored.Scope, restored.ScopeID = previousAsset.WorkType, previousAsset.Scope, previousAsset.ScopeID
+				restored.Target, restored.Derivative = applyTarget(previousAsset), derivative
+				if writeErr := writeJSONAtomic(statePath, restored, false); writeErr != nil {
+					return writeErr
+				}
+				restoredPrevious = true
+			}
+		}
+		if !restoredPrevious {
+			if removeErr := os.Remove(statePath); removeErr != nil && !os.IsNotExist(removeErr) {
+				return removeErr
+			}
+		}
+		_ = s.removeDerivativeUnlocked(journal.State.Derivative.FileName)
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			return removeErr
+		}
+		return nil
+	}
+	if !appliedStateMatchesAsset(journal.State, asset) || verifyAppliedDerivativeFile(filepath.Join(s.root, "derivatives", journal.State.Derivative.FileName), journal.State.Derivative) != nil {
+		derivative, installErr := s.installAppliedDerivativeUnlocked(asset)
+		if installErr != nil {
+			return installErr
+		}
+		journal.State.WorkType, journal.State.Scope, journal.State.ScopeID = asset.WorkType, asset.Scope, asset.ScopeID
+		journal.State.Target, journal.State.Derivative = applyTarget(asset), derivative
+	}
+	statePath = filepath.Join(s.root, "apply", deterministicID("target", journal.State.Target)+".json")
 	if err := writeJSONAtomic(statePath, journal.State, false); err != nil {
 		return err
 	}
-	return os.Remove(path)
+	if journal.Previous != nil && journal.Previous.Derivative.FileName != "" && journal.Previous.Derivative.FileName != journal.State.Derivative.FileName {
+		if err := s.removeDerivativeUnlocked(journal.Previous.Derivative.FileName); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (s *WorkspaceStore) reconcileDeleteJournalUnlocked(path string) error {
@@ -577,6 +802,39 @@ func (s *WorkspaceStore) removeOrphanImagesUnlocked() (int, error) {
 			continue
 		}
 		path := filepath.Join(s.root, "images", entry.Name())
+		_ = os.Chmod(path, 0o600)
+		if err := os.Remove(path); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func (s *WorkspaceStore) removeOrphanDerivativesUnlocked() (int, error) {
+	states, err := s.readAppliedUnlocked()
+	if err != nil {
+		return 0, err
+	}
+	referenced := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		if state.Derivative.FileName != "" {
+			referenced[state.Derivative.FileName] = struct{}{}
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, "derivatives"))
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		if _, exists := referenced[entry.Name()]; exists {
+			continue
+		}
+		path := filepath.Join(s.root, "derivatives", entry.Name())
 		_ = os.Chmod(path, 0o600)
 		if err := os.Remove(path); err != nil {
 			return removed, err

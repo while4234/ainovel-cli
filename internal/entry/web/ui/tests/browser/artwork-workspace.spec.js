@@ -2,10 +2,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 
-const screenshotDir = path.resolve(process.cwd(), '../../../../output/playwright/artwork-pr04');
+const screenshotDir = path.resolve(process.cwd(), '../../../../output/playwright/artwork-pr05');
 
 test.beforeEach(async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'desktop', 'Exact PR-04 viewports are exercised from one isolated Chrome project.');
+  test.skip(testInfo.project.name !== 'desktop', 'Exact PR-05 viewports are exercised from one isolated Chrome project.');
   await page.request.post('/api/test/reset');
   await page.goto('/browser-fixture.html?surface=artwork&projectId=artwork-browser-project&view=story&draft=art-draft-cover');
   await expect(page.getByRole('heading', { name: '绘境 · Visual Studio' })).toBeVisible();
@@ -52,6 +52,9 @@ test('explicit fake-only prompt, verify, one-image, download, reuse, and apply f
   await illustrationCard.getByRole('button', { name: '应用图片' }).click();
   await expect(illustrationCard.getByText('正在使用')).toBeVisible();
   await expect(illustrationCard.getByRole('button', { name: '删除图片' })).toBeDisabled();
+  await illustrationCard.getByRole('button', { name: '取消应用图片' }).click();
+  await expect(illustrationCard.getByText('正在使用')).toHaveCount(0);
+  await expect(illustrationCard.getByRole('button', { name: '删除图片' })).toBeEnabled();
   expect(externalRequests).toEqual([]);
 });
 

@@ -28,6 +28,23 @@ func renderEPUB(
 	locations map[int]chapterLocation,
 	bodies map[int]string,
 ) ([]byte, error) {
+	return renderEPUBWithCover(novelName, chapters, titleIdx, locations, bodies, nil)
+}
+
+type epubCoverImage struct {
+	MediaType string
+	FileName  string
+	Content   []byte
+}
+
+func renderEPUBWithCover(
+	novelName string,
+	chapters []int,
+	titleIdx chapterTitleIndex,
+	locations map[int]chapterLocation,
+	bodies map[int]string,
+	coverImage *epubCoverImage,
+) ([]byte, error) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 
@@ -50,9 +67,14 @@ func renderEPUB(
 		return nil, err
 	}
 
-	hasCover := strings.TrimSpace(novelName) != ""
+	hasCover := strings.TrimSpace(novelName) != "" || coverImage != nil
 	if hasCover {
-		if err := zipDeflate(zw, "OEBPS/cover.xhtml", renderCoverXHTML(novelName)); err != nil {
+		if err := zipDeflate(zw, "OEBPS/cover.xhtml", renderCoverXHTML(novelName, coverImage != nil)); err != nil {
+			return nil, err
+		}
+	}
+	if coverImage != nil {
+		if err := zipDeflateBytes(zw, "OEBPS/"+coverImage.FileName, coverImage.Content); err != nil {
 			return nil, err
 		}
 	}
@@ -71,7 +93,7 @@ func renderEPUB(
 		return nil, err
 	}
 
-	if err := zipDeflate(zw, "OEBPS/content.opf", renderOPF(novelName, hasCover, chapters)); err != nil {
+	if err := zipDeflate(zw, "OEBPS/content.opf", renderOPF(novelName, hasCover, coverImage, chapters)); err != nil {
 		return nil, err
 	}
 
@@ -79,6 +101,15 @@ func renderEPUB(
 		return nil, fmt.Errorf("finalize zip: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+func zipDeflateBytes(zw *zip.Writer, name string, content []byte) error {
+	w, err := zw.Create(name)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", name, err)
+	}
+	_, err = w.Write(content)
+	return err
 }
 
 // zipDeflate 写入一个普通（压缩）条目。
@@ -112,6 +143,7 @@ const containerXML = `<?xml version="1.0" encoding="utf-8"?>
 
 const styleCSS = `body { font-family: serif; line-height: 1.7; margin: 1em; }
 h1.book-title { font-size: 2em; text-align: center; margin: 4em 0 1em; }
+.cover-image { display: block; height: auto; margin: 0 auto; max-height: 95vh; max-width: 100%; }
 .volume-divider { font-size: 1.6em; text-align: center; margin: 4em 0 1em; font-weight: bold; }
 h1.chapter-title { font-size: 1.4em; text-align: center; margin: 2em 0 1.5em; }
 p { text-indent: 2em; margin: 0.5em 0; }
@@ -169,7 +201,7 @@ func splitParagraphs(body string) []string {
 
 // 封面 ────────────────────────────────────────────────
 
-func renderCoverXHTML(novelName string) string {
+func renderCoverXHTML(novelName string, hasImage bool) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -180,6 +212,9 @@ func renderCoverXHTML(novelName string) string {
 </head>
 <body>
 `)
+	if hasImage {
+		b.WriteString("  <img class=\"cover-image\" src=\"cover.png\" alt=\"Book cover\"/>\n")
+	}
 	if name := strings.TrimSpace(novelName); name != "" {
 		fmt.Fprintf(&b, "  <h1 class=\"book-title\">%s</h1>\n", html.EscapeString(name))
 	}
@@ -229,7 +264,7 @@ func renderNavXHTML(hasCover bool, chapters []int, titleIdx chapterTitleIndex) s
 
 // content.opf ────────────────────────────────────────────────
 
-func renderOPF(novelName string, hasCover bool, chapters []int) string {
+func renderOPF(novelName string, hasCover bool, coverImage *epubCoverImage, chapters []int) string {
 	bookID := bookIdentifier(novelName)
 	modified := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 
@@ -255,6 +290,10 @@ func renderOPF(novelName string, hasCover bool, chapters []int) string {
 
 	if hasCover {
 		b.WriteString(`    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>` + "\n")
+	}
+	if coverImage != nil {
+		fmt.Fprintf(&b, `    <item id="cover-image" href="%s" media-type="%s" properties="cover-image"/>`+"\n",
+			html.EscapeString(coverImage.FileName), html.EscapeString(coverImage.MediaType))
 	}
 	for _, ch := range chapters {
 		fmt.Fprintf(&b, `    <item id="%s" href="%s" media-type="application/xhtml+xml"/>`+"\n",

@@ -70,6 +70,12 @@ export function normalizeFoundation(value = {}) {
 
 export function normalizeFoundationResponse(response) {
   const state = response?.foundation || {};
+  const artwork = response?.artwork || {};
+  const portraits = array(artwork.portraits).map((portrait) => ({
+    characterID: String(portrait?.character_id || ''),
+    assetID: String(portrait?.asset_id || ''),
+    contentURL: String(portrait?.content_url || '')
+  })).filter((portrait) => portrait.characterID && portrait.assetID && portrait.contentURL);
   return {
     project: response?.project || null,
     mode: state.mode === 'adaptation' ? 'adaptation' : 'normal',
@@ -92,7 +98,10 @@ export function normalizeFoundationResponse(response) {
     modeSpecificError: String(state.mode_specific_error || ''),
     activeRevision: state.active_revision || null,
     planningReview: state.planning_review || null,
-    allowedOperations: array(state.allowed_operations).map(String)
+    allowedOperations: array(state.allowed_operations).map(String),
+    artworkStatus: String(artwork.status || 'unavailable'),
+    artworkMessage: String(artwork.message || ''),
+    portraitsByCharacterID: Object.fromEntries(portraits.map((portrait) => [portrait.characterID, portrait]))
   };
 }
 

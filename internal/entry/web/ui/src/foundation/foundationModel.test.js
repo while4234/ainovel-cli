@@ -35,9 +35,15 @@ describe('foundation model', () => {
   });
 
   it('映射 normal/adaptation DTO 且保留 source 只读数据', () => {
-    const normal = normalizeFoundationResponse({ foundation: { mode: 'normal', target_foundation: complete, editable: true, allowed_operations: ['get', 'preview'] } });
+    const normal = normalizeFoundationResponse({
+      foundation: { mode: 'normal', target_foundation: complete, editable: true, allowed_operations: ['get', 'preview'] },
+      artwork: { status: 'ready', portraits: [{ character_id: 'hero', asset_id: 'portrait-1', content_url: '/applied-content' }] }
+    });
     expect(normal.mode).toBe('normal');
     expect(normal.sourceFoundation).toBeNull();
+    expect(normal.portraitsByCharacterID.hero).toEqual({ characterID: 'hero', assetID: 'portrait-1', contentURL: '/applied-content' });
+    expect(normal.targetFoundation.premise).toBe(complete.premise);
+    expect(normal.targetFoundation.characters[0].role).toBe(complete.characters[0].role);
     const adaptation = normalizeFoundationResponse({ foundation: { mode: 'adaptation', source_foundation: { premise: '原著' }, target_foundation: complete, editable: true } });
     expect(adaptation.mode).toBe('adaptation');
     expect(adaptation.sourceFoundation.premise).toBe('原著');

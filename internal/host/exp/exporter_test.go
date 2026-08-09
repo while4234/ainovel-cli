@@ -1,13 +1,18 @@
 package exp
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	artworkpkg "github.com/voocel/ainovel-cli/internal/artwork"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
@@ -35,6 +40,78 @@ func newTestStore(t *testing.T, novelName string, completed []int) (*store.Store
 		}
 	}
 	return s, dir
+}
+
+func TestRunEPUBUsesAppliedCoverDerivative(t *testing.T) {
+	s, dir := newTestStore(t, "Applied Cover", []int{1})
+	artworkStore, err := artworkpkg.NewWorkspaceStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := artworkStore.CreateDraft(artworkpkg.DraftInput{
+		WorkType: artworkpkg.WorkTypeCover, Scope: "project", Prompt: "local fixture",
+		PromptSource: artworkpkg.PromptSourceManual, ModelID: "a2e", Size: "1080x1080",
+	}, "epub-cover-draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _, err := artworkStore.SubmitGeneration(draft.ID, draft.Version, "epub-cover-job", "https://fixture.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artworkStore.BeginJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	original, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artworkStore.FinalizeJob(job.ID, original); err != nil {
+		t.Fatal(err)
+	}
+	state, err := artworkStore.ApplyAsset(job.AssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, expectedCover, err := artworkStore.ReadAppliedDerivative(artworkpkg.WorkTypeCover, "project", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(dir, "applied-cover.epub")
+	if _, err := Run(context.Background(), Deps{Store: s}, Options{Format: FormatEPUB, OutPath: outPath}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make(map[string][]byte)
+	for _, file := range zr.File {
+		reader, openErr := file.Open()
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		content, readErr := io.ReadAll(reader)
+		_ = reader.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		files[file.Name] = content
+	}
+	if !bytes.Equal(files["OEBPS/cover.png"], expectedCover) {
+		t.Fatal("EPUB did not embed the immutable applied derivative")
+	}
+	opf := string(files["OEBPS/content.opf"])
+	if !strings.Contains(opf, `properties="cover-image"`) || !strings.Contains(string(files["OEBPS/cover.xhtml"]), `src="cover.png"`) {
+		t.Fatalf("EPUB cover manifest/xhtml missing: %s", opf)
+	}
+	if state.Derivative.Width != 1200 || state.Derivative.Height != 1800 {
+		t.Fatalf("cover derivative dimensions = %dx%d", state.Derivative.Width, state.Derivative.Height)
+	}
 }
 
 func TestRun_HappyPath_DefaultsToNovelDir(t *testing.T) {

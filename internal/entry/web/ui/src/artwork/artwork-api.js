@@ -56,6 +56,8 @@ export const reuseArtworkAsset = (projectId, assetId, payload, options = {}) =>
   artworkMutation(projectId, `assets/${encodeURIComponent(assetId)}/reuse-as-draft`, payload, options);
 export const applyArtworkAsset = (projectId, assetId, options = {}) =>
   artworkMutation(projectId, `assets/${encodeURIComponent(assetId)}/apply`, {}, options);
+export const unapplyArtworkAsset = (projectId, assetId, options = {}) =>
+  request(`${projectBase(projectId)}/assets/${encodeURIComponent(assetId)}/apply`, { ...options, method: 'DELETE' });
 export const deleteArtworkAsset = (projectId, assetId, options = {}) =>
   request(`${projectBase(projectId)}/assets/${encodeURIComponent(assetId)}`, { ...options, method: 'DELETE' });
 

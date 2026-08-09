@@ -18,6 +18,7 @@ import {
   newArtworkIdempotencyKey,
   reuseArtworkAsset,
   saveArtworkGatewayConfig,
+  unapplyArtworkAsset,
   updateArtworkDraft,
   verifyArtworkGatewayConfig
 } from './artwork-api.js';
@@ -405,6 +406,17 @@ export function useArtworkStudio({ projectId, modelConfig, runtime, onPromptMode
     } finally { setOperation(''); }
   }, [projectId]);
 
+  const unapplyAsset = useCallback(async (asset) => {
+    setOperation(`unapply:${asset.id}`);
+    try {
+      const response = await unapplyArtworkAsset(projectId, asset.id);
+      dispatch({ type: 'asset-unapply', asset: response.asset });
+      dispatch({ type: 'notice', notice: '已取消应用；原始图片仍保留在图库。' });
+    } catch (error) {
+      dispatch({ type: 'error', code: artworkErrorCode(error) });
+    } finally { setOperation(''); }
+  }, [projectId]);
+
   const removeAsset = useCallback(async (asset) => {
     if (asset.applied) {
       dispatch({ type: 'error', code: 'asset_is_applied' });
@@ -502,7 +514,7 @@ export function useArtworkStudio({ projectId, modelConfig, runtime, onPromptMode
     actions: {
       updateEditor, selectDraft, changeView, startNewDraft, createDraft, retryAutosave,
       runPromptGeneration, confirmStale, submitImageGeneration, refreshWorkspace,
-      loadMoreDrafts, loadMoreAssets, reuseAsset, applyAsset, removeAsset, removeDraft,
+      loadMoreDrafts, loadMoreAssets, reuseAsset, applyAsset, unapplyAsset, removeAsset, removeDraft,
       downloadAsset, saveGateway, verifyGateway, changePromptModel, flushAutosave
     }
   };

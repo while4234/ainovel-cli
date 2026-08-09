@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/voocel/ainovel-cli/assets"
+	artworkpkg "github.com/voocel/ainovel-cli/internal/artwork"
 )
 
 func TestFoundationGETReturnsReadableReadonlyState(t *testing.T) {
@@ -35,6 +36,60 @@ func TestFoundationGETReturnsReadableReadonlyState(t *testing.T) {
 	}
 	if response.Foundation.Mode != "normal" || response.Foundation.Editable || response.Foundation.ReadonlyReason == "" {
 		t.Fatalf("foundation state = %+v", response.Foundation)
+	}
+}
+
+func TestFoundationGETPresentsOnlyAppliedCharacterPortraits(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), filepath.Join(testTempDir(t), "runtime"))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("Foundation Portrait Presentation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := artworkpkg.NewWorkspaceStore(manifest.OutputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := workspace.CreateDraft(artworkpkg.DraftInput{
+		WorkType: artworkpkg.WorkTypeCharacterPortrait, Scope: "character", ScopeID: "character-1",
+		Prompt: "local portrait fixture", PromptSource: artworkpkg.PromptSourceManual, ModelID: "a2e", Size: "1080x1080",
+	}, "foundation-portrait-draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _, err := workspace.SubmitGeneration(draft.ID, draft.Version, "foundation-portrait-job", "https://fixture.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.BeginJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.FinalizeJob(job.ID, fixedArtworkPNG(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.ApplyAsset(job.AssetID); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+manifest.ID+"/foundation", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Artwork foundationArtworkPresentationView `json:"artwork"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Artwork.Status != "ready" || len(response.Artwork.Portraits) != 1 || response.Artwork.Portraits[0].CharacterID != "character-1" || response.Artwork.Portraits[0].AssetID != job.AssetID {
+		t.Fatalf("artwork presentation = %+v", response.Artwork)
+	}
+	portrait := httptest.NewRecorder()
+	server.Handler().ServeHTTP(portrait, httptest.NewRequest(http.MethodGet, response.Artwork.Portraits[0].ContentURL, nil))
+	if portrait.Code != http.StatusOK || portrait.Header().Get("Content-Type") != "image/png" || bytes.Equal(portrait.Body.Bytes(), fixedArtworkPNG(t)) {
+		t.Fatalf("portrait derivative response status=%d headers=%v", portrait.Code, portrait.Header())
 	}
 }
 

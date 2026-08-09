@@ -67,7 +67,7 @@ func NewWorkspaceStore(outputDir string) (*WorkspaceStore, error) {
 func (s *WorkspaceStore) Root() string { return s.root }
 
 func (s *WorkspaceStore) initializeUnlocked() error {
-	for _, name := range []string{"drafts", "prompts", "prompt-jobs", "jobs", "assets", "images", "apply", "staging", "journals"} {
+	for _, name := range []string{"drafts", "prompts", "prompt-jobs", "jobs", "assets", "images", "apply", "derivatives", "staging", "journals"} {
 		if err := os.MkdirAll(filepath.Join(s.root, name), 0o755); err != nil {
 			return fmt.Errorf("create artwork %s directory: %w", name, err)
 		}

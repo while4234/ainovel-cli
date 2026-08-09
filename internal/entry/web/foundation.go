@@ -7,8 +7,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
+	artworkpkg "github.com/voocel/ainovel-cli/internal/artwork"
 	"github.com/voocel/ainovel-cli/internal/host"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
@@ -31,7 +35,7 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 			writeFoundationRevisionError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "foundation": state})
+		writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "foundation": state, "artwork": foundationArtworkPresentation(manifest)})
 	case "foundation/preview":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -195,6 +199,53 @@ func (s *Server) handleProjectFoundation(w http.ResponseWriter, r *http.Request,
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+type foundationPortraitPresentation struct {
+	CharacterID string `json:"character_id"`
+	AssetID     string `json:"asset_id"`
+	ContentURL  string `json:"content_url"`
+}
+
+type foundationArtworkPresentationView struct {
+	Status    string                           `json:"status"`
+	Portraits []foundationPortraitPresentation `json:"portraits"`
+	Message   string                           `json:"message,omitempty"`
+}
+
+func foundationArtworkPresentation(manifest ProjectManifest) foundationArtworkPresentationView {
+	view := foundationArtworkPresentationView{Status: "unavailable", Portraits: []foundationPortraitPresentation{}}
+	if _, err := os.Stat(filepath.Join(manifest.OutputDir, "artwork", "schema.json")); os.IsNotExist(err) {
+		return view
+	} else if err != nil {
+		view.Status, view.Message = "recovery_required", "character portrait presentation is temporarily unavailable"
+		return view
+	}
+	store, err := artworkpkg.NewWorkspaceStore(manifest.OutputDir)
+	if err != nil {
+		view.Status, view.Message = "recovery_required", "character portrait presentation is temporarily unavailable"
+		return view
+	}
+	if _, err := store.ReconcileApplied(); err != nil {
+		view.Status, view.Message = "recovery_required", "character portrait presentation is temporarily unavailable"
+		return view
+	}
+	states, err := store.ListApplied()
+	if err != nil {
+		view.Status, view.Message = "recovery_required", "character portrait presentation is temporarily unavailable"
+		return view
+	}
+	view.Status = "ready"
+	for _, state := range states {
+		if state.WorkType != artworkpkg.WorkTypeCharacterPortrait || strings.TrimSpace(state.ScopeID) == "" {
+			continue
+		}
+		base := "/api/projects/" + url.PathEscape(manifest.ID) + "/artwork/assets/" + url.PathEscape(state.AssetID)
+		view.Portraits = append(view.Portraits, foundationPortraitPresentation{
+			CharacterID: state.ScopeID, AssetID: state.AssetID, ContentURL: base + "/applied-content",
+		})
+	}
+	return view
 }
 
 func decodeFoundationJSONBody(r *http.Request, target any) error {

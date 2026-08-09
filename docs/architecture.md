@@ -413,7 +413,8 @@ internal/
     flow/         router.go (纯函数 11 分支) + state.go + dispatcher.go + router_test.go
     reminder/     stop_guard.go (Coordinator) + subagent_guards.go (CheckpointDeltaGuard ×3)
     imp/          外部小说反推导入：split → foundation → 逐章分析
-    exp/          已完成章节导出：合并章节 → TXT / EPUB 3，路径后缀驱动；纯只读，不依赖 LLM
+    exp/          已完成章节导出：合并章节 → TXT / EPUB 3；可读取已应用的本地封面衍生图，不依赖 LLM
+  artwork/        项目级图片草稿/任务/不可变原图/确定性衍生图与 journal reconcile；不进入 Host 创作事实层
   entry/          web (React + SSE) / non-interactive headless / startup
   bootstrap/      config + ModelSet + provider failover；首次设置由 Web 向导完成
   models/         OpenRouter 等公共模型注册表 + 价格刷新 (24h 磁盘缓存)

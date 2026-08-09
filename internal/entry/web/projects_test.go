@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/assets"
+	artworkpkg "github.com/voocel/ainovel-cli/internal/artwork"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 )
 
@@ -189,6 +190,64 @@ func TestProjectTrashListRestoreAndEmpty(t *testing.T) {
 	}
 	if trashed, err := store.ListTrashProjects(); err != nil || len(trashed) != 0 {
 		t.Fatalf("trash after empty = %+v err=%v", trashed, err)
+	}
+}
+
+func TestProjectTrashRestoreAndEmptyKeepsArtworkInsideProjectTree(t *testing.T) {
+	store := NewProjectStore(filepath.Join(testTempDir(t), "novels"))
+	created, err := store.CreateProject("Artwork Trash Lifecycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := artworkpkg.NewWorkspaceStore(created.OutputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := workspace.CreateDraft(artworkAPITestDraftInput(), "trash-artwork-draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _, err := workspace.SubmitGeneration(draft.ID, draft.Version, "trash-artwork-job", "https://fixture.invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.BeginJob(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspace.FinalizeJob(job.ID, fixedArtworkPNG(t)); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := workspace.ApplyAsset(job.AssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, trashPath, err := store.TrashProject(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(trashPath, "output", "artwork", "derivatives", applied.Derivative.FileName)); err != nil {
+		t.Fatalf("trashed artwork derivative missing: %v", err)
+	}
+	restored, err := store.RestoreTrashProject(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredWorkspace, err := artworkpkg.NewWorkspaceStore(restored.OutputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, content, err := restoredWorkspace.ReadAppliedDerivative(artworkpkg.WorkTypeCover, "project", ""); err != nil || state.AssetID != job.AssetID || len(content) == 0 {
+		t.Fatalf("restored artwork state=%+v bytes=%d err=%v", state, len(content), err)
+	}
+	_, trashPath, err = store.TrashProject(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := store.EmptyTrashProjects(); err != nil || removed != 1 {
+		t.Fatalf("empty trash removed=%d err=%v", removed, err)
+	}
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Fatalf("emptied artwork project tree still exists: %v", err)
 	}
 }
 

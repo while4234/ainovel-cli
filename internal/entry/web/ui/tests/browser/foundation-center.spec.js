@@ -10,6 +10,8 @@ test.beforeEach(async ({ page }) => {
 test('原创完整 candidate → 服务端 preview → apply 使用持久化 preview ID 与 idempotency key', async ({ page }) => {
   await page.getByRole('tab', { name: '角色卡' }).click();
   await expect(page.getByLabel('姓名', { exact: true })).toHaveValue('林舟');
+  await expect(page.getByAltText('林舟的已应用肖像').first()).toBeVisible();
+  await expect(page.getByAltText('林舟的已应用肖像').first()).toHaveAttribute('src', /foundation-portrait\/applied-content$/);
   await page.getByRole('tab', { name: '概览' }).click();
   await page.getByRole('tab', { name: '角色卡' }).press('Home');
   await expect(page.getByRole('tab', { name: '概览' })).toBeFocused();

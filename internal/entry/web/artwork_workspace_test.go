@@ -349,6 +349,13 @@ func TestArtworkWorkspaceAPIEndToEndWithFakeGateway(t *testing.T) {
 	if applyFirst.Code != http.StatusOK || applyAgain.Code != http.StatusOK || applyFirst.Body.String() != applyAgain.Body.String() {
 		t.Fatalf("idempotent apply status=%d/%d body=%s / %s", applyFirst.Code, applyAgain.Code, applyFirst.Body.String(), applyAgain.Body.String())
 	}
+	if !strings.Contains(applyFirst.Body.String(), "/applied-content") {
+		t.Fatalf("applied response has no derivative URL: %s", applyFirst.Body.String())
+	}
+	appliedContent := performProjectArtworkRequest(t, handler, http.MethodGet, base+"/assets/"+job.AssetID+"/applied-content", "", "")
+	if appliedContent.Code != http.StatusOK || appliedContent.Header().Get("Content-Type") != "image/png" || bytes.Equal(appliedContent.Body.Bytes(), imageBytes) {
+		t.Fatalf("applied derivative status=%d headers=%v", appliedContent.Code, appliedContent.Header())
+	}
 	protectedDelete := performProjectArtworkRequest(t, handler, http.MethodDelete, base+"/assets/"+job.AssetID, "", "")
 	if protectedDelete.Code != http.StatusConflict {
 		t.Fatalf("protected delete status=%d body=%s", protectedDelete.Code, protectedDelete.Body.String())
@@ -381,6 +388,14 @@ func TestArtworkWorkspaceAPIEndToEndWithFakeGateway(t *testing.T) {
 	deleteFirst := performProjectArtworkRequest(t, handler, http.MethodDelete, base+"/assets/"+job.AssetID, "", "")
 	if deleteFirst.Code != http.StatusNoContent {
 		t.Fatalf("delete un-applied first status=%d body=%s", deleteFirst.Code, deleteFirst.Body.String())
+	}
+	unapplySecond := performProjectArtworkRequest(t, handler, http.MethodDelete, base+"/assets/"+secondJob.AssetID+"/apply", "", "")
+	if unapplySecond.Code != http.StatusOK || strings.Contains(unapplySecond.Body.String(), "/applied-content") {
+		t.Fatalf("unapply second status=%d body=%s", unapplySecond.Code, unapplySecond.Body.String())
+	}
+	missingAppliedContent := performProjectArtworkRequest(t, handler, http.MethodGet, base+"/assets/"+secondJob.AssetID+"/applied-content", "", "")
+	if missingAppliedContent.Code != http.StatusNotFound {
+		t.Fatalf("unapplied derivative status=%d body=%s", missingAppliedContent.Code, missingAppliedContent.Body.String())
 	}
 
 	failRequests.Store(true)
@@ -470,6 +485,10 @@ func TestArtworkProjectCloneCopiesAssetsButNeverReplaysQueuedJob(t *testing.T) {
 	if _, err := workspace.FinalizeJob(firstJob.ID, fixedArtworkPNG(t)); err != nil {
 		t.Fatal(err)
 	}
+	sourceApplied, err := workspace.ApplyAsset(firstJob.AssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	queuedDraft, _ := workspace.CreateDraft(artworkAPITestDraftInput(), "queued-draft")
 	queuedJob, _, _ := workspace.SubmitGeneration(queuedDraft.ID, 1, "queued-job", "https://gateway.invalid")
 
@@ -484,6 +503,10 @@ func TestArtworkProjectCloneCopiesAssetsButNeverReplaysQueuedJob(t *testing.T) {
 	clonedAsset, err := clonedWorkspace.GetAsset(firstJob.AssetID)
 	if err != nil || clonedAsset.SHA256 == "" {
 		t.Fatalf("cloned asset = %+v, %v", clonedAsset, err)
+	}
+	clonedApplied, clonedDerivative, err := clonedWorkspace.ReadAppliedDerivative(artworkpkg.WorkTypeCover, "project", "")
+	if err != nil || clonedApplied.AssetID != firstJob.AssetID || clonedApplied.Derivative.SHA256 != sourceApplied.Derivative.SHA256 || len(clonedDerivative) == 0 {
+		t.Fatalf("cloned applied artwork = %+v bytes=%d err=%v", clonedApplied, len(clonedDerivative), err)
 	}
 	clonedQueued, err := clonedWorkspace.GetJob(queuedJob.ID)
 	if err != nil || clonedQueued.Status != artworkpkg.JobFailed || clonedQueued.ErrorCode != "cloned_job_not_resumed" {

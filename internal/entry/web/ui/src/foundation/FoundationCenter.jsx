@@ -363,6 +363,7 @@ export function FoundationCenter({
       {tab === 'overview' ? <FoundationOverview server={state.server} draft={state.draft} workspace={characterWorkspace} disabled={disabled} premiseError={state.validation.fields.premise} onPremiseChange={(premise) => edit({ premise })} onOpenCharacters={() => setTab('characters')} /> : null}
       {tab === 'characters' ? <CharacterEditor
         value={state.draft.characters} coreCast={state.server.coreCast}
+        portraits={state.server.portraitsByCharacterID}
         mode={state.server.mode} sourceFoundation={state.server.sourceFoundation}
         relationships={state.draft.relationships} disabled={disabled} dirty={state.status === 'dirty'}
         errors={state.validation.fields} workspace={characterWorkspace} workspaceLoading={!state.characterWorkspace && !state.characterWorkspaceError}

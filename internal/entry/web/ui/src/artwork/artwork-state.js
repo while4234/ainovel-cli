@@ -58,6 +58,8 @@ export function artworkReducer(state, action) {
       return { ...state, assets: upsertById(state.assets, action.asset) };
     case 'asset-apply':
       return { ...state, assets: applyAssetSelection(state.assets, action.asset) };
+    case 'asset-unapply':
+      return { ...state, assets: upsertById(state.assets, { ...action.asset, applied: false }) };
     case 'asset-remove':
       return { ...state, assets: state.assets.filter((item) => item.id !== action.id) };
     case 'gateway':

@@ -22,7 +22,7 @@ const fieldLabels = {
 };
 
 export function CharacterEditor({
-  value, coreCast, mode = 'normal', sourceFoundation, relationships = [], disabled, dirty = false,
+  value, coreCast, portraits = {}, mode = 'normal', sourceFoundation, relationships = [], disabled, dirty = false,
   errors = {}, workspace, workspaceLoading = false, agentBusy = false, agentOpenRequestId = 0, onChange, onOpenRelationships,
   onAnalyze, onReview, onRetry, onDiscard, onConfirm
 }) {
@@ -68,6 +68,7 @@ export function CharacterEditor({
     findings: workspace?.findings, reviewStale: workspace?.reviewStale, reviewCompleted, mappingByTargetID: mappingsByTargetID, modifiedByID
   }), [displayCharacters, filters, query, coreIDs, workspace?.completenessByID, workspace?.findings, workspace?.reviewStale, reviewCompleted, mappingsByTargetID, modifiedByID]);
   const selected = displayCharacters.find((character) => character.id === selectedID) || null;
+  const selectedPortrait = selected ? portraits?.[selected.id] : null;
   const selectedIsCandidateOnly = Boolean(selected && !value.some((character) => character.id === selected.id));
   const selectedIsSourceOnly = Boolean(selected && showingSourceOnly);
 
@@ -229,6 +230,7 @@ export function CharacterEditor({
             completeness={workspace?.completenessByID?.[character.id]}
             review={reviewStatusForCharacter(character.id, workspace?.findings, workspace?.reviewStale, reviewCompleted)}
             mapping={mappingsByTargetID[character.id]} mode={mode} sourceOnly={showingSourceOnly}
+            portrait={portraits?.[character.id]}
             onSelect={() => setSelectedID(character.id)}
           />)}
         </div>
@@ -236,7 +238,10 @@ export function CharacterEditor({
       <article className="character-detail-pane">
         {!selected ? <div className="empty-state">从左侧选择角色查看详情。</div> : <>
           <header className="character-detail-header">
-            <div><span className="eyebrow">{selected.id}</span><h3>{selected.name || '未命名角色'}</h3><p>{selected.role || '尚未填写故事职责'}</p></div>
+            <div className="character-detail-identity">
+              {selectedPortrait ? <img alt={`${selected.name || '角色'}的已应用肖像`} className="character-detail-portrait" src={selectedPortrait.contentURL} /> : null}
+              <div><span className="eyebrow">{selected.id}</span><h3>{selected.name || '未命名角色'}</h3><p>{selected.role || '尚未填写故事职责'}</p></div>
+            </div>
             <button className="tool-button danger-ghost" disabled={disabled || selectedIsCandidateOnly || selectedIsSourceOnly} type="button" onClick={(event) => requestDelete(selected, event.currentTarget)}><Trash2 size={16} />删除</button>
           </header>
           <div className="character-status-row">
@@ -345,21 +350,24 @@ function CharacterAgentPanel({
   </section>;
 }
 
-function CharacterListCard({ character, selected, core, dirty, completeness, review, mapping, mode, sourceOnly, onSelect }) {
+function CharacterListCard({ character, selected, core, dirty, completeness, review, mapping, mode, sourceOnly, portrait, onSelect }) {
   return <button
     aria-selected={selected} className={`character-list-card ${selected ? 'selected' : ''}`}
     role="option" type="button" onClick={onSelect}
   >
-    <span className="character-list-title"><strong>{character.name || '未命名角色'}</strong>{core ? <span className="foundation-badge risk">core</span> : null}</span>
-    <span className="character-list-role">{character.role || '未填写职责'}</span>
-    <span className="character-list-badges">
-      <span>{tierLabels[character.tier] || '重要'}</span>
-      {sourceOnly ? <><span>原著证据</span><span>只读</span></> : <>
-        <span>{completeness?.status === 'complete' ? '完整' : `缺口 ${completeness?.missing?.length ?? '—'}`}</span>
-        <span>{reviewLabels[review]}</span>
-        {mode === 'adaptation' ? <span>{sourceLabels[mapping?.action || 'unmapped']}</span> : <span>原创</span>}
-      </>}
-      {dirty ? <span>● 未保存</span> : null}
+    {portrait ? <img alt={`${character.name || '角色'}的已应用肖像`} className="character-list-portrait" loading="lazy" src={portrait.contentURL} /> : null}
+    <span className="character-list-copy">
+      <span className="character-list-title"><strong>{character.name || '未命名角色'}</strong>{core ? <span className="foundation-badge risk">core</span> : null}</span>
+      <span className="character-list-role">{character.role || '未填写职责'}</span>
+      <span className="character-list-badges">
+        <span>{tierLabels[character.tier] || '重要'}</span>
+        {sourceOnly ? <><span>原著证据</span><span>只读</span></> : <>
+          <span>{completeness?.status === 'complete' ? '完整' : `缺口 ${completeness?.missing?.length ?? '—'}`}</span>
+          <span>{reviewLabels[review]}</span>
+          {mode === 'adaptation' ? <span>{sourceLabels[mapping?.action || 'unmapped']}</span> : <span>原创</span>}
+        </>}
+        {dirty ? <span>● 未保存</span> : null}
+      </span>
     </span>
   </button>;
 }

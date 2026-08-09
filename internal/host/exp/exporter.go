@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	artworkpkg "github.com/voocel/ainovel-cli/internal/artwork"
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
 
@@ -132,7 +133,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Result, error) {
 	case FormatTXT:
 		data = []byte(renderTXT(progress.NovelName, chapters, titleIdx, locations, bodies))
 	case FormatEPUB:
-		buf, err := renderEPUB(progress.NovelName, chapters, titleIdx, locations, bodies)
+		buf, err := renderEPUBWithCover(progress.NovelName, chapters, titleIdx, locations, bodies, loadAppliedEPUBCover(deps.Store.Dir()))
 		if err != nil {
 			return nil, fmt.Errorf("渲染 EPUB 失败：%w", err)
 		}
@@ -149,6 +150,24 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Result, error) {
 		Bytes:    len(data),
 		Skipped:  skipped,
 	}, nil
+}
+
+func loadAppliedEPUBCover(outputDir string) *epubCoverImage {
+	if _, err := os.Stat(filepath.Join(outputDir, "artwork", "schema.json")); err != nil {
+		return nil
+	}
+	store, err := artworkpkg.NewWorkspaceStore(outputDir)
+	if err != nil {
+		return nil
+	}
+	if _, err := store.ReconcileApplied(); err != nil {
+		return nil
+	}
+	state, content, err := store.ReadAppliedDerivative(artworkpkg.WorkTypeCover, "project", "")
+	if err != nil || state.Derivative.MIMEType != "image/png" || len(content) == 0 {
+		return nil
+	}
+	return &epubCoverImage{MediaType: state.Derivative.MIMEType, FileName: "cover.png", Content: content}
 }
 
 // manuscriptDisplayOrder resolves the reader-visible order from the formal

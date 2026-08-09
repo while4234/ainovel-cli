@@ -54,3 +54,9 @@ Automated tests use `httptest` servers or fake transports only. They must never
 call a live model, a paid gateway, or any real `/v1/images/generations`
 endpoint. Live gateway verification and live image generation are deliberately
 outside the automated validation contract.
+
+Applied-media, EPUB, Foundation portrait, clone/replan, and trash lifecycle
+tests finalize fixed local PNG/JPEG fixtures directly in temporary workspaces.
+They do not construct a gateway client. Browser validation uses only the local
+fixture server; its confirmation controls are synthetic and cannot reach a
+configured AI2API service.

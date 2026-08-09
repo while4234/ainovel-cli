@@ -128,7 +128,9 @@
 .character-filter-grid { display: grid; gap: 6px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .character-filter-grid select { box-sizing: border-box; font-size: 12px; min-width: 0; width: 100%; }
 .character-card-list { display: grid; gap: 6px; padding: 8px; }
-.character-list-card { background: transparent; border: 1px solid transparent; border-radius: 10px; color: inherit; cursor: pointer; display: grid; gap: 5px; padding: 10px; text-align: left; width: 100%; }
+.character-list-card { background: transparent; border: 1px solid transparent; border-radius: 10px; color: inherit; cursor: pointer; display: flex; gap: 10px; padding: 10px; text-align: left; width: 100%; }
+.character-list-copy { display: grid; flex: 1; gap: 5px; min-width: 0; }
+.character-list-portrait { aspect-ratio: 2 / 3; border-radius: 8px; flex: 0 0 48px; object-fit: cover; width: 48px; }
 .character-list-card:hover { background: color-mix(in srgb, var(--accent, #335cff) 5%, transparent); }
 .character-list-card.selected { background: color-mix(in srgb, var(--accent, #335cff) 9%, var(--surface, #fff)); border-color: color-mix(in srgb, var(--accent, #335cff) 45%, var(--border, #d8dee8)); box-shadow: inset 3px 0 var(--accent, #335cff); }
 .character-list-title { align-items: center; display: flex; gap: 6px; justify-content: space-between; min-width: 0; }
@@ -138,6 +140,8 @@
 .character-list-badges span { background: color-mix(in srgb, var(--border, #d8dee8) 55%, transparent); border-radius: 999px; font-size: 10px; padding: 2px 6px; }
 .character-detail-pane { align-content: start; display: grid; gap: 12px; overflow: auto; padding: 14px; }
 .character-detail-header, .character-side-heading { align-items: flex-start; display: flex; gap: 10px; justify-content: space-between; }
+.character-detail-identity { align-items: flex-start; display: flex; gap: 14px; min-width: 0; }
+.character-detail-portrait { aspect-ratio: 2 / 3; border-radius: 10px; flex: 0 0 72px; object-fit: cover; width: 72px; }
 .character-detail-header h3 { font-size: 24px; overflow-wrap: anywhere; }
 .character-status-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .character-status-badge { align-items: center; background: #edf3ff; border-radius: 999px; color: #264b9b; display: inline-flex; font-size: 11px; gap: 4px; padding: 4px 8px; }

@@ -18,9 +18,10 @@ output/artwork/
   jobs/<job-id>.json
   assets/<asset-id>.json
   images/<asset-id>.(png|jpg|webp)
+  derivatives/derivative-<digest>.png
   apply/<target-id>.json
   staging/*.(pending|delete)
-  journals/(finalize|apply|delete)-<id>.json
+  journals/(finalize|apply|unapply|delete)-<id>.json
 ```
 
 Drafts are mutable through an `expected_version` compare-and-swap. Prompt
@@ -121,14 +122,37 @@ Startup reconciliation runs before a project's artwork store is exposed:
 - Asset metadata without matching valid bytes is removed from the gallery and
   its succeeded job becomes `failed` with `asset_missing`.
 - Image files not referenced by committed asset metadata are removed as
-  orphans. Dangling apply pointers are removed.
-- Apply and delete journals either complete or restore a consistent
-  metadata/image pair. Applied assets are protected from deletion.
+  orphans. Dangling apply pointers are removed, missing or legacy derivatives
+  are rebuilt from verified originals, and unreferenced derivatives are
+  cleaned.
+- Apply, unapply, and delete journals either complete or restore a consistent
+  pointer/derivative/asset state. Applied assets are protected from deletion
+  until the user explicitly cancels their application.
 
-Original assets never change. Applying an asset updates only a small target
-pointer under `apply/`. Reusing an asset creates an idempotent mutable draft
-whose `prompt_source` is `reuse`; a later generated asset still records its
-origin as `generation` and its `reused_from_asset_id` provenance.
+Original assets never change. Application first validates the original digest,
+normalizes JPEG EXIF orientation 1–8, and creates a deterministic PNG:
+
+- cover: 1200×1800 centered crop;
+- character portrait: 600×900 centered crop;
+- illustration: 1600×900 centered contain with transparent padding.
+
+The derivative is written and fsynced before a journal is installed; only then
+is the small target pointer under `apply/` atomically replaced. The old
+derivative is removed after the pointer switch. A crash before the journal
+leaves an orphan that reconciliation removes; a crash after the journal is
+completed without another gateway request. Presentation/export reads use an
+applied-media-only reconcile path that never transitions or schedules image or
+prompt jobs.
+
+Reusing an asset creates an idempotent mutable draft whose `prompt_source` is
+`reuse`; a later generated asset still records its origin as `generation` and
+its `reused_from_asset_id` provenance.
+
+The applied cover derivative is embedded as the EPUB 3 `cover-image`; when no
+cover is applied, the existing text title page remains the fallback. Applied
+portrait derivatives are projected beside matching stable character IDs in
+the Foundation UI. This projection is outside canonical StoryFoundation data
+and cannot rewrite character prose.
 
 ## Project HTTP API
 
@@ -148,7 +172,10 @@ All workspace routes are under `/api/projects/{project_id}/artwork`:
 - `GET /assets`, `GET|DELETE /assets/{id}` manage gallery metadata.
 - `GET /assets/{id}/content` serves inline bytes and
   `GET /assets/{id}/download` adds a safe attachment disposition.
-- `POST /assets/{id}/apply` updates apply state idempotently.
+- `GET /assets/{id}/applied-content` serves the verified derivative only while
+  that asset owns its target pointer.
+- `POST /assets/{id}/apply` updates apply state idempotently;
+  `DELETE /assets/{id}/apply` journals and cancels the application.
 - `POST /assets/{id}/reuse-as-draft` creates or reuses a provenance-linked
   draft.
 
@@ -167,8 +194,11 @@ Committed assets, drafts, history, and apply state remain self-contained in the
 clone. Copied `queued` jobs become `failed` with `cloned_job_not_resumed`, and
 copied `running` jobs become `interrupted_unknown`; a clone never replays a
 possibly chargeable request. Replanning clones preserve the old workspace only
-inside their read-only legacy source-output reference, consistent with the
-existing replanning lifecycle.
+inside their read-only `reference/legacy/source-output/artwork` reference and
+start without an active `output/artwork` directory, consistent with the
+existing replanning lifecycle. Trash and restore move that same complete
+project tree; emptying trash removes the complete tree, including originals,
+derivatives, pointers, and journals.
 
 ## Test safety
 

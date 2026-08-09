@@ -40,5 +40,12 @@ describe('artwork state', () => {
     expect(next.assets.find((asset) => asset.id === 'old').applied).toBe(false);
     expect(next.assets.find((asset) => asset.id === 'new').applied).toBe(true);
     expect(next.assets.find((asset) => asset.id === 'other').applied).toBe(true);
+
+    const unapplied = artworkReducer(next, {
+      type: 'asset-unapply',
+      asset: { id: 'new', work_type: 'illustration', scope: 'chapter', scope_id: 'one' }
+    });
+    expect(unapplied.assets.find((asset) => asset.id === 'new').applied).toBe(false);
+    expect(unapplied.assets.find((asset) => asset.id === 'other').applied).toBe(true);
   });
 });

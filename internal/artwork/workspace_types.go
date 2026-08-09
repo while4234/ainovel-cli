@@ -380,10 +380,25 @@ type AssetView struct {
 }
 
 type ApplyState struct {
-	SchemaVersion int       `json:"schema_version"`
-	Target        string    `json:"target"`
-	AssetID       string    `json:"asset_id"`
-	AppliedAt     time.Time `json:"applied_at"`
+	SchemaVersion int               `json:"schema_version"`
+	Target        string            `json:"target"`
+	AssetID       string            `json:"asset_id"`
+	WorkType      WorkType          `json:"work_type,omitempty"`
+	Scope         string            `json:"scope,omitempty"`
+	ScopeID       string            `json:"scope_id,omitempty"`
+	Derivative    AppliedDerivative `json:"derivative,omitempty"`
+	AppliedAt     time.Time         `json:"applied_at"`
+}
+
+type AppliedDerivative struct {
+	Version           string `json:"version"`
+	FileName          string `json:"file_name"`
+	MIMEType          string `json:"mime_type"`
+	Width             int    `json:"width"`
+	Height            int    `json:"height"`
+	SHA256            string `json:"sha256"`
+	Fit               string `json:"fit"`
+	SourceOrientation int    `json:"source_orientation"`
 }
 
 type Page[T any] struct {

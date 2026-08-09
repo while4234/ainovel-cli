@@ -79,7 +79,12 @@ function resetArtworkFixture() {
 	artworkLastRequest = null;
 }
 resetArtworkFixture();
-const artworkAssetView = (asset) => ({ ...asset, content_url: `/api/projects/artwork-browser-project/artwork/assets/${asset.id}/content`, download_url: `/api/projects/artwork-browser-project/artwork/assets/${asset.id}/download` });
+const artworkAssetView = (asset) => ({
+	...asset,
+	content_url: `/api/projects/artwork-browser-project/artwork/assets/${asset.id}/content`,
+	download_url: `/api/projects/artwork-browser-project/artwork/assets/${asset.id}/download`,
+	...(asset.applied ? { applied_content_url: `/api/projects/artwork-browser-project/artwork/assets/${asset.id}/applied-content` } : {})
+});
 const artworkWorkspace = () => ({
 	schema_version: 1,
 	drafts: { items: artworkDrafts, next_cursor: '' },
@@ -109,7 +114,11 @@ const foundationState = (projectID) => {
 	const readonly = foundationScenario === 'readonly';
 	const sourceOnly = foundationScenario === 'source-only';
 	const adaptation = foundationScenario === 'adaptation' || sourceOnly;
-	return { project: { id: projectID, name: projectID }, foundation: { mode: adaptation ? 'adaptation' : 'normal', ...(adaptation ? { source_foundation: sourceFoundation, mode_specific: { source_signature: sourceFoundation.source_signature } } : {}), target_foundation: sourceOnly ? { schema_version: 2, revision: 0, premise: '', characters: [], relationships: [], relationships_reviewed: false, world_rules: [] } : targetFoundation(projectID), editable: !readonly && !active && !sourceOnly, readonly_reason: sourceOnly ? 'adaptation_intent_unavailable' : readonly ? 'body_files_started' : active ? 'active_foundation_revision' : '', base_revision: foundationRevision, base_audit_signature: `audit-${foundationRevision}`, core_cast_signature: sourceOnly ? '' : 'core-signature', ...(sourceOnly ? {} : { core_cast: coreCast, core_cast_completion: { complete: true, missing: [], blocking_reasons: [] } }), core_cast_confirmed: !sourceOnly, active_revision: active, planning_review: { state: 'confirmed', revision: 2 }, allowed_operations: foundationScenario === 'failed' ? ['get', 'retry'] : !readonly && !active && !sourceOnly ? ['get', 'preview', 'apply'] : ['get'] } };
+	return {
+		project: { id: projectID, name: projectID },
+		foundation: { mode: adaptation ? 'adaptation' : 'normal', ...(adaptation ? { source_foundation: sourceFoundation, mode_specific: { source_signature: sourceFoundation.source_signature } } : {}), target_foundation: sourceOnly ? { schema_version: 2, revision: 0, premise: '', characters: [], relationships: [], relationships_reviewed: false, world_rules: [] } : targetFoundation(projectID), editable: !readonly && !active && !sourceOnly, readonly_reason: sourceOnly ? 'adaptation_intent_unavailable' : readonly ? 'body_files_started' : active ? 'active_foundation_revision' : '', base_revision: foundationRevision, base_audit_signature: `audit-${foundationRevision}`, core_cast_signature: sourceOnly ? '' : 'core-signature', ...(sourceOnly ? {} : { core_cast: coreCast, core_cast_completion: { complete: true, missing: [], blocking_reasons: [] } }), core_cast_confirmed: !sourceOnly, active_revision: active, planning_review: { state: 'confirmed', revision: 2 }, allowed_operations: foundationScenario === 'failed' ? ['get', 'retry'] : !readonly && !active && !sourceOnly ? ['get', 'preview', 'apply'] : ['get'] },
+		artwork: sourceOnly ? { status: 'unavailable', portraits: [] } : { status: 'ready', portraits: [{ character_id: 'hero', asset_id: 'foundation-portrait', content_url: `/api/projects/${projectID}/artwork/assets/foundation-portrait/applied-content` }] }
+	};
 };
 const characterWorkspaceState = (projectID) => {
 	const foundation = targetFoundation(projectID);
@@ -182,6 +191,10 @@ const server = http.createServer(async (request, response) => {
 	if (path === '/api/artwork/config/verify' && request.method === 'POST') {
 		await readJSON(request);
 		return json(response, 200, { verified: true, model_count: artworkRegistry.models.length, config: artworkConfig });
+	}
+	if (/^\/api\/projects\/foundation-project-[ab]\/artwork\/assets\/foundation-portrait\/applied-content$/.test(path) && request.method === 'GET') {
+		response.writeHead(200, { 'content-type': 'image/svg+xml', 'content-length': artworkCover.length, 'cache-control': 'private, max-age=31536000, immutable' });
+		response.end(artworkCover); return;
 	}
 	if (path === '/api/projects/artwork-browser-project/foundation' && request.method === 'GET') return json(response, 200, {
 		foundation: { target_foundation: { characters: [{ id: 'hero', name: '林舟' }, { id: 'keeper', name: '守灯人' }] } }
@@ -258,13 +271,13 @@ const server = http.createServer(async (request, response) => {
 		}
 		return json(response, 200, { items: artworkAssets.map(artworkAssetView), next_cursor: '' });
 	}
-	const artworkAssetMatch = path.match(/^\/api\/projects\/artwork-browser-project\/artwork\/assets\/([^/]+)(?:\/(content|download|apply|reuse-as-draft))?$/);
+	const artworkAssetMatch = path.match(/^\/api\/projects\/artwork-browser-project\/artwork\/assets\/([^/]+)(?:\/(content|download|applied-content|apply|reuse-as-draft))?$/);
 	if (artworkAssetMatch) {
 		const assetID = decodeURIComponent(artworkAssetMatch[1]);
 		const action = artworkAssetMatch[2] || '';
 		const found = artworkAssets.find((item) => item.id === assetID) || (assetID === 'art-asset-page-2' ? { ...artworkAssets[1], id: assetID } : null);
 		if (!found) return json(response, 404, { error: { code: 'artwork_not_found' } });
-		if ((action === 'content' || action === 'download') && request.method === 'GET') {
+		if ((action === 'content' || action === 'download' || action === 'applied-content') && request.method === 'GET') {
 			const bytes = found.work_type === 'illustration' ? artworkIllustration : artworkCover;
 			response.writeHead(200, { 'content-type': 'image/svg+xml', 'content-length': bytes.length, 'cache-control': 'private, max-age=31536000, immutable', ...(action === 'download' ? { 'content-disposition': `attachment; filename="${found.file_name}"` } : {}) });
 			response.end(bytes); return;
@@ -280,6 +293,11 @@ const server = http.createServer(async (request, response) => {
 			found.applied = true;
 			artworkLastRequest = { action: 'apply-asset', asset_id: assetID };
 			return json(response, 200, { asset: artworkAssetView(found), applied_to: `${found.work_type}:${found.scope}:${found.scope_id || ''}` });
+		}
+		if (action === 'apply' && request.method === 'DELETE') {
+			found.applied = false;
+			artworkLastRequest = { action: 'unapply-asset', asset_id: assetID };
+			return json(response, 200, { asset: artworkAssetView(found) });
 		}
 		if (action === 'reuse-as-draft' && request.method === 'POST') {
 			await readJSON(request);

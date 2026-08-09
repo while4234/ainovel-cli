@@ -60,6 +60,7 @@ export function ArtworkWorkspace({
           assets={state.assets}
           cursor={state.assetsCursor}
           onApply={actions.applyAsset}
+          onUnapply={actions.unapplyAsset}
           onDelete={actions.removeAsset}
           onDownload={actions.downloadAsset}
           onLoadMore={actions.loadMoreAssets}

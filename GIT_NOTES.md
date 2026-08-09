@@ -46,6 +46,14 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-09 `this commit` `feat: integrate applied artwork lifecycle`: adds
+  orientation-aware deterministic cover/portrait/illustration derivatives,
+  journaled atomic apply/unapply and applied-only reconciliation, EPUB image
+  covers with text fallback, Foundation portrait presentation outside canonical
+  prose, and clone/replan/trash lifecycle coverage. Required Go, Web unit/build,
+  embedded-asset, and PR-focused browser viewport validation plus local restart
+  smoke use fixed local fixtures only; no live text model, AI2API verification,
+  or image-generation endpoint is invoked.
 - 2026-08-09 `this commit` `feat: add artwork visual studio`: adds the modular
   React 绘境 workspace for story covers/illustrations and character portraits,
   capability-driven model/size selection, revision-safe autosave, explicit
