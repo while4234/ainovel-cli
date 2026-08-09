@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-09 `f5ed807` `build: refresh merged web assets`: reconciles the
+  diverged local and remote `main`, integrates both previously unmerged legacy
+  recovery branches, preserves the user's four local global prompts exactly,
+  and rebuilds the final Web bundle. Merge commits are `198d5f9`, `04db2a1`,
+  and `7442f50`; all local feature branches and the superseded stash were fully
+  absorbed before cleanup.
 - 2026-07-20 `e50298a` `fix: sync completed legacy novel backfills`: completed
   legacy-library analysis streams now proceed directly to the validated atomic
   library replacement instead of reopening the project while its normal-flow
@@ -85,7 +91,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   KiB within the Character role's 128 KiB compiled-input boundary. The real
   8-character/15-relationship review packet fell from 44,655 to 41,379 bytes
   and completed its independent review with `passed` status.
-- 2026-07-31 `this commit` `fix: resume and complete legacy novels`: repairs
+- 2026-07-31 `d4e4375` `fix: resume and complete legacy novels`: repairs
   confirmed Character bindings when only newly required gender metadata or
   user-rules evidence changed, creates a fail-closed legacy completion
   checkpoint only for exact 55/55-style formal coverage, enriches old layered
@@ -93,7 +99,7 @@ page. The normal local Web URL is `http://127.0.0.1:9898`.
   independent Ed25519 receipt canonicalization, and removes two deterministic
   audit false positives. Real validation completed `插翅难飞` at 55/55 chapters
   and 221,710 words with a signed 132-layer completion audit.
-- 2026-07-31 `this commit` `fix: allow bounded full-book outline audits`:
+- 2026-07-31 `e6be096` `fix: allow bounded full-book outline audits`:
   raises only `adapt_planner_audit` to a 128 KiB compiled-input boundary so
   the bounded full-book pre-writing outline audit can include all confirmed
   detail batches. The real 21-chapter audit package was 114,689 bytes.
