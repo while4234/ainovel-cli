@@ -56,6 +56,7 @@ import {
   completeSetup,
   continueProject,
   cloneProject,
+  cloneProjectForReplanning,
   createProject,
   deleteGlobalProviderModel,
   deleteProviderModel,
@@ -280,6 +281,7 @@ function createAdaptationState() {
     uploadMessage: '',
     analysisStatus: 'idle',
     analysisEvents: [],
+    analysisDiagnostic: null,
     mode: 'chapter',
     brief: '',
     proposalKey: '',
@@ -445,6 +447,7 @@ function restoreAdaptationProjectState(previous, status, snapshot) {
     sourceFile,
     uploadMessage: status.message || (sourceFile ? '已恢复上传原文' : ''),
     analysisStatus,
+    analysisDiagnostic: status.analysis_diagnostic || status.analysisDiagnostic || null,
     analysisEvents: Array.isArray(status.analysis_events || status.analysisEvents)
       ? (status.analysis_events || status.analysisEvents)
     : []
@@ -2088,10 +2091,10 @@ export default function App() {
     }
   };
 
-  const beginProjectClone = (project) => {
+  const beginProjectClone = (project, replan = false) => {
     const projectName = project.name || project.id;
     setProjectMenu(null);
-    setCloneDialog({ project, name: `${projectName} - 副本`, openAfterClone: true });
+    setCloneDialog({ project, name: `${projectName} - ${replan ? '重新规划' : '副本'}`, openAfterClone: true, replan });
   };
 
   const submitProjectClone = async (event) => {
@@ -2104,7 +2107,9 @@ export default function App() {
     setBusy(true);
     setError('');
     try {
-      const response = await cloneProject(sourceProject.id, name);
+      const response = cloneDialog.replan
+        ? await cloneProjectForReplanning(sourceProject.id, name)
+        : await cloneProject(sourceProject.id, name);
       const clonedProject = response?.project || response;
       if (!clonedProject?.id) {
         throw new Error('项目克隆成功，但响应中缺少新项目信息');
@@ -3236,6 +3241,7 @@ export default function App() {
           ...previous,
           analysisStatus: 'running',
           analysisEvents: Array.isArray(responseEvents) ? responseEvents : previous.analysisEvents,
+          analysisDiagnostic: data.adaptation?.analysis_diagnostic || data.adaptation?.analysisDiagnostic || previous.analysisDiagnostic,
           error: ''
         }));
         return;
@@ -3244,6 +3250,7 @@ export default function App() {
         ...previous,
         analysisStatus: 'done',
         analysisEvents: data.events || [],
+        analysisDiagnostic: data.adaptation?.analysis_diagnostic || data.adaptation?.analysisDiagnostic || previous.analysisDiagnostic,
         libraryItems: data.library_item
           ? [data.library_item, ...previous.libraryItems.filter((item) => libraryEntryName(item) !== libraryEntryName(data.library_item))]
           : previous.libraryItems,
@@ -4839,6 +4846,10 @@ export default function App() {
               <Copy size={16} />
               <span>克隆项目</span>
             </button>
+            <button onClick={() => beginProjectClone(projectMenu.project, true)} type="button">
+              <RotateCcw size={16} />
+              <span>克隆并重新规划</span>
+            </button>
             <button className="danger" onClick={() => beginProjectDelete(projectMenu.project)} type="button">
               <Trash2 size={16} />
               <span>移入回收站</span>
@@ -4888,6 +4899,7 @@ export default function App() {
               <strong id="clone-dialog-title">克隆项目</strong>
             </div>
             <p className="dialog-copy">将完整复制当前项目的文档和配置。克隆项目与原项目完全独立，后续修改不会影响原项目。</p>
+            {cloneDialog.replan ? <p className="warning-note">原项目保持不变；旧正文、草稿、计划和设定会放入新项目的只读参考区，活动正文与规划进度从零开始。源作身份与可复用分析会保留。</p> : null}
             <label className="clone-name-field">
               <span>项目名称</span>
               <input
@@ -8159,6 +8171,7 @@ function AdaptationPanel({
           <WandSparkles size={16} />
           {analyzed ? '增量重新分析并升级' : '分析'}
         </button>
+        <AnalysisDiagnostic diagnostic={adaptation.analysisDiagnostic} />
         <div className={`workflow-status ${adaptation.analysisStatus}`}>
           <strong>{workflowStatusText(adaptation.analysisStatus)}</strong>
           <span>{latestAnalysis?.message || '等待分析'}</span>
@@ -8638,6 +8651,17 @@ function LibrarySearch({ disabled, label, placeholder, query, onQueryChange, onR
   );
 }
 
+function AnalysisDiagnostic({ diagnostic }) {
+  if (!diagnostic) return null;
+  const estimate = diagnostic.estimate || {};
+  return <div className={`analysis-diagnostic ${diagnostic.complete ? 'complete' : 'incomplete'}`} role="status">
+    <strong>{diagnostic.complete ? '分析产物完整' : '分析产物需要修复'}</strong>
+    <span>章节报告 {diagnostic.report_count || 0}/{diagnostic.chapter_count || 0} · 角色 {diagnostic.complete_character_count || 0}/{diagnostic.character_count || 0} · 关系 {diagnostic.relationship_count || 0}</span>
+    {!diagnostic.complete ? <span>补全预计调用 {estimate.estimated_calls || 0} 次（章节 {estimate.chapter_calls || 0}，设定 {estimate.foundation_calls || 0}，Dossier {estimate.dossier_calls || 0}）</span> : null}
+    {diagnostic.issues?.length ? <details><summary>查看问题</summary><ul>{diagnostic.issues.map((issue) => <li key={issue.code}>{issue.message}</li>)}</ul></details> : null}
+  </div>;
+}
+
 function LibraryList({ canLoad, emptyText, items, loading, onLoad }) {
   if (loading && items.length === 0) {
     return <div className="empty-state">加载中...</div>;
@@ -8660,6 +8684,7 @@ function LibraryList({ canLoad, emptyText, items, loading, onLoad }) {
             type="button"
           >
             <span className="library-entry">
+              {entry?.analysis ? <small className={entry.analysis.complete ? 'analysis-badge complete' : 'analysis-badge incomplete'}>{entry.analysis.complete ? '分析完整' : `待补全 ${entry.analysis.issues?.length || 0} 项`}</small> : null}
               <strong>{name || '未命名条目'}</strong>
               <small>{meta || '可加载到当前项目'}</small>
             </span>

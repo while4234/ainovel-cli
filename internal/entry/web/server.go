@@ -473,6 +473,8 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectOpen(w, r, id)
 	case "clone":
 		s.handleProjectClone(w, r, id)
+	case "clone/replan":
+		s.handleProjectReplanClone(w, r, id)
 	case "snapshot":
 		s.handleProjectSnapshot(w, r, id)
 	case "resume":
@@ -483,7 +485,7 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectStart(w, r, id)
 	case "pause":
 		s.handleProjectPause(w, r, id)
-	case "foundation", "foundation/preview", "foundation/apply", "foundation/retry":
+	case "foundation", "foundation/preview", "foundation/apply", "foundation/retry", "foundation/recovery/preview", "foundation/recovery/apply":
 		s.handleProjectFoundation(w, r, id, action)
 	case "foundation/characters", "foundation/characters/analyze", "foundation/characters/review",
 		"foundation/characters/retry", "foundation/characters/discard":
@@ -692,6 +694,14 @@ func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProjectClone(w http.ResponseWriter, r *http.Request, id string) {
+	s.handleProjectCloneMode(w, r, id, false)
+}
+
+func (s *Server) handleProjectReplanClone(w http.ResponseWriter, r *http.Request, id string) {
+	s.handleProjectCloneMode(w, r, id, true)
+}
+
+func (s *Server) handleProjectCloneMode(w http.ResponseWriter, r *http.Request, id string, replan bool) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -718,7 +728,12 @@ func (s *Server) handleProjectClone(w http.ResponseWriter, r *http.Request, id s
 		writeError(w, http.StatusConflict, "current project is running; pause it before cloning")
 		return
 	}
-	manifest, err := s.store.CloneProject(source.ID, req.Name)
+	var manifest ProjectManifest
+	if replan {
+		manifest, err = s.store.CloneProjectForReplanning(source.ID, req.Name)
+	} else {
+		manifest, err = s.store.CloneProject(source.ID, req.Name)
+	}
 	if err != nil {
 		writeProjectManifestError(w, err)
 		return
@@ -726,6 +741,7 @@ func (s *Server) handleProjectClone(w http.ResponseWriter, r *http.Request, id s
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"project":           manifest,
 		"source_project_id": source.ID,
+		"replanning":        replan,
 	})
 }
 

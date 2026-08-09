@@ -20,17 +20,18 @@ type SummaryRetryHook func(agent string, retry, maxRetries int, delay time.Durat
 
 // contextManagerConfig 聚合 ContextManager 的全部配置参数。
 type contextManagerConfig struct {
-	Model            agentcore.ChatModel
-	Store            *store.Store
-	ContextWindow    int
-	ReserveTokens    int
-	KeepRecentTokens int
-	Agent            string
-	CommitOnProject  bool
-	Summary          *corecontext.FullSummaryConfig
-	ToolMicrocompact *corecontext.ToolResultMicrocompactConfig
-	ExtraStrategies  []corecontext.Strategy
-	OnSummaryRetry   SummaryRetryHook
+	Model             agentcore.ChatModel
+	Store             *store.Store
+	ContextWindow     int
+	ReserveTokens     int
+	KeepRecentTokens  int
+	Agent             string
+	CommitOnProject   bool
+	Summary           *corecontext.FullSummaryConfig
+	ToolMicrocompact  *corecontext.ToolResultMicrocompactConfig
+	LeadingStrategies []corecontext.Strategy
+	ExtraStrategies   []corecontext.Strategy
+	OnSummaryRetry    SummaryRetryHook
 }
 
 // forceToolResultMicrocompact adapts agentcore's lossless tool-result
@@ -177,10 +178,11 @@ func newContextManager(cfg contextManagerConfig) *corecontext.ContextEngine {
 		tc = *cfg.ToolMicrocompact
 	}
 
-	strategies := []corecontext.Strategy{
+	strategies := append([]corecontext.Strategy(nil), cfg.LeadingStrategies...)
+	strategies = append(strategies,
 		corecontext.NewToolResultMicrocompact(tc),
 		corecontext.NewLightTrim(corecontext.LightTrimConfig{}),
-	}
+	)
 	strategies = append(strategies, cfg.ExtraStrategies...)
 	strategies = append(strategies, corecontext.NewFullSummary(sc))
 

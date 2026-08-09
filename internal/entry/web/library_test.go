@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -739,15 +740,8 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 	if err := st.Adaptation.SaveSourceReports(reports); err != nil {
 		t.Fatalf("SaveSourceReports: %v", err)
 	}
-	if err := st.Adaptation.SaveSourceFoundation(domain.AdaptationSourceFoundation{
-		Version:            1,
-		SourcePath:         sourcePath,
-		SourceChapterCount: sourceManifest.ChapterCount,
-		SourceSignature:    store.AdaptationSourceSignature(sourceManifest),
-		ReportSignature:    "fixture-report-signature",
-		PromptVersion:      "source-foundation-merge-v1:fixture",
-		BatchRuneLimit:     70_000,
-		Premise:            "source premise",
+	foundation := currentSourceFoundationFixture(sourceManifest, reports, domain.AdaptationSourceFoundation{
+		Premise: "source premise",
 		Characters: []domain.Character{{
 			Name:        "Ari",
 			Role:        "lead",
@@ -779,7 +773,8 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 				}},
 			}},
 		}},
-	}); err != nil {
+	})
+	if err := st.Adaptation.SaveSourceFoundation(foundation); err != nil {
 		t.Fatalf("SaveSourceFoundation: %v", err)
 	}
 	batch := domain.AdaptationCoCreateDossierBatch{
@@ -801,11 +796,41 @@ func writePreparedAdaptationFixture(t *testing.T, manifest ProjectManifest, sour
 		SourceSignature:    store.AdaptationSourceSignature(sourceManifest),
 		BatchSize:          adaptengine.CoCreateDossierBatchSize,
 		BatchRuneLimit:     adaptengine.CoCreateDossierBatchRuneLimit,
+		RelationshipMap:    []domain.AdaptationRelationshipSignal{},
 		Batches:            []domain.AdaptationCoCreateDossierBatch{batch},
 	}); err != nil {
 		t.Fatalf("SaveCoCreateDossier: %v", err)
 	}
 	return sourcePath
+}
+
+func currentSourceFoundationFixture(
+	manifest domain.AdaptationSourceManifest,
+	reports []domain.AdaptationSourceReport,
+	foundation domain.AdaptationSourceFoundation,
+) domain.AdaptationSourceFoundation {
+	ordered := append([]domain.AdaptationSourceReport(nil), reports...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].Chapter < ordered[j].Chapter
+	})
+	reportData, err := json.Marshal(struct {
+		Version int                             `json:"version"`
+		Reports []domain.AdaptationSourceReport `json:"reports"`
+	}{Version: 1, Reports: ordered})
+	if err != nil {
+		panic(err)
+	}
+	// Keep this fixture aligned with the current source-foundation schema. The
+	// diagnostic intentionally rejects older version/prompt pairs as recoverable
+	// legacy analysis rather than treating them as complete.
+	foundation.Version = 4
+	foundation.SourcePath = manifest.SourcePath
+	foundation.SourceChapterCount = manifest.ChapterCount
+	foundation.SourceSignature = store.AdaptationSourceSignature(manifest)
+	foundation.ReportSignature = store.TextSHA256(string(reportData))
+	foundation.PromptVersion = "source-foundation-merge-v3:test"
+	foundation.BatchRuneLimit = 1
+	return foundation
 }
 
 func writeContaminatedCoCreateProgress(t *testing.T, root string) {

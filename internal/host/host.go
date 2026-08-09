@@ -1229,7 +1229,11 @@ func (h *Host) restoreConfiguredModelRoutes() error {
 	if h.models == nil {
 		return nil
 	}
-	return h.models.ApplyConfig(cloneHostRuntimeConfig(h.cfg))
+	if err := h.models.ApplyConfig(cloneHostRuntimeConfig(h.cfg)); err != nil {
+		return err
+	}
+	h.refreshCoordinatorContextWindowLocked("coordinator", "")
+	return nil
 }
 
 // interventionMsg 把用户文本包装成 Coordinator 可识别的干预消息。
@@ -3939,10 +3943,11 @@ func (h *Host) switchModelLocked(role, provider, model string) error {
 	// engine 阈值拉到 891k，写超 200k 直接爆 API）。
 	if h.coordinator != nil && h.coordinatorCtxMgr != nil && (role == "" || role == "default" || role == "coordinator") {
 		_, coordinatorModel, _ := h.models.CurrentSelection("coordinator")
-		coordinatorWindow, coordSource := h.cfg.ResolveContextWindow(coordinatorModel)
+		configuredWindow, coordSource := h.cfg.ResolveContextWindow(coordinatorModel)
+		coordinatorWindow, coordinatorReserve := agents.CoordinatorContextBudget(coordinatorModel, configuredWindow)
 		h.coordinator.SetContextWindow(coordinatorWindow)
 		h.coordinatorCtxMgr.SetContextWindow(coordinatorWindow)
-		h.coordinatorCtxMgr.SetReserveTokens(bootstrap.CompactReserveTokens(coordinatorWindow))
+		h.coordinatorCtxMgr.SetReserveTokens(coordinatorReserve)
 		// coordinator 实际模型与切换目标不同（用户切 default 但 coordinator 有专属 role）时，
 		// 上面 LogContextWindowChoice 打的是 default 的窗口，与实际生效值不一致；补一行。
 		if coordinatorModel != model {
@@ -3971,10 +3976,11 @@ func (h *Host) refreshCoordinatorContextWindowLocked(role, model string) {
 	if coordinatorModel == "" {
 		coordinatorModel = model
 	}
-	window, _ := h.cfg.ResolveContextWindow(coordinatorModel)
+	configuredWindow, _ := h.cfg.ResolveContextWindow(coordinatorModel)
+	window, reserve := agents.CoordinatorContextBudget(coordinatorModel, configuredWindow)
 	h.coordinator.SetContextWindow(window)
 	h.coordinatorCtxMgr.SetContextWindow(window)
-	h.coordinatorCtxMgr.SetReserveTokens(bootstrap.CompactReserveTokens(window))
+	h.coordinatorCtxMgr.SetReserveTokens(reserve)
 }
 
 func providerConfigCanAddModel(existing, incoming bootstrap.ProviderConfig) bool {

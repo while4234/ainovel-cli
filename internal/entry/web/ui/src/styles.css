@@ -5273,7 +5273,6 @@ h2 {
 @media (max-width: 760px) {
   .manuscript-current-candidate { grid-template-columns: 1fr; }
 }
-
 @media (min-width: 1181px) and (max-height: 940px) {
   .foundation-review-action-copy {
     display: none;
@@ -5366,3 +5365,21 @@ h2 {
     min-height: 54px;
   }
 }
+
+.analysis-diagnostic {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border, #d8d4cb);
+  border-radius: 0.65rem;
+  background: rgba(255, 255, 255, 0.55);
+  font-size: 0.82rem;
+}
+
+.analysis-diagnostic.complete,
+.analysis-badge.complete { color: #246b45; }
+.analysis-diagnostic.incomplete,
+.analysis-badge.incomplete { color: #9a5b16; }
+.analysis-diagnostic ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+.analysis-badge { font-weight: 650; }

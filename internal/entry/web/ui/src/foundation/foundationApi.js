@@ -1,10 +1,12 @@
 import {
   analyzeProjectFoundationCharacters,
+  applyLegacyFoundationRecovery,
   applyProjectFoundation,
   confirmProjectCharacterCards,
   discardProjectFoundationCharacters,
   getProjectFoundation,
   getProjectFoundationCharacters,
+  previewLegacyFoundationRecovery,
   previewProjectFoundation,
   retryProjectFoundation,
   retryProjectFoundationCharacters,
@@ -26,6 +28,14 @@ export async function applyFoundation(projectId, previewId, idempotencyKey, sign
 
 export async function retryFoundation(projectId, idempotencyKey, signal) {
   return retryProjectFoundation(projectId, idempotencyKey, { signal });
+}
+
+export async function previewLegacyRecovery(projectId, signal) {
+  return previewLegacyFoundationRecovery(projectId, { signal });
+}
+
+export async function applyLegacyRecovery(projectId, preview, signal) {
+  return applyLegacyFoundationRecovery(projectId, preview, { signal });
 }
 
 export function loadCharacterWorkspace(projectId, runId = '', signal) {

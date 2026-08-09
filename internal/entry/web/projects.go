@@ -23,17 +23,19 @@ import (
 const manifestVersion = 1
 
 type ProjectManifest struct {
-	Version        int        `json:"version"`
-	ID             string     `json:"id"`
-	Name           string     `json:"name"`
-	RootDir        string     `json:"root_dir"`
-	OutputDir      string     `json:"output_dir"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	LastAccessedAt time.Time  `json:"last_accessed_at"`
-	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
-	ClonedFromID   string     `json:"cloned_from_id,omitempty"`
-	ClonedAt       *time.Time `json:"cloned_at,omitempty"`
+	Version         int        `json:"version"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	RootDir         string     `json:"root_dir"`
+	OutputDir       string     `json:"output_dir"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	LastAccessedAt  time.Time  `json:"last_accessed_at"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	ClonedFromID    string     `json:"cloned_from_id,omitempty"`
+	ClonedAt        *time.Time `json:"cloned_at,omitempty"`
+	ReplannedFromID string     `json:"replanned_from_id,omitempty"`
+	ReplannedAt     *time.Time `json:"replanned_at,omitempty"`
 }
 
 type ProjectStore struct {
@@ -163,6 +165,17 @@ func (s *ProjectStore) createProject(name string) (ProjectManifest, error) {
 }
 
 func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, error) {
+	return s.cloneProject(sourceID, name, false)
+}
+
+// CloneProjectForReplanning creates a new project whose prior generated state
+// is retained only as a read-only reference. The source project is never
+// mutated and the clone is installed only after the reset has completed.
+func (s *ProjectStore) CloneProjectForReplanning(sourceID, name string) (ProjectManifest, error) {
+	return s.cloneProject(sourceID, name, true)
+}
+
+func (s *ProjectStore) cloneProject(sourceID, name string, replan bool) (ProjectManifest, error) {
 	if err := s.requireStartupRecovery(); err != nil {
 		return ProjectManifest{}, err
 	}
@@ -213,6 +226,11 @@ func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, err
 	if err := clonedRevisions.DetachClonedNormalFlowLease(); err != nil {
 		return ProjectManifest{}, fmt.Errorf("detach cloned normal-flow lease: %w", err)
 	}
+	if replan {
+		if err := prepareReplanningClone(stagingRoot); err != nil {
+			return ProjectManifest{}, fmt.Errorf("prepare replanning clone: %w", err)
+		}
+	}
 	if err := os.Rename(stagingRoot, finalRoot); err != nil {
 		return ProjectManifest{}, fmt.Errorf("install cloned project: %w", err)
 	}
@@ -231,6 +249,10 @@ func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, err
 		ClonedFromID:   source.ID,
 		ClonedAt:       &clonedAt,
 	}
+	if replan {
+		manifest.ReplannedFromID = source.ID
+		manifest.ReplannedAt = &clonedAt
+	}
 	if err := s.ensureProjectDirs(manifest); err != nil {
 		return ProjectManifest{}, err
 	}
@@ -239,6 +261,84 @@ func (s *ProjectStore) CloneProject(sourceID, name string) (ProjectManifest, err
 	}
 	installed = true
 	return manifest, nil
+}
+
+var replanningSourceArtifacts = []string{
+	"meta/adaptation/source_manifest.json",
+	"meta/adaptation/source_chapters",
+	"meta/adaptation/source_reports",
+	"meta/adaptation/source_reports.json",
+	"meta/adaptation/source_foundation.json",
+	"meta/adaptation/source_foundation_batches",
+	"meta/adaptation/cocreate_dossier.json",
+	"meta/adaptation/cocreate_dossier_batches",
+	"meta/adaptation/cocreate_intent.json",
+}
+
+func prepareReplanningClone(root string) error {
+	output := filepath.Join(root, "output")
+	if _, err := os.Stat(output); err != nil {
+		if os.IsNotExist(err) {
+			return os.MkdirAll(output, 0o755)
+		}
+		return err
+	}
+	reference := filepath.Join(root, "reference", "legacy", "source-output")
+	if err := os.MkdirAll(filepath.Dir(reference), 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(output, reference); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(output, 0o755); err != nil {
+		return err
+	}
+	for _, relative := range replanningSourceArtifacts {
+		source := filepath.Join(reference, filepath.FromSlash(relative))
+		if _, err := os.Stat(source); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		target := filepath.Join(output, filepath.FromSlash(relative))
+		if err := copyReplanningArtifact(source, target); err != nil {
+			return err
+		}
+	}
+	return filepath.WalkDir(reference, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return os.Chmod(path, 0o555)
+		}
+		return os.Chmod(path, 0o444)
+	})
+}
+
+func copyReplanningArtifact(source, target string) error {
+	info, err := os.Stat(source)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return copyFileOverwrite(source, target)
+	}
+	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(target, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0o755)
+		}
+		return copyFileOverwrite(path, destination)
+	})
 }
 
 func (s *ProjectStore) projectManifestWithoutTouch(id string) (ProjectManifest, error) {

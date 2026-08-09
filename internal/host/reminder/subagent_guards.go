@@ -39,13 +39,31 @@ func newCheckpointDeltaGuard(st *store.Store, agentName string, requiredSteps []
 }
 
 func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredSteps []string, blockMsg func() string) agentcore.StopGuard {
-	var baseline int64
-	if cp := st.Checkpoints.LatestGlobal(); cp != nil {
-		baseline = cp.Seq
-	}
 	need := make(map[string]struct{}, len(requiredSteps))
 	for _, s := range requiredSteps {
 		need[s] = struct{}{}
+	}
+	return newCheckpointDeltaGuardMatching(st, agentName, func(cp domain.Checkpoint) bool {
+		_, required := need[cp.Step]
+		return required
+	}, blockMsg)
+}
+
+func newScopedCheckpointDeltaGuard(st *store.Store, agentName string, requiredSteps []string, scopeKind domain.ScopeKind, blockMsg string) agentcore.StopGuard {
+	need := make(map[string]struct{}, len(requiredSteps))
+	for _, step := range requiredSteps {
+		need[step] = struct{}{}
+	}
+	return newCheckpointDeltaGuardMatching(st, agentName, func(cp domain.Checkpoint) bool {
+		_, required := need[cp.Step]
+		return required && cp.Scope.Kind == scopeKind
+	}, func() string { return blockMsg })
+}
+
+func newCheckpointDeltaGuardMatching(st *store.Store, agentName string, matches func(domain.Checkpoint) bool, blockMsg func() string) agentcore.StopGuard {
+	var baseline int64
+	if cp := st.Checkpoints.LatestGlobal(); cp != nil {
+		baseline = cp.Seq
 	}
 	var consecutive atomic.Int32
 	var latestWriterProgressSeq atomic.Int64
@@ -78,7 +96,7 @@ func newCheckpointDeltaGuardFunc(st *store.Store, agentName string, requiredStep
 			if writerProgressSeq == 0 && agentName == "writer" && cp.Scope.Kind == domain.ScopeChapter {
 				writerProgressSeq = cp.Seq
 			}
-			_, required := need[cp.Step]
+			required := matches(cp)
 			// A Host-owned word-budget segment is a complete Writer dispatch,
 			// even though the chapter itself is not ready to commit yet. Let the
 			// Writer return so Coordinator/Router can issue the next durable
@@ -447,6 +465,12 @@ func NewEditorStopGuard(st *store.Store, task string) agentcore.StopGuard {
 	case strings.Contains(task, "save_arc_summary") || strings.Contains(task, "弧摘要"):
 		return newCheckpointDeltaGuard(st, "editor", []string{"arc_summary"},
 			"本次任务是生成弧摘要：你必须调用 save_arc_summary 落盘后才能结束，save_review 复核不算完成。")
+	case strings.Contains(task, `scope="arc_batch"`) || strings.Contains(task, "scope=arc_batch"):
+		return newScopedCheckpointDeltaGuard(st, "editor", []string{"arc_review_batch"}, domain.ScopeArc,
+			"本次任务是弧评审批次：必须按任务参数调用 save_review(scope=\"arc_batch\", volume/arc/batch_from/batch_to 均准确) 落盘；chapter review 不算完成。")
+	case strings.Contains(task, `scope="arc"`) || strings.Contains(task, "scope=arc") || strings.Contains(task, "弧级评审"):
+		return newScopedCheckpointDeltaGuard(st, "editor", []string{"review"}, domain.ScopeArc,
+			"本次任务是弧级评审：必须调用 save_review(scope=\"arc\") 生成弧作用域 checkpoint；chapter review 不算完成。")
 	default:
 		// 评审或临时任务：任一审阅/摘要落盘即可（保持既有宽松行为）。
 		return newCheckpointDeltaGuard(st, "editor",

@@ -1717,6 +1717,10 @@ func (s *ProjectSession) StartPrepareAdaptationSource(sourcePath string) error {
 }
 
 func (s *ProjectSession) StartPrepareAdaptationSourceWithCompletion(sourcePath string, onSuccess func() error) error {
+	return s.StartPrepareAdaptationSourceWithCallbacks(sourcePath, onSuccess, nil)
+}
+
+func (s *ProjectSession) StartPrepareAdaptationSourceWithCallbacks(sourcePath string, onSuccess func() error, onFailure func(error) error) error {
 	ctx, unlock, err := s.beginCancellableAction(context.Background(), projectActionKindAdaptationAnalysis)
 	if err != nil {
 		return err
@@ -1729,6 +1733,11 @@ func (s *ProjectSession) StartPrepareAdaptationSourceWithCompletion(sourcePath s
 		}()
 		events, err := s.host.PrepareAdaptationSource(ctx, sourcePath)
 		if err != nil {
+			if onFailure != nil {
+				if restoreErr := onFailure(err); restoreErr != nil {
+					err = errors.Join(err, restoreErr)
+				}
+			}
 			if errors.Is(err, context.Canceled) {
 				s.appendAdaptationPausedEvent()
 				return
@@ -1737,12 +1746,23 @@ func (s *ProjectSession) StartPrepareAdaptationSourceWithCompletion(sourcePath s
 			return
 		}
 		if events == nil {
-			s.appendAdaptationActionError(adapt.StageError, "原文分析失败", fmt.Errorf("adaptation event stream is nil"))
+			err := fmt.Errorf("adaptation event stream is nil")
+			if onFailure != nil {
+				if restoreErr := onFailure(err); restoreErr != nil {
+					err = errors.Join(err, restoreErr)
+				}
+			}
+			s.appendAdaptationActionError(adapt.StageError, "原文分析失败", err)
 			return
 		}
 		analysisOK := true
 		if _, err := s.consumeAdaptationEvents(ctx, events); err != nil {
 			analysisOK = false
+			if onFailure != nil {
+				if restoreErr := onFailure(err); restoreErr != nil {
+					err = errors.Join(err, restoreErr)
+				}
+			}
 			var runErr adaptationRunError
 			var pausedErr adaptationPausedError
 			if !errors.As(err, &runErr) && !errors.As(err, &pausedErr) && !errors.Is(err, context.Canceled) {
@@ -1751,6 +1771,11 @@ func (s *ProjectSession) StartPrepareAdaptationSourceWithCompletion(sourcePath s
 		}
 		if analysisOK && onSuccess != nil {
 			if err := onSuccess(); err != nil {
+				if onFailure != nil {
+					if restoreErr := onFailure(err); restoreErr != nil {
+						err = errors.Join(err, restoreErr)
+					}
+				}
 				s.appendLibraryEvent("novel_sync_error", "小说库同步失败", err.Error(), "error")
 			}
 		}

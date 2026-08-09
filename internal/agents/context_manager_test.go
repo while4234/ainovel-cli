@@ -11,7 +11,76 @@ import (
 
 	"github.com/voocel/agentcore"
 	corecontext "github.com/voocel/agentcore/context"
+	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/store"
 )
+
+func TestCoordinatorOverflowRecoveryUsesDurableStoreSummary(t *testing.T) {
+	st := store.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Save(&domain.Progress{
+		Phase:             domain.PhaseWriting,
+		Flow:              domain.FlowWriting,
+		CurrentChapter:    3,
+		InProgressChapter: 3,
+		TotalChapters:     6,
+		CompletedChapters: []int{1, 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{
+		{Chapter: 1, Title: "one", CoreEvent: "opening"},
+		{Chapter: 2, Title: "two", CoreEvent: "escalation"},
+		{Chapter: 3, Title: "three", CoreEvent: "continue the active conflict"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Drafts.SaveChapterPlan(domain.ChapterPlan{
+		Chapter: 3,
+		Title:   "three",
+		Goal:    "continue the active conflict",
+		Hook:    "new evidence appears",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Summaries.SaveSummary(domain.ChapterSummary{
+		Chapter: 2,
+		Summary: "The prior chapter established the durable continuation state.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := newCoordinatorContextManager(nil, st, 64_000, 8_000, nil)
+	messages := make([]agentcore.AgentMessage, 0, 8)
+	for turn := range 3 {
+		callID := fmt.Sprintf("tool-%d", turn)
+		messages = append(messages,
+			agentcore.UserMsg(fmt.Sprintf("turn %d %s", turn, strings.Repeat("old ", 4_000))),
+			agentcore.Message{Role: agentcore.RoleAssistant, Content: []agentcore.ContentBlock{agentcore.ToolCallBlock(agentcore.ToolCall{
+				ID: callID, Name: "novel_context", Args: []byte(`{"query":"workflow"}`),
+			})}},
+			agentcore.ToolResultMsg(callID, []byte(strings.Repeat("durable tool result ", 3_000)), false),
+		)
+	}
+	messages = append(messages, agentcore.UserMsg("resume the persisted chapter workflow"))
+
+	recovery, err := manager.RecoverOverflow(t.Context(), messages, errors.New("production request boundary exceeded"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovery.Changed || !recovery.ShouldCommit || recovery.Strategy != "store_summary" {
+		t.Fatalf("unexpected recovery: %+v", recovery)
+	}
+	compiled, err := compileAgentInput(toLLMMessages(t, recovery.View), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled) >= productionAgentInputLimitBytes {
+		t.Fatalf("recovered coordinator request=%d bytes, want below %d", len(compiled), productionAgentInputLimitBytes)
+	}
+}
 
 func TestWriterContextProjectionCommitsCompactedBaseline(t *testing.T) {
 	mgr := newContextManager(contextManagerConfig{

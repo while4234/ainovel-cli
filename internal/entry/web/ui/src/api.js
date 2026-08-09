@@ -585,6 +585,30 @@ export function analyzeAdaptationSource(projectId, sourceFile, { force = false }
   });
 }
 
+export function previewLegacyFoundationRecovery(projectId, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/recovery/preview`, options);
+}
+
+export function applyLegacyFoundationRecovery(projectId, preview, options = {}) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/foundation/recovery/apply`, {
+    ...options,
+    method: 'POST',
+    body: JSON.stringify({
+      preview_id: preview.id,
+      foundation_revision: preview.foundation_revision,
+      foundation_audit_signature: preview.foundation_audit_signature,
+      explicitly_confirmed: true
+    })
+  });
+}
+
+export function cloneProjectForReplanning(projectId, name) {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/clone/replan`, {
+    method: 'POST',
+    body: JSON.stringify({ name })
+  });
+}
+
 export function startAdaptation(projectId, sourceFile, mode, brief) {
   return request(`/api/projects/${encodeURIComponent(projectId)}/adapt/start`, {
     method: 'POST',

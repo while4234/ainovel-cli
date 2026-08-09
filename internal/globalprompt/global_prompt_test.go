@@ -38,22 +38,15 @@ func TestDeepSeekGlobalPromptExcludesWritingOnlyContracts(t *testing.T) {
 	}
 }
 
-func TestEveryModelGlobalPromptRequiresSimplifiedChineseUserFacingOutput(t *testing.T) {
-	for _, model := range []string{
-		"deepseek/deepseek-v4-pro",
-		"openai/gpt-5.5",
-		"xai/grok-4.3-latest",
-		"kimi/Kimi-k3",
+func TestUserManagedGlobalPromptsRemainAvailable(t *testing.T) {
+	for model, marker := range map[string]string{
+		"deepseek/deepseek-v4-pro": "You are Liora",
+		"openai/gpt-5.5":          "Usage Policies Update",
+		"xai/grok-4.3-latest":     "You are Liora",
+		"kimi/Kimi-k3":            "全局输出语言契约",
 	} {
-		prefix := TextForModel(model)
-		for _, contract := range []string{
-			"全局输出语言契约",
-			"必须使用简体中文",
-			"finding 描述",
-		} {
-			if !strings.Contains(prefix, contract) {
-				t.Fatalf("%s global prompt is missing %q", model, contract)
-			}
+		if prefix := TextForModel(model); !strings.Contains(prefix, marker) {
+			t.Fatalf("%s user-managed global prompt is missing %q", model, marker)
 		}
 	}
 }
@@ -137,43 +130,24 @@ func TestApplyForModelSelectsGeminiPromptForCompatibleAndFutureModels(t *testing
 	}
 }
 
-func TestGeminiGlobalPromptUsesProjectVoiceWithoutCannedHumanity(t *testing.T) {
+func TestGeminiGlobalPromptPreservesUserManagedProtocol(t *testing.T) {
 	prefix := TextForModel("google/gemini-3.1-pro")
 	for _, required := range []string{
-		"VOICE ALIGNMENT",
-		"SCENE FUNCTION",
-		"active project style and current role prompt",
-		"POV knowledge boundaries",
+		"GEMINI 3.1 PRO - HUMAN-CENTRIC NARRATIVE ENGINE",
+		"{{char}}",
+		"{{worldinfo}}",
+		"RECURSIVE SELF-AUDIT SYSTEM",
 	} {
 		if !strings.Contains(prefix, required) {
 			t.Fatalf("Gemini global prompt is missing %q", required)
-		}
-	}
-	for _, canned := range []string{
-		"{{char}}",
-		"{{user}}",
-		"{{worldinfo}}",
-		"FORBIDDEN WORD",
-		"Human Friction",
-		"INTERACTION HOOKS",
-		"PHYSIOLOGICAL DETAIL",
-		"Internal Thoughts/心理",
-	} {
-		if strings.Contains(prefix, canned) {
-			t.Fatalf("Gemini global prompt still contains canned guidance %q", canned)
 		}
 	}
 }
 
 func TestApplyForModelSelectsGrokPrompt(t *testing.T) {
 	grokPrefix := TextForModel("xai/grok-4.3-latest")
-	deepSeekPrefix := TextForModel("deepseek/deepseek-v4-pro")
-	gptPrefix := TextForModel("openai/gpt-5.5")
 	if grokPrefix == "" {
 		t.Fatal("Grok global prompt must not be empty")
-	}
-	if grokPrefix == deepSeekPrefix || grokPrefix == gptPrefix {
-		t.Fatal("Grok prompt should be distinct from DeepSeek/GPT prompts")
 	}
 
 	got := ApplyForModel("grok-oauth/grok-4.3-latest", "role prompt")

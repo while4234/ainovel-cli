@@ -46,6 +46,26 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-19 `511add1` cloned-project rollback lease fix: Web cloning still
+  holds the source project's normal-flow action lease for copy consistency, but
+  the isolated staging clone now discards that process-local capability and
+  advances its revision generation before installation. Durable revision
+  history is preserved, source ownership remains intact, and a cloned writing
+  project can immediately preview and confirm rollback without the copied
+  `web:action` lease reporting a false conflict.
+- 2026-07-19 `bff8910` five-chapter continuation acceptance: Coordinator model
+  switching and route restoration preserve the safe 64,000-token profile bound;
+  production-boundary recovery prioritizes a deterministic durable-store
+  summary; and Editor arc tasks require an arc-scoped checkpoint so a chapter
+  review cannot falsely finish the task.
+- 2026-07-19 follow-up to `487f44db`: sparse legacy recovery recognizes exact
+  `女主` / `男主` labels without matching extended roles, fills only empty
+  CoreCast fields behind preservation fences, and recovers exact core-to-core
+  relationship evidence without rewriting prose, outline, or StoryFoundation.
+- 2026-07-19 legacy Foundation recovery batch: legacy started projects expose
+  snapshot/preview/confirm recovery, source-analysis diagnostics, safe forced
+  reanalysis, atomic failed-run restoration, library writeback, and staged clone
+  and replan while retaining prior output as a read-only reference.
 - 2026-08-08 `034f45d` `feat: optimize DeepSeek V4 Flash reasoning`:
   exposes only the native off/high/max reasoning choices, defaults V4 Flash to
   max unless an explicit role/model/global override exists, and routes the
