@@ -17,6 +17,7 @@ func TestProductionModelCallInventoryIsExplicit(t *testing.T) {
 		"internal/agents/model_boundary.go",
 		"internal/agents/toolcall_repair_model.go",
 		"internal/bootstrap/models.go",
+		"internal/bootstrap/provider_rate_limit.go",
 		"internal/bootstrap/provider_factory.go",
 		"internal/bootstrap/runtime_fallback.go",
 		"internal/globalprompt/model.go",

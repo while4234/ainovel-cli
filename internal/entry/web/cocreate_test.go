@@ -312,6 +312,9 @@ func TestPlanningRevisionDraftCompletenessDoesNotRejectNarrativeReference(t *tes
 	if !containsDraftOmissionPlaceholder("## 其他设定\n- 其余设定同上。") {
 		t.Fatal("a standalone omission placeholder was not detected")
 	}
+	if !containsDraftOmissionPlaceholder("## 用户目标\n同前轮（完整保留）") {
+		t.Fatal("a parenthesized omission placeholder was not detected")
+	}
 }
 
 func TestProjectCoCreatePlanningRevisionRetriesIncompleteRepairsFromLatestRawCandidate(t *testing.T) {

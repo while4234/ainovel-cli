@@ -191,7 +191,7 @@ func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	fake.resumeStarted = make(chan struct{})
 	fake.releaseResume = make(chan struct{})
 
-	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("NewProjectSession: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestProjectSessionAllowsModelSwitchDuringAction(t *testing.T) {
 	fake.resumeStarted = make(chan struct{})
 	fake.releaseResume = make(chan struct{})
 
-	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("NewProjectSession: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestProjectSessionPauseCancelsAdaptationAnalysis(t *testing.T) {
 	fake.adaptAnalyzeStarted = make(chan struct{})
 	fake.blockAdaptAnalyze = true
 
-	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("NewProjectSession: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestProjectSessionAllowsSimulationDuringAdaptationAnalysis(t *testing.T) {
 	fake.blockSimulate = true
 	fake.releaseSimulate = make(chan struct{})
 
-	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("NewProjectSession: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestProjectSessionAllowsExportDuringAdaptationAnalysis(t *testing.T) {
 	fake.adaptAnalyzeStarted = make(chan struct{})
 	fake.blockAdaptAnalyze = true
 
-	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: t.TempDir()}, fake)
 	if err != nil {
 		t.Fatalf("NewProjectSession: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestProjectSessionUpsertsHostEventsByID(t *testing.T) {
 
 func TestProjectSessionBuildAdaptationProposalEmitsLifecycleEvent(t *testing.T) {
 	host := newFakeProjectHost()
-	session := newTestSessionWithHost("project-1", host)
+	session := newTestSessionWithHost(t, "project-1", host)
 
 	_, err := session.BuildAdaptationProposal(adapt.ProposalOptions{
 		SourcePath:    "source.txt",
@@ -564,7 +564,7 @@ func TestProjectSessionBuildAdaptationProposalEmitsLifecycleEvent(t *testing.T) 
 }
 
 func TestProjectSessionSimulationRetryEventDoesNotFailRun(t *testing.T) {
-	session := newTestSessionWithHost("project-1", newFakeProjectHost())
+	session := newTestSessionWithHost(t, "project-1", newFakeProjectHost())
 	events := make(chan sim.Event, 2)
 	events <- sim.Event{
 		Stage:   sim.StageAnalyze,
@@ -594,7 +594,7 @@ func TestProjectSessionSimulationRetryEventDoesNotFailRun(t *testing.T) {
 
 func TestProjectSessionBuildAdaptationProposalAppendsProgressEvents(t *testing.T) {
 	host := newFakeProjectHost()
-	session := newTestSessionWithHost("project-1", host)
+	session := newTestSessionWithHost(t, "project-1", host)
 
 	_, err := session.BuildAdaptationProposal(adapt.ProposalOptions{
 		SourcePath:    "source.txt",
@@ -619,7 +619,7 @@ func TestProjectSessionBuildAdaptationProposalAppendsProgressEvents(t *testing.T
 
 func TestProjectSessionReviseAdaptationProposalAppendsProgressEvents(t *testing.T) {
 	host := newFakeProjectHost()
-	session := newTestSessionWithHost("project-1", host)
+	session := newTestSessionWithHost(t, "project-1", host)
 
 	_, err := session.ReviseAdaptationProposalContext(context.Background(), adapt.ProposalRevisionOptions{
 		FromChapter: 1,
@@ -638,7 +638,7 @@ func TestProjectSessionReviseAdaptationProposalAppendsProgressEvents(t *testing.
 func TestProjectSessionBuildAdaptationProposalEmitsFailedLifecycleEvent(t *testing.T) {
 	host := newFakeProjectHost()
 	host.adaptProposalErr = errors.New("planner timeout")
-	session := newTestSessionWithHost("project-1", host)
+	session := newTestSessionWithHost(t, "project-1", host)
 
 	_, err := session.BuildAdaptationProposal(adapt.ProposalOptions{
 		SourcePath:  "source.txt",
@@ -667,7 +667,7 @@ func TestProjectSessionBuildAdaptationProposalEmitsFailedLifecycleEvent(t *testi
 
 func TestProjectSessionBuildAdaptationProposalDoesNotAddTotalDeadline(t *testing.T) {
 	fake := newFakeProjectHost()
-	session := newTestSessionWithHost("project-1", fake)
+	session := newTestSessionWithHost(t, "project-1", fake)
 
 	_, err := session.BuildAdaptationProposalContext(context.Background(), adapt.ProposalOptions{
 		SourcePath:  "source.txt",
@@ -687,7 +687,7 @@ func TestProjectSessionBuildAdaptationProposalShowsRunningAndCancels(t *testing.
 	fake.snapshot = hostpkgSnapshotIdle()
 	fake.adaptProposalStarted = make(chan struct{})
 	fake.blockAdaptProposal = true
-	session := newTestSessionWithHost("project-1", fake)
+	session := newTestSessionWithHost(t, "project-1", fake)
 
 	proposalErr := make(chan error, 1)
 	go func() {
@@ -750,7 +750,7 @@ func TestProjectSessionBuildAdaptationProposalShowsRunningAndCancels(t *testing.
 func TestProjectSessionAdaptCoCreateCommitStartsCharacterWorkflowBeforeProposal(t *testing.T) {
 	fake := newFakeProjectHost()
 	fake.snapshot = hostpkgSnapshotIdle()
-	session := newTestSessionWithHost("project-1", fake)
+	session := newTestSessionWithHost(t, "project-1", fake)
 	session.manifest.OutputDir = t.TempDir()
 	draft := strings.Join([]string{
 		"## Adapt Mode",
@@ -1407,8 +1407,10 @@ func newTestSessionWithoutHost(projectID string) *ProjectSession {
 	}
 }
 
-func newTestSessionWithHost(projectID string, h projectHost) *ProjectSession {
+func newTestSessionWithHost(t *testing.T, projectID string, h projectHost) *ProjectSession {
+	t.Helper()
 	session := newTestSessionWithoutHost(projectID)
+	session.manifest.OutputDir = t.TempDir()
 	session.host = h
 	return session
 }

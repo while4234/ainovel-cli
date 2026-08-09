@@ -1472,7 +1472,9 @@ func containsDraftOmissionPlaceholder(draft string) bool {
 	for _, line := range strings.Split(draft, "\n") {
 		line = normalizeDraftOmissionLine(line)
 		for _, placeholder := range placeholders {
-			if line == placeholder {
+			if line == placeholder ||
+				(strings.HasPrefix(line, placeholder+"（") && strings.HasSuffix(line, "）")) ||
+				(strings.HasPrefix(line, placeholder+"(") && strings.HasSuffix(line, ")")) {
 				return true
 			}
 		}
