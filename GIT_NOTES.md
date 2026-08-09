@@ -46,6 +46,10 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-07-20 `e50298a` `fix: sync completed legacy novel backfills`: completed
+  legacy-library analysis streams now proceed directly to the validated atomic
+  library replacement instead of reopening the project while its normal-flow
+  lease is still held.
 - 2026-07-19 `511add1` cloned-project rollback lease fix: Web cloning still
   holds the source project's normal-flow action lease for copy consistency, but
   the isolated staging clone now discards that process-local capability and

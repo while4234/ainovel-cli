@@ -333,13 +333,12 @@ func (s *Server) startLoadedNovelAnalysisIfNeeded(session *ProjectSession, manif
 		return status, false, err
 	}
 	if err := session.StartPrepareAdaptationSourceWithCompletion(sourcePath, func() error {
-		status, err := projectAdaptationStatus(manifest, false)
-		if err != nil {
-			return err
-		}
-		if status.AnalysisStatus != "done" {
-			return fmt.Errorf("loaded novel analysis finished but source package is %s", status.AnalysisStatus)
-		}
+		// The completion callback runs before the Web action releases its
+		// normal-flow lease. Reopening the project here can therefore observe the
+		// pre-release revision and incorrectly report a successfully persisted
+		// package as paused. A cleanly closed analysis stream is the completion
+		// contract; ReplaceNovelFromProject still validates every required source,
+		// report, foundation, and dossier artifact before replacing the entry.
 		synced, err := s.libraries.ReplaceNovelFromProject(manifest, item.Name, sourceFile.RelativePath)
 		if err != nil {
 			return err
