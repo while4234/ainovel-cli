@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/fsutil"
 )
 
 const legacyImportMarkerPath = ".ainovel/legacy-import.json"
@@ -263,7 +264,7 @@ func (s *ProjectStore) MigrateLegacyProject(sourceDir, name, expectedSourceSHA25
 	if err := verifyStagedLegacyMigration(stagingRoot, marker); err != nil {
 		return legacyMigrationResult{}, err
 	}
-	if err := os.Rename(stagingRoot, finalRoot); err != nil {
+	if err := fsutil.RenameWithTransientRetry(stagingRoot, finalRoot); err != nil {
 		return legacyMigrationResult{}, fmt.Errorf("atomically install legacy migration: %w", err)
 	}
 	stagingRoot = ""

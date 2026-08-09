@@ -1,4 +1,5 @@
 import http from 'node:http';
+import fs from 'node:fs/promises';
 import { manuscriptMutationWebEvent } from '../../src/manuscript/manuscript-events.js';
 
 const port = 4180;
@@ -38,6 +39,56 @@ const readJSON = (request) => new Promise((resolve, reject) => {
 	request.on('data', (chunk) => { raw += chunk; });
 	request.on('end', () => { try { resolve(JSON.parse(raw || '{}')); } catch (error) { reject(error); } });
 });
+const artworkCover = await fs.readFile(new URL('./fixtures/artwork-cover.svg', import.meta.url));
+const artworkIllustration = await fs.readFile(new URL('./fixtures/artwork-illustration.svg', import.meta.url));
+const artworkRegistry = {
+	version: 'artwork-image-capabilities/fixture-v1',
+	models: [
+		{ id: 'a2e', label: 'A2E', family: 'a2e', enabled: true, verified: true, request_fields: ['size', 'aspect_ratio'], supported_sizes: [
+			{ value: '1080x1620', label: '1080P · 2:3 竖图', aspect_ratio: '2:3' },
+			{ value: '1920x1080', label: '1080P · 16:9 横图', aspect_ratio: '16:9' }
+		] },
+		{ id: 'a2e:seedream', label: 'Seedream', family: 'seedream', enabled: true, verified: true, request_fields: ['size', 'aspect_ratio'], supported_sizes: [
+			{ value: '1365x2048', label: '2K · 2:3 竖图', aspect_ratio: '2:3' },
+			{ value: '2048x1152', label: '2K · 16:9 横图', aspect_ratio: '16:9' }
+		] },
+		{ id: 'fixture:unverified', label: '候选模型', family: 'fixture', enabled: false, verified: false, request_fields: ['size'], supported_sizes: [{ value: '1024x1024', label: '1:1 方图' }] }
+	]
+};
+let artworkConfig;
+let artworkDrafts;
+let artworkAssets;
+let artworkJobs;
+let artworkPromptJobs;
+let artworkWorkspaceReads;
+let artworkLastRequest;
+function resetArtworkFixture() {
+	artworkConfig = { base_url: 'http://127.0.0.1:4180/fixture-ai2api/v1', default_model: 'a2e', request_timeout_seconds: 60, has_api_key: true };
+	artworkDrafts = [
+		{ id: 'art-draft-cover', version: 4, work_type: 'cover', scope: 'project', prompt: '雾港黄昏，旧灯塔从潮汐与薄雾中浮现，电影感光线，克制的青铜色调', prompt_source: 'ai', model_id: 'a2e', size: '1080x1620', source_status: 'current', is_stale: false, updated_at: '2026-08-09T05:00:00Z' },
+		{ id: 'art-draft-illustration', version: 2, work_type: 'illustration', scope: 'chapter', scope_id: chapterId, prompt: '横幅构图，港口夜色中两名角色隔桥相望，雾气被暖灯切开', prompt_source: 'manual', model_id: 'a2e', size: '1920x1080', source_status: 'not_applicable', is_stale: false, updated_at: '2026-08-09T04:00:00Z' },
+		{ id: 'art-draft-portrait', version: 1, work_type: 'character_portrait', scope: 'character', scope_id: 'hero', prompt: '林舟半身肖像，深色风衣，港口雾气，冷静坚定的神态', prompt_source: 'manual', model_id: 'a2e', size: '1080x1620', source_status: 'not_applicable', is_stale: false, updated_at: '2026-08-09T03:00:00Z' }
+	];
+	artworkAssets = [
+		{ id: 'art-asset-cover', draft_id: 'art-draft-cover', work_type: 'cover', scope: 'project', prompt: artworkDrafts[0].prompt, prompt_source: 'ai', request: { model_id: 'a2e', resolved_model: 'a2e', size: '1080x1620' }, origin: 'fixture', file_name: 'fog-harbor-cover.svg', mime_type: 'image/svg+xml', width: 1080, height: 1620, created_at: '2026-08-09T05:10:00Z', applied: true },
+		{ id: 'art-asset-illustration', draft_id: 'art-draft-illustration', work_type: 'illustration', scope: 'chapter', scope_id: chapterId, prompt: artworkDrafts[1].prompt, prompt_source: 'manual', request: { model_id: 'a2e', resolved_model: 'a2e', size: '1920x1080' }, origin: 'fixture', file_name: 'fog-harbor-illustration.svg', mime_type: 'image/svg+xml', width: 1920, height: 1080, created_at: '2026-08-09T05:05:00Z', applied: false }
+	];
+	artworkJobs = [{ id: 'art-job-complete', draft_id: 'art-draft-cover', draft_version: 4, work_type: 'cover', scope: 'project', prompt_source: 'ai', asset_id: 'art-asset-cover', status: 'succeeded', request: { model_id: 'a2e', size: '1080x1620' }, created_at: '2026-08-09T05:09:00Z', updated_at: '2026-08-09T05:10:00Z' }];
+	artworkPromptJobs = [{ id: 'art-prompt-complete', draft_id: 'art-draft-cover', draft_version: 4, status: 'succeeded', model: { provider: 'fixture-text', model: 'fixture-writer' }, created_at: '2026-08-09T04:59:00Z', updated_at: '2026-08-09T05:00:00Z' }];
+	artworkWorkspaceReads = 0;
+	artworkLastRequest = null;
+}
+resetArtworkFixture();
+const artworkAssetView = (asset) => ({ ...asset, content_url: `/api/projects/artwork-browser-project/artwork/assets/${asset.id}/content`, download_url: `/api/projects/artwork-browser-project/artwork/assets/${asset.id}/download` });
+const artworkWorkspace = () => ({
+	schema_version: 1,
+	drafts: { items: artworkDrafts, next_cursor: '' },
+	prompt_jobs: { items: artworkPromptJobs, next_cursor: '' },
+	jobs: { items: artworkJobs, next_cursor: '' },
+	assets: { items: artworkAssets.map(artworkAssetView), next_cursor: artworkAssets.length > 2 ? '' : 'fixture-assets-page-2' },
+	applied: artworkAssets.filter((asset) => asset.applied).map((asset) => ({ target: `${asset.work_type}:${asset.scope}:${asset.scope_id || ''}`, asset_id: asset.id }))
+});
+const artworkDraftResponse = (draft) => ({ draft: { ...draft } });
 const targetFoundation = (projectID = 'foundation-project-a') => ({
 	schema_version: 2, revision: foundationRevision, premise: projectID.endsWith('-b') ? '项目 B 的目标故事' : '项目 A 的目标故事',
 	characters: [{ id: 'hero', name: '林舟', aliases: ['阿舟'], role: '主角', gender: 'male', description: '守护城市', arc: '学会信任', traits: ['坚定'], tier: 'core', faction: '守夜人', goal: '阻止灾难', motivation: '责任', conflict: '不信任盟友', voice: '简洁', constraints: ['不背叛'], notes: '' }, ...(foundationScenario === 'graph' ? [
@@ -111,10 +162,133 @@ const server = http.createServer(async (request, response) => {
 	response.on('error', () => {});
   const url = new URL(request.url, `http://${request.headers.host}`), path = url.pathname;
   if (path === '/health') return json(response, 200, { ok: true });
-	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; manuscriptActionDialogue = null; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; foundationScenario = 'normal'; foundationRevision = 3; foundationLastRequest = null; delayFoundationProjectA = false; characterRun = null; characterCandidate = null; characterFindings = []; characterPolls = 0; return json(response, 200, { reset: true }); }
+	if (path === '/api/test/reset' && request.method === 'POST') { generation = 1; manuscriptPhase = 'writing'; manuscriptActionDialogue = null; failNextChapter = false; historyTombstoned = false; delayNextHistory = false; delayNextTree = false; failDelayedTree = false; delayNextChapter = false; foundationScenario = 'normal'; foundationRevision = 3; foundationLastRequest = null; delayFoundationProjectA = false; characterRun = null; characterCandidate = null; characterFindings = []; characterPolls = 0; resetArtworkFixture(); return json(response, 200, { reset: true }); }
+	if (path === '/api/test/artwork/last-request') return json(response, 200, artworkLastRequest || {});
 	if (path === '/api/test/foundation/scenario' && request.method === 'POST') { foundationScenario = url.searchParams.get('value') || 'normal'; return json(response, 200, { scenario: foundationScenario }); }
 	if (path === '/api/test/foundation/delay-project-a' && request.method === 'POST') { delayFoundationProjectA = true; return json(response, 200, { delayed: true }); }
 	if (path === '/api/test/foundation/last-request') return json(response, 200, foundationLastRequest || {});
+	if (path === '/api/artwork/models' && request.method === 'GET') return json(response, 200, artworkRegistry);
+	if (path === '/api/artwork/config' && request.method === 'GET') return json(response, 200, { config: artworkConfig });
+	if (path === '/api/artwork/config' && request.method === 'PUT') {
+		const body = await readJSON(request);
+		artworkConfig = {
+			base_url: String(body.base_url || artworkConfig.base_url),
+			default_model: String(body.default_model || artworkConfig.default_model),
+			request_timeout_seconds: Number(body.request_timeout_seconds || artworkConfig.request_timeout_seconds),
+			has_api_key: body.clear_api_key ? false : Boolean(body.api_key || artworkConfig.has_api_key)
+		};
+		return json(response, 200, { config: artworkConfig });
+	}
+	if (path === '/api/artwork/config/verify' && request.method === 'POST') {
+		await readJSON(request);
+		return json(response, 200, { verified: true, model_count: artworkRegistry.models.length, config: artworkConfig });
+	}
+	if (path === '/api/projects/artwork-browser-project/foundation' && request.method === 'GET') return json(response, 200, {
+		foundation: { target_foundation: { characters: [{ id: 'hero', name: '林舟' }, { id: 'keeper', name: '守灯人' }] } }
+	});
+	const artworkBase = '/api/projects/artwork-browser-project/artwork';
+	if (path === artworkBase && request.method === 'GET') {
+		artworkWorkspaceReads += 1;
+		const running = artworkJobs.find((job) => job.status === 'running');
+		if (running && artworkWorkspaceReads >= 2) {
+			running.status = 'succeeded';
+			running.updated_at = '2026-08-09T05:20:04Z';
+			const generated = { id: running.asset_id, draft_id: running.draft_id, work_type: running.work_type, scope: running.scope, scope_id: running.scope_id, prompt: artworkDrafts.find((draft) => draft.id === running.draft_id)?.prompt || '', prompt_source: 'manual', request: running.request, origin: 'fixture', file_name: 'fixture-generated.svg', mime_type: 'image/svg+xml', width: running.request.size === '1920x1080' ? 1920 : 1080, height: running.request.size === '1920x1080' ? 1080 : 1620, created_at: running.updated_at, applied: false };
+			if (!artworkAssets.some((asset) => asset.id === generated.id)) artworkAssets.unshift(generated);
+		}
+		return json(response, 200, artworkWorkspace());
+	}
+	if (path === `${artworkBase}/drafts` && request.method === 'GET') return json(response, 200, { items: artworkDrafts, next_cursor: '' });
+	if (path === `${artworkBase}/drafts` && request.method === 'POST') {
+		const body = await readJSON(request);
+		const created = { ...body, id: `art-draft-${artworkDrafts.length + 1}`, version: 1, prompt_source: 'manual', source_status: 'not_applicable', is_stale: false, updated_at: '2026-08-09T05:15:00Z' };
+		delete created.idempotency_key;
+		artworkDrafts.unshift(created);
+		artworkLastRequest = { action: 'create-draft', body: { ...body, idempotency_key: '<present>' } };
+		return json(response, 201, artworkDraftResponse(created));
+	}
+	const artworkDraftMatch = path.match(/^\/api\/projects\/artwork-browser-project\/artwork\/drafts\/([^/]+)(?:\/(generate-prompt|generate-image|confirm-stale-prompt))?$/);
+	if (artworkDraftMatch) {
+		const draftID = decodeURIComponent(artworkDraftMatch[1]);
+		const action = artworkDraftMatch[2] || '';
+		const draft = artworkDrafts.find((item) => item.id === draftID);
+		if (!draft) return json(response, 404, { error: { code: 'artwork_not_found' } });
+		if (!action && request.method === 'GET') return json(response, 200, artworkDraftResponse(draft));
+		if (!action && request.method === 'PATCH') {
+			const body = await readJSON(request);
+			if (Number(body.expected_version) !== draft.version) return json(response, 409, { error: { code: 'draft_version_conflict' } });
+			for (const key of ['work_type', 'scope', 'scope_id', 'prompt', 'model_id', 'size']) if (body[key] !== undefined) draft[key] = body[key];
+			draft.version += 1;
+			draft.updated_at = '2026-08-09T05:16:00Z';
+			artworkLastRequest = { action: 'autosave', body: { ...body } };
+			return json(response, 200, artworkDraftResponse(draft));
+		}
+		if (!action && request.method === 'DELETE') {
+			artworkDrafts = artworkDrafts.filter((item) => item.id !== draftID);
+			response.writeHead(204); response.end(); return;
+		}
+		const body = await readJSON(request);
+		if (action === 'generate-prompt') {
+			draft.prompt = '电影感小说封面：雾港黄昏，潮水映出旧灯塔的暖光，青绿色薄雾与克制留白，高细节。';
+			draft.prompt_source = 'ai';
+			draft.version += 1;
+			draft.source_status = 'current';
+			const job = { id: `art-prompt-${Date.now()}`, draft_id: draft.id, draft_version: draft.version, status: 'succeeded', model: { provider: 'fixture-text', model: 'fixture-writer' }, created_at: '2026-08-09T05:17:00Z', updated_at: '2026-08-09T05:17:01Z' };
+			artworkPromptJobs.unshift(job);
+			artworkLastRequest = { action: 'generate-prompt', body: { expected_version: body.expected_version, idempotency_key: '<present>' } };
+			return json(response, 201, { draft, job, reused: false });
+		}
+		if (action === 'confirm-stale-prompt') {
+			draft.is_stale = false; draft.source_status = 'confirmed'; draft.version += 1;
+			artworkLastRequest = { action: 'confirm-stale', body: { expected_version: body.expected_version, source_signature: '<digest>' } };
+			return json(response, 200, artworkDraftResponse(draft));
+		}
+		if (action === 'generate-image') {
+			const job = { id: `art-job-${Date.now()}`, draft_id: draft.id, draft_version: draft.version, work_type: draft.work_type, scope: draft.scope, scope_id: draft.scope_id, prompt_source: draft.prompt_source, asset_id: `art-asset-generated-${Date.now()}`, status: 'running', request: { model_id: draft.model_id, resolved_model: draft.model_id, size: draft.size }, created_at: '2026-08-09T05:20:00Z', updated_at: '2026-08-09T05:20:01Z' };
+			artworkJobs.unshift(job);
+			artworkWorkspaceReads = 0;
+			artworkLastRequest = { action: 'generate-image', body: { expected_version: body.expected_version, idempotency_key: '<present>' }, count: 1 };
+			return json(response, 202, { job, reused: false });
+		}
+	}
+	if (path === `${artworkBase}/assets` && request.method === 'GET') {
+		if (url.searchParams.get('cursor') === 'fixture-assets-page-2') {
+			const extra = { ...artworkAssets[1], id: 'art-asset-page-2', file_name: 'fog-harbor-wide-2.svg', applied: false };
+			return json(response, 200, { items: [artworkAssetView(extra)], next_cursor: '' });
+		}
+		return json(response, 200, { items: artworkAssets.map(artworkAssetView), next_cursor: '' });
+	}
+	const artworkAssetMatch = path.match(/^\/api\/projects\/artwork-browser-project\/artwork\/assets\/([^/]+)(?:\/(content|download|apply|reuse-as-draft))?$/);
+	if (artworkAssetMatch) {
+		const assetID = decodeURIComponent(artworkAssetMatch[1]);
+		const action = artworkAssetMatch[2] || '';
+		const found = artworkAssets.find((item) => item.id === assetID) || (assetID === 'art-asset-page-2' ? { ...artworkAssets[1], id: assetID } : null);
+		if (!found) return json(response, 404, { error: { code: 'artwork_not_found' } });
+		if ((action === 'content' || action === 'download') && request.method === 'GET') {
+			const bytes = found.work_type === 'illustration' ? artworkIllustration : artworkCover;
+			response.writeHead(200, { 'content-type': 'image/svg+xml', 'content-length': bytes.length, 'cache-control': 'private, max-age=31536000, immutable', ...(action === 'download' ? { 'content-disposition': `attachment; filename="${found.file_name}"` } : {}) });
+			response.end(bytes); return;
+		}
+		if (!action && request.method === 'DELETE') {
+			if (found.applied) return json(response, 409, { error: { code: 'asset_is_applied' } });
+			artworkAssets = artworkAssets.filter((item) => item.id !== assetID);
+			artworkLastRequest = { action: 'delete-asset', asset_id: assetID };
+			response.writeHead(204); response.end(); return;
+		}
+		if (action === 'apply' && request.method === 'POST') {
+			for (const item of artworkAssets) if (item.work_type === found.work_type && item.scope === found.scope && item.scope_id === found.scope_id) item.applied = false;
+			found.applied = true;
+			artworkLastRequest = { action: 'apply-asset', asset_id: assetID };
+			return json(response, 200, { asset: artworkAssetView(found), applied_to: `${found.work_type}:${found.scope}:${found.scope_id || ''}` });
+		}
+		if (action === 'reuse-as-draft' && request.method === 'POST') {
+			await readJSON(request);
+			const reused = { id: `art-draft-reuse-${Date.now()}`, version: 1, work_type: found.work_type, scope: found.scope, scope_id: found.scope_id, prompt: found.prompt, prompt_source: 'reuse', source_asset_id: found.id, model_id: found.request.model_id, size: found.request.size, source_status: 'not_applicable', is_stale: false, updated_at: '2026-08-09T05:22:00Z' };
+			artworkDrafts.unshift(reused);
+			artworkLastRequest = { action: 'reuse-asset', asset_id: assetID };
+			return json(response, 201, { draft: reused, reused: false });
+		}
+	}
 	const characterMatch = path.match(/^\/api\/projects\/(foundation-project-[ab])\/foundation\/characters(?:\/(analyze|review|retry|discard))?$/);
 	if (characterMatch) {
 		const projectID = characterMatch[1], action = characterMatch[2] || 'get';

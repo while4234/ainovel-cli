@@ -15,6 +15,7 @@ import {
   MessageSquareText,
   MoreHorizontal,
   PauseCircle,
+  Palette,
   Pencil,
   Play,
   Plus,
@@ -34,6 +35,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { shouldShowWorkflowProgressPanel, WorkflowProgressPanel } from './workflow-progress.jsx';
 import { ManuscriptWorkspace } from './manuscript/ManuscriptWorkspace.jsx';
+import { ArtworkWorkspace } from './artwork/ArtworkWorkspace.jsx';
+import { clearArtworkLocation, readArtworkLocation } from './artwork/artwork-url.js';
 import {
   analyzeAdaptationSource,
   analyzeSimulation,
@@ -871,10 +874,12 @@ export default function App() {
   const [sideView, setSideView] = useState('status');
   const [centerView, setCenterView] = useState('writing');
   const [foundationDraftDirty, setFoundationDraftDirty] = useState(false);
+  const [artworkDraftDirty, setArtworkDraftDirty] = useState(false);
   const [foundationNavigation, setFoundationNavigation] = useState({
     projectId: '', tab: '', anchor: '', requestId: 0
   });
   const [pendingFoundationProject, setPendingFoundationProject] = useState(null);
+  const [pendingArtworkProject, setPendingArtworkProject] = useState(null);
   const [manuscriptControlsTarget, setManuscriptControlsTarget] = useState(null);
   const [projectDrawerOpen, setProjectDrawerOpen] = useState(false);
   const [toolDrawerOpen, setToolDrawerOpen] = useState(false);
@@ -908,6 +913,8 @@ export default function App() {
 	const planningRevisionInFlightProjectRef = useRef('');
   const outlineRevisionHydrationRef = useRef('');
   const forceFoundationProjectOpenRef = useRef('');
+  const forceArtworkProjectOpenRef = useRef('');
+  const artworkLocationRestoreRef = useRef(false);
 
   const snapshot = workbench.snapshot;
   const currentProjectNextAction = useMemo(() => projectNextAction(snapshot), [snapshot]);
@@ -978,6 +985,7 @@ export default function App() {
     setPlanningRevision(createCoCreatePlanningRevisionState());
     setFoundationReviewTab('overview');
     setFoundationNavigation({ projectId: '', tab: '', anchor: '', requestId: 0 });
+    setArtworkDraftDirty(false);
     setRollbackDialog(null);
     setProjectSettings(resetProjectSettingsForProject);
     setModelConfig(null);
@@ -1612,6 +1620,12 @@ export default function App() {
     }
     const forced = forceFoundationProjectOpenRef.current === projectId;
     if (forced) forceFoundationProjectOpenRef.current = '';
+    const artworkForced = forceArtworkProjectOpenRef.current === projectId;
+    if (artworkForced) forceArtworkProjectOpenRef.current = '';
+    if (!artworkForced && centerView === 'artwork' && artworkDraftDirty) {
+      setPendingArtworkProject({ project, trigger: document.activeElement });
+      return;
+    }
     if (!forced && centerView === 'foundation' && foundationDraftDirty && projectId !== activeProject?.id) {
       setPendingFoundationProject({ project, trigger: document.activeElement });
       return;
@@ -1712,7 +1726,25 @@ export default function App() {
         projectOpenAbortRef.current = null;
       }
     }
-  }, [activeProject?.id, centerView, foundationDraftDirty, isCurrentProject, resetProjectScopedState]);
+  }, [activeProject?.id, artworkDraftDirty, centerView, foundationDraftDirty, isCurrentProject, resetProjectScopedState]);
+
+  useEffect(() => {
+    if (artworkLocationRestoreRef.current || projects.length === 0) return;
+    const location = readArtworkLocation(globalThis.location?.search || '');
+    if (!location.view || !location.projectId) {
+      artworkLocationRestoreRef.current = true;
+      return;
+    }
+    artworkLocationRestoreRef.current = true;
+    const project = projects.find((item) => item.id === location.projectId);
+    if (!project) {
+      clearArtworkLocation();
+      setCenterView('writing');
+      return;
+    }
+    setCenterView('artwork');
+    void openProject(project);
+  }, [openProject, projects]);
 
   useEffect(() => {
     if (!activeProject?.id) {
@@ -4998,6 +5030,22 @@ export default function App() {
         </div>
       ) : null}
 
+      {pendingArtworkProject ? <ArtworkProjectSwitchDialog
+        project={pendingArtworkProject.project}
+        onCancel={() => {
+          const trigger = pendingArtworkProject.trigger;
+          setPendingArtworkProject(null);
+          globalThis.requestAnimationFrame?.(() => trigger?.focus());
+        }}
+        onConfirm={() => {
+          const project = pendingArtworkProject.project;
+          forceArtworkProjectOpenRef.current = project.id;
+          setPendingArtworkProject(null);
+          setArtworkDraftDirty(false);
+          openProject(project);
+        }}
+      /> : null}
+
       <main className="writing-pane">
         <header className="workspace-toolbar">
           <div className="workspace-heading">
@@ -5009,7 +5057,7 @@ export default function App() {
             <button
               aria-pressed={centerView === 'foundation'}
               className={`tool-button ${centerView === 'foundation' ? 'accent' : ''}`}
-              disabled={!activeProject || projectOpen.status === 'loading'}
+              disabled={!activeProject || projectOpen.status === 'loading' || artworkDraftDirty}
               onClick={() => {
                 setFoundationNavigation({ projectId: '', tab: '', anchor: '', requestId: 0 });
                 setCenterView('foundation');
@@ -5019,6 +5067,19 @@ export default function App() {
             >
               <Database size={16} />
               设定中心
+            </button>
+            <button
+              aria-pressed={centerView === 'artwork'}
+              className={`tool-button ${centerView === 'artwork' ? 'accent' : ''}`}
+              disabled={!activeProject || projectOpen.status === 'loading'}
+              onClick={() => {
+                setCenterView('artwork');
+                setToolDrawerOpen(false);
+              }}
+              type="button"
+            >
+              <Palette size={16} />
+              绘境
             </button>
             <button
               className="tool-button"
@@ -5111,6 +5172,21 @@ export default function App() {
           onDirtyChange={setFoundationDraftDirty}
           onClose={() => setCenterView('writing')}
           onOpenReview={() => openFoundationReviewTab('overview')}
+        /> : null}
+        {centerView === 'artwork' ? <ArtworkWorkspace
+          key={activeProject?.id || 'no-project-artwork'}
+          active
+          modelConfig={modelConfig}
+          onClose={() => {
+            setArtworkDraftDirty(false);
+            clearArtworkLocation();
+            setCenterView('writing');
+          }}
+          onDirtyChange={setArtworkDraftDirty}
+          onPromptModelChange={switchDefaultModel}
+          projectId={activeProject?.id || ''}
+          projectName={activeProject?.name || ''}
+          runtime={runtime}
         /> : null}
         {pendingFoundationProject ? <FoundationProjectSwitchDialog
           project={pendingFoundationProject.project}
@@ -13220,5 +13296,35 @@ function FoundationProjectSwitchDialog({ project, onCancel, onConfirm }) {
     <h3 id="foundation-project-switch-title">切换项目并离开未发布草稿？</h3>
     <p id="foundation-project-switch-description">切换到“{project?.name || project?.id}”会关闭当前设定中心；未通过 preview/apply 的页面草稿不会写入服务器。</p>
     <div className="inline-actions"><button ref={cancelRef} className="tool-button" type="button" onClick={onCancel}>留在当前项目</button><button className="tool-button danger" type="button" onClick={onConfirm}>确认切换项目</button></div>
+  </div></div>;
+}
+
+function ArtworkProjectSwitchDialog({ project, onCancel, onConfirm }) {
+  const cancelRef = useRef(null);
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    cancelRef.current?.focus();
+    const keydown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCancel();
+      }
+      if (event.key !== 'Tab') return;
+      const buttons = [...(dialogRef.current?.querySelectorAll('button:not(:disabled)') || [])];
+      if (event.shiftKey && document.activeElement === buttons[0]) {
+        event.preventDefault();
+        buttons.at(-1)?.focus();
+      } else if (!event.shiftKey && document.activeElement === buttons.at(-1)) {
+        event.preventDefault();
+        buttons[0]?.focus();
+      }
+    };
+    document.addEventListener('keydown', keydown);
+    return () => document.removeEventListener('keydown', keydown);
+  }, [onCancel]);
+  return <div className="foundation-dialog-backdrop" role="presentation"><div aria-describedby="artwork-project-switch-description" aria-labelledby="artwork-project-switch-title" aria-modal="true" className="foundation-dialog" ref={dialogRef} role="alertdialog">
+    <h3 id="artwork-project-switch-title">离开尚未保存的绘境草稿？</h3>
+    <p id="artwork-project-switch-description">切换到“{project?.name || project?.id}”会放弃当前尚未成功保存的编辑。你也可以留下来，等待自动保存或手动重试。</p>
+    <div className="inline-actions"><button ref={cancelRef} className="tool-button" type="button" onClick={onCancel}>留在当前项目</button><button className="tool-button danger" type="button" onClick={onConfirm}>放弃并切换</button></div>
   </div></div>;
 }

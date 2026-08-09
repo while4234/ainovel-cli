@@ -46,6 +46,17 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-09 `this commit` `feat: add artwork visual studio`: adds the modular
+  React 绘境 workspace for story covers/illustrations and character portraits,
+  capability-driven model/size selection, revision-safe autosave, explicit
+  one-call prompt and one-image confirmations, active-only aggregate polling,
+  cursor gallery actions, Blob downloads, secret-safe single-gateway settings,
+  URL restore, and responsive desktop/mobile layouts. Vitest, Vite, fake-only
+  Chrome fixture checks at 1920x1200/1440x900/390x844, Web Go regressions, CLI
+  build, and diff checks pass without live text/image/provider calls. The same
+  validation also extracts the existing exact-target Windows rename retry for
+  transient scanner permission locks without changing non-Windows persistence
+  semantics.
 - 2026-08-09 `this commit` `feat: add artwork prompt provenance`: adds
   one-call plain-text artwork prompt jobs using bounded AINovel-native book,
   volume, chapter, and character contexts; exact immutable source/model/prompt

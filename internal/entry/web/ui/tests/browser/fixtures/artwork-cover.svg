@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1620" viewBox="0 0 1080 1620">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#0d2c34"/><stop offset=".55" stop-color="#315f66"/><stop offset="1" stop-color="#d59b67"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#ffe7aa" stop-opacity=".95"/><stop offset="1" stop-color="#eaa85d" stop-opacity="0"/></radialGradient>
+    <filter id="mist"><feGaussianBlur stdDeviation="24"/></filter>
+  </defs>
+  <rect width="1080" height="1620" fill="url(#sky)"/>
+  <circle cx="760" cy="420" r="270" fill="url(#glow)"/>
+  <g fill="#102b31" opacity=".93"><path d="M0 1080 210 870l150 145 130-210 190 230 160-160 240 225v520H0z"/><path d="M70 900h120v380H70zm285-120h145v500H355zm355 60h105v440H710zm180-120h110v560H890z"/></g>
+  <g fill="#f4c678"><rect x="102" y="975" width="27" height="55"/><rect x="414" y="880" width="29" height="58"/><rect x="744" y="930" width="25" height="54"/><rect x="930" y="820" width="24" height="54"/></g>
+  <path d="M0 1200c250-120 420 90 650-40 170-95 300-10 430 45v415H0z" fill="#0b242b" opacity=".86"/>
+  <g filter="url(#mist)" fill="#dbe4de" opacity=".24"><ellipse cx="310" cy="650" rx="360" ry="90"/><ellipse cx="820" cy="1030" rx="430" ry="105"/></g>
+  <text x="90" y="205" fill="#f5e9ce" font-family="Georgia, serif" font-size="104" letter-spacing="18">雾港纪事</text>
+  <text x="96" y="285" fill="#d5c6a8" font-family="sans-serif" font-size="26" letter-spacing="9">A NOVEL OF MEMORY AND TIDE</text>
+</svg>

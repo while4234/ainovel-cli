@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/fsutil"
 )
 
 const (
@@ -223,14 +224,14 @@ func installSimulationLibraryBundle(profileTarget, corpusTarget, tempProfile, te
 	profileExisted := pathExists(profileTarget)
 	corpusExisted := pathExists(corpusTarget)
 	if profileExisted {
-		if err := os.Rename(profileTarget, profileBackup); err != nil {
+		if err := fsutil.RenameWithTransientRetry(profileTarget, profileBackup); err != nil {
 			return fmt.Errorf("backup simulation profile: %w", err)
 		}
 	}
 	if corpusExisted {
-		if err := os.Rename(corpusTarget, corpusBackup); err != nil {
+		if err := fsutil.RenameWithTransientRetry(corpusTarget, corpusBackup); err != nil {
 			if profileExisted {
-				_ = os.Rename(profileBackup, profileTarget)
+				_ = fsutil.RenameWithTransientRetry(profileBackup, profileTarget)
 			}
 			return fmt.Errorf("backup simulation corpus: %w", err)
 		}
@@ -250,17 +251,17 @@ func installSimulationLibraryBundle(profileTarget, corpusTarget, tempProfile, te
 			_ = os.RemoveAll(corpusTarget)
 		}
 		if profileExisted {
-			_ = os.Rename(profileBackup, profileTarget)
+			_ = fsutil.RenameWithTransientRetry(profileBackup, profileTarget)
 		}
 		if corpusExisted {
-			_ = os.Rename(corpusBackup, corpusTarget)
+			_ = fsutil.RenameWithTransientRetry(corpusBackup, corpusTarget)
 		}
 	}()
-	if err := os.Rename(tempProfile, profileTarget); err != nil {
+	if err := fsutil.RenameWithTransientRetry(tempProfile, profileTarget); err != nil {
 		return fmt.Errorf("install simulation profile: %w", err)
 	}
 	installedProfile = true
-	if err := os.Rename(tempCorpus, corpusTarget); err != nil {
+	if err := fsutil.RenameWithTransientRetry(tempCorpus, corpusTarget); err != nil {
 		return fmt.Errorf("install simulation corpus: %w", err)
 	}
 	installedCorpus = true
@@ -328,7 +329,7 @@ func (s *LibraryService) restoreSimulationCorpusIntoProject(
 	if err := os.Remove(targetDir); err != nil && !os.IsNotExist(err) {
 		return false, 0, fmt.Errorf("remove empty simulation source dir: %w", err)
 	}
-	if err := os.Rename(tempDir, targetDir); err != nil {
+	if err := fsutil.RenameWithTransientRetry(tempDir, targetDir); err != nil {
 		return false, 0, fmt.Errorf("restore simulation corpus: %w", err)
 	}
 	return true, bundle.SourceCount, nil

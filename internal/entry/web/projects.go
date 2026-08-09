@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/assets"
 	"github.com/voocel/ainovel-cli/internal/artwork"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/fsutil"
 	"github.com/voocel/ainovel-cli/internal/host"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
@@ -271,20 +271,7 @@ func (s *ProjectStore) cloneProject(sourceID, name string, replan bool) (Project
 }
 
 func installClonedProject(stagingRoot, finalRoot string) error {
-	err := os.Rename(stagingRoot, finalRoot)
-	if err == nil || runtime.GOOS != "windows" {
-		return err
-	}
-	// Windows scanners can briefly retain a handle after the last cloned file
-	// is closed. Retrying the exact atomic rename does not broaden its target or
-	// alter history, and avoids exposing a partially installed project.
-	for attempt := 1; attempt <= 5; attempt++ {
-		time.Sleep(time.Duration(attempt) * 20 * time.Millisecond)
-		if err = os.Rename(stagingRoot, finalRoot); err == nil {
-			return nil
-		}
-	}
-	return err
+	return fsutil.RenameWithTransientRetry(stagingRoot, finalRoot)
 }
 
 var replanningSourceArtifacts = []string{

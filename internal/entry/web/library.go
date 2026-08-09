@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/fsutil"
 	adaptengine "github.com/voocel/ainovel-cli/internal/host/adapt"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
@@ -771,7 +772,7 @@ func (s *LibraryService) LoadNovelIntoProject(manifest ProjectManifest, name str
 	if err := os.RemoveAll(projectAdaptationRoot); err != nil {
 		return apiLibraryItem{}, apiUploadedFile{}, fmt.Errorf("replace project adaptation analysis: %w", err)
 	}
-	if err := os.Rename(tmpAdaptationRoot, projectAdaptationRoot); err != nil {
+	if err := fsutil.RenameWithTransientRetry(tmpAdaptationRoot, projectAdaptationRoot); err != nil {
 		return apiLibraryItem{}, apiUploadedFile{}, fmt.Errorf("install project adaptation analysis: %w", err)
 	}
 
@@ -889,7 +890,7 @@ func (s *LibraryService) saveNovelEntry(displayName, entryName, adaptationRoot, 
 		if err := replaceDir(entryRoot, tmpRoot); err != nil {
 			return apiLibraryItem{}, err
 		}
-	} else if err := os.Rename(tmpRoot, entryRoot); err != nil {
+	} else if err := fsutil.RenameWithTransientRetry(tmpRoot, entryRoot); err != nil {
 		return apiLibraryItem{}, err
 	}
 	return apiLibraryItem{
@@ -1286,7 +1287,7 @@ func copyDir(sourceDir, targetDir string) error {
 
 func replaceDir(targetDir, replacementDir string) error {
 	backupDir := fmt.Sprintf("%s.bak-%d", targetDir, time.Now().UnixNano())
-	if err := os.Rename(targetDir, backupDir); err != nil {
+	if err := fsutil.RenameWithTransientRetry(targetDir, backupDir); err != nil {
 		return fmt.Errorf("backup existing directory %s: %w", targetDir, err)
 	}
 	installed := false
@@ -1296,10 +1297,10 @@ func replaceDir(targetDir, replacementDir string) error {
 			return
 		}
 		if _, err := os.Stat(targetDir); os.IsNotExist(err) {
-			_ = os.Rename(backupDir, targetDir)
+			_ = fsutil.RenameWithTransientRetry(backupDir, targetDir)
 		}
 	}()
-	if err := os.Rename(replacementDir, targetDir); err != nil {
+	if err := fsutil.RenameWithTransientRetry(replacementDir, targetDir); err != nil {
 		return fmt.Errorf("install replacement directory %s: %w", targetDir, err)
 	}
 	installed = true
@@ -1378,16 +1379,16 @@ func writeFileReplacing(path string, data []byte) error {
 	_ = os.Remove(backupPath)
 	hadExisting := false
 	if _, err := os.Stat(path); err == nil {
-		if err := os.Rename(path, backupPath); err != nil {
+		if err := fsutil.RenameWithTransientRetry(path, backupPath); err != nil {
 			return err
 		}
 		hadExisting = true
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := fsutil.RenameWithTransientRetry(tempPath, path); err != nil {
 		if hadExisting {
-			_ = os.Rename(backupPath, path)
+			_ = fsutil.RenameWithTransientRetry(backupPath, path)
 		}
 		return err
 	}

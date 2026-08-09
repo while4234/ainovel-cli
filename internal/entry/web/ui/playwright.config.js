@@ -7,8 +7,8 @@ export default defineConfig({
   reporter: 'line',
   use: { baseURL: 'http://127.0.0.1:4179', trace: 'retain-on-failure' },
   projects: [
-    { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
-    { name: 'mobile', use: { ...devices['Pixel 7'] } }
+    { name: 'desktop', use: { ...devices['Desktop Chrome'], channel: 'chrome' } },
+    { name: 'mobile', use: { ...devices['Pixel 7'], channel: 'chrome' } }
   ],
   webServer: [
 	{ command: 'powershell -NoProfile -ExecutionPolicy Bypass -File tests/browser/start-go-expansion-server.ps1', url: 'http://127.0.0.1:4182/health', reuseExistingServer: false, timeout: 120000 },

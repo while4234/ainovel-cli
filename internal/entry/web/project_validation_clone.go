@@ -21,6 +21,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/adaptaudit"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/fsutil"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -146,7 +147,7 @@ func (s *ProjectStore) CloneProjectForValidation(sourceID, validationRoot, anony
 	if err := verifyCloneFileIdentity(source.RootDir, stagingRoot); err != nil {
 		return ProjectManifest{}, ValidationCloneReport{}, err
 	}
-	if err := os.Rename(stagingRoot, finalRoot); err != nil {
+	if err := fsutil.RenameWithTransientRetry(stagingRoot, finalRoot); err != nil {
 		return ProjectManifest{}, ValidationCloneReport{}, err
 	}
 	stagingRoot = ""

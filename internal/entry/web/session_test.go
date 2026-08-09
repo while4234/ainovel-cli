@@ -191,7 +191,10 @@ func TestProjectSessionRejectsConcurrentResumeContinue(t *testing.T) {
 	fake.resumeStarted = make(chan struct{})
 	fake.releaseResume = make(chan struct{})
 
-	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: t.TempDir()}, fake)
+	// This unit test exercises only the in-memory action lease. Omitting an
+	// output directory keeps the unrelated durable CoreCast resume gate out of
+	// the fixture, so the fake Host is the first resume boundary under test.
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
 	if err != nil {
 		t.Fatalf("NewProjectSession: %v", err)
 	}
@@ -294,7 +297,9 @@ func TestProjectSessionAllowsModelSwitchDuringAction(t *testing.T) {
 	fake.resumeStarted = make(chan struct{})
 	fake.releaseResume = make(chan struct{})
 
-	session, err := NewProjectSession(ProjectManifest{ID: "project-1", OutputDir: t.TempDir()}, fake)
+	// Model switching during an action is an in-memory session contract; the
+	// durable resume gates have their own fixtures and would block this fake.
+	session, err := NewProjectSession(ProjectManifest{ID: "project-1"}, fake)
 	if err != nil {
 		t.Fatalf("NewProjectSession: %v", err)
 	}

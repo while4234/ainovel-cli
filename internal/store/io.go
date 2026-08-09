@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/voocel/ainovel-cli/internal/fsutil"
 )
 
 // IO 封装文件系统读写操作，提供加锁和原子写入。
@@ -191,7 +193,7 @@ func (io *IO) replaceFile(rel, tempPath, targetPath string) error {
 	}
 	backedUp := false
 	if _, err := os.Stat(targetPath); err == nil {
-		if err := os.Rename(targetPath, backupPath); err != nil {
+		if err := fsutil.RenameWithTransientRetry(targetPath, backupPath); err != nil {
 			return fmt.Errorf("prepare file replacement: %w", err)
 		}
 		backedUp = true
@@ -200,15 +202,15 @@ func (io *IO) replaceFile(rel, tempPath, targetPath string) error {
 	}
 	if err := io.injectWriteFault(rel, "after_backup"); err != nil {
 		if backedUp {
-			if rollbackErr := os.Rename(backupPath, targetPath); rollbackErr != nil {
+			if rollbackErr := fsutil.RenameWithTransientRetry(backupPath, targetPath); rollbackErr != nil {
 				return fmt.Errorf("write %s after backup: %v (rollback: %w)", rel, err, rollbackErr)
 			}
 		}
 		return fmt.Errorf("write %s after backup: %w", rel, err)
 	}
-	if err := os.Rename(tempPath, targetPath); err != nil {
+	if err := fsutil.RenameWithTransientRetry(tempPath, targetPath); err != nil {
 		if backedUp {
-			_ = os.Rename(backupPath, targetPath)
+			_ = fsutil.RenameWithTransientRetry(backupPath, targetPath)
 		}
 		return err
 	}
@@ -233,7 +235,7 @@ func recoverInterruptedReplacement(targetPath string) error {
 	_, targetErr := os.Stat(targetPath)
 	switch {
 	case os.IsNotExist(targetErr):
-		if err := os.Rename(backupPath, targetPath); err != nil {
+		if err := fsutil.RenameWithTransientRetry(backupPath, targetPath); err != nil {
 			return fmt.Errorf("restore interrupted file replacement: %w", err)
 		}
 		return nil
