@@ -612,6 +612,9 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		if err := validateGeneratedOutline("outline", entries, a.Review); err != nil {
 			return nil, err
 		}
+		if err := t.validateRequestedChapterCount(len(entries)); err != nil {
+			return nil, err
+		}
 		if err := t.store.Outline.SaveOutline(entries); err != nil {
 			return nil, fmt.Errorf("save outline: %w: %w", errs.ErrStoreWrite, err)
 		}
@@ -637,6 +640,11 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 		if err := validateGeneratedLayeredOutline(volumes, a.Review); err != nil {
 			return nil, err
+		}
+		if !t.collectingLongBlueprint() {
+			if err := t.validateRequestedChapterCount(domain.TotalChapters(volumes)); err != nil {
+				return nil, err
+			}
 		}
 		if t.collectingLongBlueprint() {
 			if len(volumes) != 1 {
@@ -1770,4 +1778,25 @@ func (t *SaveFoundationTool) updateWordBudgetPlan(chapters int, result map[strin
 	}
 	result["word_budget"] = next
 	return nil
+}
+
+func (t *SaveFoundationTool) validateRequestedChapterCount(chapters int) error {
+	meta, err := t.store.RunMeta.Load()
+	if err != nil {
+		return fmt.Errorf("load run meta for chapter-count contract: %w: %w", errs.ErrStoreRead, err)
+	}
+	if meta == nil || meta.WordBudget == nil || meta.WordBudget.RequestedChapters <= 0 {
+		return nil
+	}
+	expected := meta.WordBudget.RequestedChapters
+	if chapters == expected {
+		return nil
+	}
+	return fmt.Errorf(
+		"outline has %d chapters but the user explicitly requested %d; resubmit the complete outline with exactly %d chapter entries and keep all story beats inside that chapter count: %w",
+		chapters,
+		expected,
+		expected,
+		errs.ErrToolPrecondition,
+	)
 }

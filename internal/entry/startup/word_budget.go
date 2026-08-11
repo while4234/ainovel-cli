@@ -12,10 +12,22 @@ func wordBudgetForPrompt(targetTotalWords int, prompt string) (*domain.WordBudge
 	}
 	if targetTotalWords > 0 {
 		budget, _ := domain.NewWordBudgetFromTarget(targetTotalWords, domain.WordBudgetSourceAPI)
-		return budget, nil
+		return applyRequestedChapterCount(budget, prompt), nil
 	}
 	if budget, ok := domain.ParseWordBudgetFromText(prompt, domain.WordBudgetSourcePrompt); ok {
-		return budget, nil
+		return applyRequestedChapterCount(budget, prompt), nil
 	}
 	return nil, nil
+}
+
+func applyRequestedChapterCount(budget *domain.WordBudget, prompt string) *domain.WordBudget {
+	if budget == nil {
+		return nil
+	}
+	chapters, ok := domain.ParseRequestedChapterCount(prompt)
+	if !ok {
+		return budget
+	}
+	updated := budget.WithRequestedChapters(chapters)
+	return &updated
 }

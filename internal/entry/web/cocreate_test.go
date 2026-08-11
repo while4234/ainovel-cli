@@ -2006,7 +2006,7 @@ func TestProjectCoCreatePersistsTargetTotalWords(t *testing.T) {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	fake := installFakeSession(t, server, manifest)
-	fake.cocreateReply = webCoCreateReply("可以开始。", "## 主题\n- 5000 字短篇", true)
+	fake.cocreateReply = webCoCreateReply("可以开始。", "## 主题\n- 全书 5000 字，单章完结，不拆多章", true)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+manifest.ID+"/cocreate/begin", bytes.NewBufferString(`{"kind":"normal","initial":"写一部短篇","target_total_words":5000}`))
 	rec := httptest.NewRecorder()
@@ -2021,12 +2021,15 @@ func TestProjectCoCreatePersistsTargetTotalWords(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("commit status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fake.setWordBudgetCalls != 1 || fake.wordBudget == nil || fake.wordBudget.TargetTotalWords != 5000 {
+	if fake.setWordBudgetCalls != 1 || fake.wordBudget == nil ||
+		fake.wordBudget.TargetTotalWords != 5000 || fake.wordBudget.RequestedChapters != 1 {
 		t.Fatalf("SetWordBudget calls=%d budget=%+v", fake.setWordBudgetCalls, fake.wordBudget)
 	}
 	st := storepkg.NewStore(manifest.OutputDir)
 	review, err := st.RunMeta.PlanningReview()
-	if err != nil || review == nil || !strings.Contains(review.StartPrompt, "target_total_words=5000") {
+	if err != nil || review == nil ||
+		!strings.Contains(review.StartPrompt, "target_total_words=5000") ||
+		!strings.Contains(review.StartPrompt, "requested_chapters=1") {
 		t.Fatalf("saved start prompt missing word budget contract: review=%+v err=%v", review, err)
 	}
 }

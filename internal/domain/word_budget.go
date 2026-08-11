@@ -19,23 +19,25 @@ const (
 
 // WordBudget is the persisted book-level word budget contract.
 type WordBudget struct {
-	TargetTotalWords int    `json:"target_total_words"`
-	TotalMinWords    int    `json:"total_min_words"`
-	TotalMaxWords    int    `json:"total_max_words"`
-	PlannedChapters  int    `json:"planned_chapters"`
-	ChapterMinWords  int    `json:"chapter_min_words"`
-	ChapterMaxWords  int    `json:"chapter_max_words"`
-	Source           string `json:"source"`
+	TargetTotalWords  int    `json:"target_total_words"`
+	TotalMinWords     int    `json:"total_min_words"`
+	TotalMaxWords     int    `json:"total_max_words"`
+	RequestedChapters int    `json:"requested_chapters,omitempty"`
+	PlannedChapters   int    `json:"planned_chapters"`
+	ChapterMinWords   int    `json:"chapter_min_words"`
+	ChapterMaxWords   int    `json:"chapter_max_words"`
+	Source            string `json:"source"`
 }
 
 type WordBudgetTarget struct {
-	TargetTotalWords int    `json:"target_total_words"`
-	TotalMinWords    int    `json:"total_min_words"`
-	TotalMaxWords    int    `json:"total_max_words"`
-	PlannedChapters  int    `json:"planned_chapters,omitempty"`
-	ChapterMinWords  int    `json:"chapter_min_words,omitempty"`
-	ChapterMaxWords  int    `json:"chapter_max_words,omitempty"`
-	Source           string `json:"source"`
+	TargetTotalWords  int    `json:"target_total_words"`
+	TotalMinWords     int    `json:"total_min_words"`
+	TotalMaxWords     int    `json:"total_max_words"`
+	RequestedChapters int    `json:"requested_chapters,omitempty"`
+	PlannedChapters   int    `json:"planned_chapters,omitempty"`
+	ChapterMinWords   int    `json:"chapter_min_words,omitempty"`
+	ChapterMaxWords   int    `json:"chapter_max_words,omitempty"`
+	Source            string `json:"source"`
 }
 
 type WordBudgetProgress struct {
@@ -193,6 +195,9 @@ func (b WordBudget) Normalized() (WordBudget, bool) {
 }
 
 func (b WordBudget) NormalizedNoChapterRecalc() (WordBudget, bool) {
+	if b.RequestedChapters < 0 {
+		b.RequestedChapters = 0
+	}
 	if b.TotalMinWords > 0 && b.TotalMaxWords > 0 && b.TotalMinWords > b.TotalMaxWords {
 		b.TotalMinWords, b.TotalMaxWords = b.TotalMaxWords, b.TotalMinWords
 	}
@@ -209,6 +214,14 @@ func (b WordBudget) NormalizedNoChapterRecalc() (WordBudget, bool) {
 		b.Source = WordBudgetSourcePrompt
 	}
 	return b, true
+}
+
+func (b WordBudget) WithRequestedChapters(chapters int) WordBudget {
+	if chapters < 0 {
+		chapters = 0
+	}
+	b.RequestedChapters = chapters
+	return b
 }
 
 func (b WordBudget) WithPlannedChapters(chapters int) WordBudget {
@@ -259,13 +272,14 @@ func (b WordBudget) Runtime(progress *Progress, chapter int) (WordBudgetRuntime,
 	}
 	runtime := WordBudgetRuntime{
 		Target: WordBudgetTarget{
-			TargetTotalWords: nb.TargetTotalWords,
-			TotalMinWords:    nb.TotalMinWords,
-			TotalMaxWords:    nb.TotalMaxWords,
-			PlannedChapters:  totalChapters,
-			ChapterMinWords:  nb.ChapterMinWords,
-			ChapterMaxWords:  nb.ChapterMaxWords,
-			Source:           nb.Source,
+			TargetTotalWords:  nb.TargetTotalWords,
+			TotalMinWords:     nb.TotalMinWords,
+			TotalMaxWords:     nb.TotalMaxWords,
+			RequestedChapters: nb.RequestedChapters,
+			PlannedChapters:   totalChapters,
+			ChapterMinWords:   nb.ChapterMinWords,
+			ChapterMaxWords:   nb.ChapterMaxWords,
+			Source:            nb.Source,
 		},
 		Progress: WordBudgetProgress{
 			CompletedChapters: completedChapters,
@@ -355,6 +369,54 @@ func ParseWordBudgetFromText(text, source string) (*WordBudget, bool) {
 	return parseWordBudgetSingle(text, source)
 }
 
+// ParseRequestedChapterCount extracts only explicit whole-book chapter-count
+// requirements. Per-chapter wording such as "单章 5000 字" is intentionally
+// excluded unless the prompt also says the book must not be split.
+func ParseRequestedChapterCount(text string) (int, bool) {
+	normalized := normalizeChapterCountText(text)
+	if strings.TrimSpace(normalized) == "" {
+		return 0, false
+	}
+	for _, pattern := range requestedChapterCountPatterns {
+		match := pattern.FindStringSubmatch(normalized)
+		if len(match) < 2 {
+			continue
+		}
+		chapters, ok := parseChapterCountNumber(match[1])
+		if ok {
+			return chapters, true
+		}
+	}
+	if containsAny(strings.ToLower(normalized), singleChapterBookMarkers) {
+		return 1, true
+	}
+	if bareSingleChapterPattern.MatchString(normalized) {
+		return 1, true
+	}
+	return 0, false
+}
+
+func normalizeChapterCountText(text string) string {
+	var builder strings.Builder
+	builder.Grow(len(text))
+	for _, char := range text {
+		if char >= '０' && char <= '９' {
+			builder.WriteRune('0' + (char - '０'))
+			continue
+		}
+		builder.WriteRune(char)
+	}
+	return builder.String()
+}
+
+func parseChapterCountNumber(raw string) (int, bool) {
+	if value, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+		return value, value > 0
+	}
+	value, ok := parseChineseNumber(raw)
+	return value, ok && value > 0
+}
+
 func totalRange(target int) (int, int) {
 	minWords := int(math.Round(float64(target) * (1 - defaultWordBudgetTolerance)))
 	maxWords := int(math.Round(float64(target) * (1 + defaultWordBudgetTolerance)))
@@ -397,11 +459,22 @@ func normalizeWordBudgetSource(source string) string {
 }
 
 var (
-	budgetNumberPattern = `([0-9０-９]+(?:\.[0-9０-９]+)?|[一二三四五六七八九十百千万萬两兩]+)`
-	budgetUnitPattern   = `(万|萬|w|W|k|K|千|million|m)?`
-	budgetRangeRe       = regexp.MustCompile(budgetNumberPattern + `\s*` + budgetUnitPattern + `\s*(?:-|~|–|—|到|至)\s*` + budgetNumberPattern + `\s*` + budgetUnitPattern + `\s*(?:字|words?|runes?)?`)
-	budgetSingleRe      = regexp.MustCompile(budgetNumberPattern + `\s*` + budgetUnitPattern + `\s*(?:字|words?|runes?)`)
-	budgetUnitOnlyRe    = regexp.MustCompile(budgetNumberPattern + `\s*(万|萬|w|W|k|K|千|million|m)`)
+	budgetNumberPattern           = `([0-9０-９]+(?:\.[0-9０-９]+)?|[一二三四五六七八九十百千万萬两兩]+)`
+	budgetUnitPattern             = `(万|萬|w|W|k|K|千|million|m)?`
+	budgetRangeRe                 = regexp.MustCompile(budgetNumberPattern + `\s*` + budgetUnitPattern + `\s*(?:-|~|–|—|到|至)\s*` + budgetNumberPattern + `\s*` + budgetUnitPattern + `\s*(?:字|words?|runes?)?`)
+	budgetSingleRe                = regexp.MustCompile(budgetNumberPattern + `\s*` + budgetUnitPattern + `\s*(?:字|words?|runes?)`)
+	budgetUnitOnlyRe              = regexp.MustCompile(budgetNumberPattern + `\s*(万|萬|w|W|k|K|千|million|m)`)
+	chapterCountNumberPattern     = `([0-9]+|[一二三四五六七八九十百千万萬两兩]+)`
+	requestedChapterCountPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?:全书|全書|全文|整本|总共|總共|一共|共|总计|總計|总章数|總章數|章节数|章節數|计划|計劃|规划|規劃|要求|写成|寫成|分为|分為|拆成)\s*(?:为|為|是|=|:|：)?\s*` + chapterCountNumberPattern + `\s*(?:章|章节|章節)`),
+		regexp.MustCompile(chapterCountNumberPattern + `\s*(?:章|章节|章節)\s*(?:完结|完結|完本|结束|結束|收束)`),
+	}
+	bareSingleChapterPattern = regexp.MustCompile(`(?:^|[\s,，。；;:：、/])(?:单章|單章)(?:$|[\s,，。；;、/]|连续|連續|短篇|完结|完結)`)
+	singleChapterBookMarkers = []string{
+		"只写一章", "只寫一章", "全书一章", "全書一章", "全文一章", "整本一章",
+		"一章完结", "一章完結", "单章完结", "單章完結", "不拆章", "不分章",
+		"不拆多章", "不分多章", "一篇连续短篇", "一篇連續短篇", "single chapter",
+	}
 )
 
 func parseWordBudgetRange(text, source string) (*WordBudget, bool) {

@@ -221,7 +221,7 @@ func TestSetWordBudget(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
 
-	budget := domain.NewWordBudget(5000, "quick_start").WithPlannedChapters(5)
+	budget := domain.NewWordBudget(5000, "quick_start").WithRequestedChapters(5).WithPlannedChapters(5)
 	if err := store.RunMeta.SetWordBudget(&budget); err != nil {
 		t.Fatalf("SetWordBudget: %v", err)
 	}
@@ -235,6 +235,7 @@ func TestSetWordBudget(t *testing.T) {
 	if meta.WordBudget.TargetTotalWords != 5000 ||
 		meta.WordBudget.TotalMinWords != 4500 ||
 		meta.WordBudget.TotalMaxWords != 5500 ||
+		meta.WordBudget.RequestedChapters != 5 ||
 		meta.WordBudget.PlannedChapters != 5 {
 		t.Fatalf("unexpected word budget: %+v", meta.WordBudget)
 	}

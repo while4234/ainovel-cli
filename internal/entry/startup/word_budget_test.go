@@ -45,6 +45,23 @@ func TestCoCreateBuildPlanParsesDraftTotalWords(t *testing.T) {
 	}
 }
 
+func TestCoCreateBuildPlanPreservesExplicitSingleChapterWithAPIBudget(t *testing.T) {
+	session := NewCoCreateSession("seed")
+	session.ApplyReply(hostlessCoCreateReply("## 篇幅\n全书约5000字，按一篇连续短篇处理，不拆多章", true))
+
+	plan, err := session.BuildPlanWithWordBudget(5000)
+	if err != nil {
+		t.Fatalf("BuildPlanWithWordBudget: %v", err)
+	}
+	if plan.WordBudget == nil || plan.WordBudget.TargetTotalWords != 5000 || plan.WordBudget.RequestedChapters != 1 {
+		t.Fatalf("word budget = %+v, want 5000 words and one requested chapter", plan.WordBudget)
+	}
+	if !strings.Contains(plan.StartPrompt, "requested_chapters=1") ||
+		!strings.Contains(plan.StartPrompt, "outline 正文条目数必须严格等于该值") {
+		t.Fatalf("start prompt missing hard chapter-count contract: %q", plan.StartPrompt)
+	}
+}
+
 func hostlessCoCreateReply(prompt string, ready bool) host.CoCreateReply {
 	return host.CoCreateReply{Prompt: prompt, Ready: ready, Message: "ok", Raw: "ok"}
 }

@@ -894,6 +894,46 @@ func TestSaveFoundationOutlinePlansWordBudget(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationOutlineRejectsExplicitSingleChapterViolation(t *testing.T) {
+	dir := testStoreDir(t)
+	st := store.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	approveFoundationToolFixture(t, st)
+	budget := domain.NewWordBudget(5000, "test").WithRequestedChapters(1)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"type": "outline",
+		"content": []map[string]any{
+			{"chapter": 1, "title": "开端", "core_event": "主角进入冲突", "hook": "选择逼近"},
+			{"chapter": 2, "title": "收束", "core_event": "主角承担选择", "hook": "代价落定"},
+		},
+		"scale": "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	_, err = NewSaveFoundationTool(st).Execute(context.Background(), args)
+	if err == nil || !errors.Is(err, errs.ErrToolPrecondition) {
+		t.Fatalf("expected explicit chapter-count rejection, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "user explicitly requested 1") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	outline, loadErr := st.Outline.LoadOutline()
+	if loadErr != nil {
+		t.Fatalf("LoadOutline: %v", loadErr)
+	}
+	if len(outline) != 0 {
+		t.Fatalf("rejected outline must not be persisted: %+v", outline)
+	}
+}
+
 func TestSaveFoundationAppendVolume(t *testing.T) {
 	dir := testStoreDir(t)
 	s := store.NewStore(dir)

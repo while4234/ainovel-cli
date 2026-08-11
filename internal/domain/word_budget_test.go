@@ -54,3 +54,27 @@ func TestWordBudgetWithPlannedChapters(t *testing.T) {
 		t.Fatalf("planned budget = %+v", budget)
 	}
 }
+
+func TestParseRequestedChapterCount(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want int
+		ok   bool
+	}{
+		{name: "single continuous short story", text: "篇幅：全书约 5000 字，按一篇连续短篇处理，不拆多章", want: 1, ok: true},
+		{name: "bare single chapter choice", text: "5000字，单章", want: 1, ok: true},
+		{name: "explicit total", text: "全书共9章，每章约4000字", want: 9, ok: true},
+		{name: "chapter count field", text: "总章数：二十章", want: 20, ok: true},
+		{name: "per chapter only", text: "单章5000字，节奏紧凑", ok: false},
+		{name: "ordinal chapter", text: "第一章从雨夜开始", ok: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := ParseRequestedChapterCount(test.text)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("ParseRequestedChapterCount(%q) = (%d, %v), want (%d, %v)", test.text, got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
