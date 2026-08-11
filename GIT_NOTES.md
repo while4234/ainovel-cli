@@ -46,6 +46,12 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-11 `this commit` `docs: record latest update and restart`:
+  fast-forwarded `main` from `0e1506e6` to upstream `53f4e36c`, rebuilt the Web
+  executable with `restart-web.cmd`, restarted the normal runtime on
+  `127.0.0.1:9898` as PID `35528`, and verified `/`, `/api/runtime`,
+  `/api/projects`, plus the referenced JS/CSS assets all return HTTP 200 with
+  10 projects loaded.
 - 2026-08-09 `this commit` `feat: integrate applied artwork lifecycle`: adds
   orientation-aware deterministic cover/portrait/illustration derivatives,
   journaled atomic apply/unapply and applied-only reconciliation, EPUB image
