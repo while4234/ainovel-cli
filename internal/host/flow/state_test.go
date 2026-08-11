@@ -65,6 +65,41 @@ func TestLoadStateRoutesNewAdaptationThroughCharacterBeforeCoreCastExists(t *tes
 	}
 }
 
+func TestLoadStateIncludesAuthoritativeOriginalPlanningScale(t *testing.T) {
+	st := storepkg.NewStore(t.TempDir())
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RunMeta.SetPlanningTier(domain.PlanningTierShort); err != nil {
+		t.Fatal(err)
+	}
+	budget := domain.NewWordBudget(5000, domain.WordBudgetSourceAPI).WithRequestedChapters(1)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status:           domain.PlanningReviewStatusCollecting,
+		Kind:             domain.PlanningReviewKindBlueprint,
+		TargetTotalWords: 5000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("single chapter", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	state := LoadState(st)
+	if state.PlanningTier != domain.PlanningTierShort || state.TargetTotalWords != 5000 || state.RequestedChapters != 1 {
+		t.Fatalf("planning scale state = %+v", state)
+	}
+	instruction := Route(state)
+	if instruction == nil || instruction.Agent != "architect_short" ||
+		!strings.Contains(instruction.Task, "exactly 1 chapter") ||
+		!strings.Contains(instruction.Task, "save_foundation(type=outline, scale=short)") {
+		t.Fatalf("new single-chapter project route = %+v", instruction)
+	}
+}
+
 func TestLoadStateIncludesInProgressWriterRecoveryFacts(t *testing.T) {
 	st := storepkg.NewStore(t.TempDir())
 	if err := st.Init(); err != nil {

@@ -46,6 +46,15 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-11 `this commit` `fix: preserve single-chapter short planning`:
+  carries the persisted planning tier and explicit requested chapter count into
+  original-planning routing, sends short/mid blueprints directly to a flat
+  outline task, blocks model-side scale overrides when a hard chapter contract
+  exists, and prevents 1-5 chapter contracts from entering the minimum
+  six-chapter layered skeleton flow. Flow, Foundation, and Web co-create
+  regressions pass; a real browser recovery changed the affected 5000-word
+  project from stale layered 0/10 to flat 0/1, removed its layered outline, and
+  then completed exactly one chapter (1/1).
 - 2026-08-11 `this commit` `feat: extend model-specific global prompts`:
   preserves the user's adult-scene writing guidance across the DeepSeek,
   Gemini, GPT, and Grok global prompts, rebuilds/restarts the Web runtime on

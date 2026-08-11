@@ -494,6 +494,41 @@ func TestSaveFoundationPersistsPlanningTier(t *testing.T) {
 	}
 }
 
+func TestSaveFoundationRejectsPlanningTierOverride(t *testing.T) {
+	dir := testStoreDir(t)
+	st := store.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := st.RunMeta.SetPlanningTier(domain.PlanningTierShort); err != nil {
+		t.Fatalf("SetPlanningTier: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, domain.WordBudgetSourceAPI).WithRequestedChapters(1)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"type":    "premise",
+		"content": "# 测试书名\n\n## 题材和基调\n测试",
+		"scale":   "long",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	_, err = NewSaveFoundationTool(st).Execute(context.Background(), args)
+	if err == nil || !errors.Is(err, errs.ErrToolPrecondition) || !strings.Contains(err.Error(), "conflicts with persisted planning tier short") {
+		t.Fatalf("expected planning-tier conflict, got %v", err)
+	}
+	meta, loadErr := st.RunMeta.Load()
+	if loadErr != nil {
+		t.Fatalf("LoadRunMeta: %v", loadErr)
+	}
+	if meta == nil || meta.PlanningTier != domain.PlanningTierShort {
+		t.Fatalf("planning tier changed after rejection: %+v", meta)
+	}
+}
+
 func TestSaveFoundationPremiseSetsNovelName(t *testing.T) {
 	dir := testStoreDir(t)
 	store := store.NewStore(dir)
@@ -931,6 +966,79 @@ func TestSaveFoundationOutlineRejectsExplicitSingleChapterViolation(t *testing.T
 	}
 	if len(outline) != 0 {
 		t.Fatalf("rejected outline must not be persisted: %+v", outline)
+	}
+}
+
+func TestSaveFoundationSingleChapterRepairClearsCorruptLayeredState(t *testing.T) {
+	dir := testStoreDir(t)
+	st := store.NewStore(dir)
+	if err := st.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	approveFoundationToolFixture(t, st)
+	if err := st.Progress.Init("single chapter repair", 10); err != nil {
+		t.Fatalf("InitProgress: %v", err)
+	}
+	if err := st.Progress.SetLayered(true); err != nil {
+		t.Fatalf("SetLayered: %v", err)
+	}
+	if err := st.RunMeta.SetPlanningTier(domain.PlanningTierShort); err != nil {
+		t.Fatalf("SetPlanningTier: %v", err)
+	}
+	budget := domain.NewWordBudget(5000, domain.WordBudgetSourceAPI).
+		WithRequestedChapters(1).
+		WithPlannedChapters(10)
+	if err := st.RunMeta.SetWordBudget(&budget); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := st.Outline.SaveLayeredOutline([]domain.VolumeOutline{{
+		Index: 1,
+		Title: "stale volume",
+		Theme: "stale ten-chapter plan",
+		Arcs: []domain.ArcOutline{
+			{Index: 1, Title: "stale arc one", Goal: "stale", EstimatedChapters: 3},
+			{Index: 2, Title: "stale arc two", Goal: "stale", EstimatedChapters: 4},
+			{Index: 3, Title: "stale arc three", Goal: "stale", EstimatedChapters: 3},
+		},
+	}}); err != nil {
+		t.Fatalf("SaveLayeredOutline: %v", err)
+	}
+
+	args, err := json.Marshal(map[string]any{
+		"type": "outline",
+		"content": []map[string]any{{
+			"chapter": 1, "title": "single chapter", "core_event": "complete story", "hook": "closed ending",
+		}},
+		"scale": "short",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := NewSaveFoundationTool(st).Execute(context.Background(), args); err != nil {
+		t.Fatalf("repair single-chapter outline: %v", err)
+	}
+
+	progress, err := st.Progress.Load()
+	if err != nil || progress == nil {
+		t.Fatalf("LoadProgress: progress=%+v err=%v", progress, err)
+	}
+	if progress.TotalChapters != 1 || progress.Layered {
+		t.Fatalf("repaired progress = %+v", progress)
+	}
+	flat, err := st.Outline.LoadOutline()
+	if err != nil || len(flat) != 1 {
+		t.Fatalf("flat outline=%+v err=%v", flat, err)
+	}
+	layered, err := st.Outline.LoadLayeredOutline()
+	if err != nil || len(layered) != 0 {
+		t.Fatalf("stale layered outline=%+v err=%v", layered, err)
+	}
+	meta, err := st.RunMeta.Load()
+	if err != nil || meta == nil || meta.WordBudget == nil {
+		t.Fatalf("LoadRunMeta: meta=%+v err=%v", meta, err)
+	}
+	if meta.WordBudget.RequestedChapters != 1 || meta.WordBudget.PlannedChapters != 1 {
+		t.Fatalf("repaired word budget = %+v", meta.WordBudget)
 	}
 }
 

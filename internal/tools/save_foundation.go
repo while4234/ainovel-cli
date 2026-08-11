@@ -22,6 +22,8 @@ type SaveFoundationTool struct {
 	completionGate CompletionGate
 }
 
+const minimumLayeredOutlineChapters = 6
+
 type outlineSimilarityReviewVerdict struct {
 	Chapter         int    `json:"chapter"`
 	ExistingChapter int    `json:"existing_chapter"`
@@ -535,12 +537,26 @@ func (t *SaveFoundationTool) Execute(ctx context.Context, args json.RawMessage) 
 		}
 	}
 	if a.Scale != "" {
-		switch domain.PlanningTier(a.Scale) {
+		requestedTier := domain.PlanningTier(a.Scale)
+		switch requestedTier {
 		case domain.PlanningTierShort, domain.PlanningTierMid, domain.PlanningTierLong:
 		default:
 			return nil, fmt.Errorf("invalid scale %q, expected short/mid/long: %w", a.Scale, errs.ErrToolArgs)
 		}
-		if err := t.store.RunMeta.SetPlanningTier(domain.PlanningTier(a.Scale)); err != nil {
+		meta, loadErr := t.store.RunMeta.Load()
+		if loadErr != nil {
+			return nil, fmt.Errorf("load persisted planning tier: %w: %w", errs.ErrStoreRead, loadErr)
+		}
+		if meta != nil && meta.WordBudget != nil && meta.WordBudget.RequestedChapters > 0 &&
+			meta.PlanningTier != "" && meta.PlanningTier != requestedTier {
+			return nil, fmt.Errorf(
+				"requested scale %s conflicts with persisted planning tier %s; keep the user-confirmed tier and resubmit without changing scale: %w",
+				requestedTier,
+				meta.PlanningTier,
+				errs.ErrToolPrecondition,
+			)
+		}
+		if err := t.store.RunMeta.SetPlanningTier(requestedTier); err != nil {
 			return nil, fmt.Errorf("save planning tier: %w: %w", errs.ErrStoreWrite, err)
 		}
 	}
@@ -1214,6 +1230,10 @@ func (t *SaveFoundationTool) longBlueprintArtifactExists(artifactType string) bo
 func (t *SaveFoundationTool) requiresLayeredPlanning() bool {
 	meta, _ := t.store.RunMeta.Load()
 	if meta == nil {
+		return false
+	}
+	if meta.WordBudget != nil && meta.WordBudget.RequestedChapters > 0 &&
+		meta.WordBudget.RequestedChapters < minimumLayeredOutlineChapters {
 		return false
 	}
 	if meta.PlanningTier == domain.PlanningTierLong {

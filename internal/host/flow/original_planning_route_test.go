@@ -246,6 +246,32 @@ func TestRouteOriginalPlanningLocksFoundationAfterFirstSkeletonVolume(t *testing
 	}
 }
 
+func TestRouteOriginalPlanningShortBlueprintUsesRequestedFlatOutline(t *testing.T) {
+	state := State{
+		Progress:          &domain.Progress{Phase: domain.PhaseOutline, Layered: true, TotalChapters: 10},
+		PlanningReview:    &domain.PlanningReview{Status: domain.PlanningReviewStatusCollecting, Kind: domain.PlanningReviewKindBlueprint, TargetTotalWords: 5000},
+		PlanningTier:      domain.PlanningTierShort,
+		TargetTotalWords:  5000,
+		RequestedChapters: 1,
+		FoundationMissing: []string{"outline"},
+	}
+
+	got := Route(state)
+	if got == nil || got.Agent != "architect_short" {
+		t.Fatalf("short blueprint route = %+v", got)
+	}
+	for _, want := range []string{"save_foundation(type=outline", "exactly 1 chapter", "scale=short"} {
+		if !strings.Contains(got.Task, want) {
+			t.Fatalf("short blueprint task missing %q: %s", want, got.Task)
+		}
+	}
+	for _, forbidden := range []string{"layered_outline", "append_volume", "2-3 causal arcs", "3-4 chapters"} {
+		if strings.Contains(got.Task, forbidden) {
+			t.Fatalf("short blueprint task retained long-form instruction %q: %s", forbidden, got.Task)
+		}
+	}
+}
+
 func TestRouteOriginalPlanningRequestsOnlyMissingFoundation(t *testing.T) {
 	state := State{
 		Progress:          &domain.Progress{Phase: domain.PhasePremise},

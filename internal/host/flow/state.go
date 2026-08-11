@@ -43,14 +43,18 @@ func LoadState(store *storepkg.Store) State {
 	}
 	loadCharacterWorkflowState(&s, store)
 	loadCastPromotionState(&s, store)
+	if meta, metaErr := store.RunMeta.Load(); metaErr == nil && meta != nil {
+		s.PlanningTier = meta.PlanningTier
+		if meta.WordBudget != nil {
+			s.TargetTotalWords = meta.WordBudget.TargetTotalWords
+			s.RequestedChapters = meta.WordBudget.RequestedChapters
+		}
+	}
 	progress, err := store.Progress.Load()
 	if err != nil || progress == nil {
 		return s
 	}
 	s.Progress = progress
-	if meta, metaErr := store.RunMeta.Load(); metaErr == nil && meta != nil {
-		s.PlanningTier = meta.PlanningTier
-	}
 	loadWriterResumeState(&s, store, progress)
 	loadAdaptationState(&s, store, progress)
 	loadContinuationState(&s, store)

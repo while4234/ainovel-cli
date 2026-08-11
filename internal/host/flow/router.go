@@ -43,6 +43,8 @@ type State struct {
 	BlueprintVolumeCount int
 	BlueprintNextIsFinal bool
 	PlanningTier         domain.PlanningTier
+	TargetTotalWords     int
+	RequestedChapters    int
 
 	// 上一个已完成章节（Progress.CompletedChapters 末尾）；为 0 表示尚未开始写作。
 	LastCompleted int
@@ -602,6 +604,9 @@ func routeOriginalPlanning(s State) *Instruction {
 		return routeOriginalFoundation(s, review)
 	}
 	if review.Kind == domain.PlanningReviewKindBlueprint {
+		if !originalBlueprintUsesLayeredPlanning(s, review) {
+			return routeOriginalFlatOutline(s)
+		}
 		if s.SkeletonPlanningWork != nil {
 			return routeOriginalSkeletonAudit(s.SkeletonPlanningWork)
 		}
@@ -685,6 +690,54 @@ func routeOriginalPlanning(s State) *Instruction {
 		return &Instruction{Agent: "editor", Reason: "分批审核已完成，需以审核摘要进行全书总审", Task: "完成原创小说全书细纲总审。禁止加载全书原始细纲，也不得要求 Host 把全部已通过报告正文重复塞入任务；调用 novel_context(scope=planning) 读取权威分批审核索引，并核对 premise、人物、世界规则、指南针和全部分卷骨架索引。检查主线闭环、人物成长闭环、伏笔回收、高潮梯度与节奏、世界规则一致、题材辨识度、结局兑现。调用 save_original_planning_audit(scope=book)，dimensions 必须恰含 mainline_closure、character_closure、setup_payoff、escalation_pacing、world_consistency、originality、ending_delivery。任何重大问题必须定位卷弧返修；只有全部维度不低于7且无重大问题才能 pass。"}
 	}
 	return nil
+}
+
+const (
+	normalOriginalLayeredPlanningWordThreshold = 50_000
+	minimumOriginalLayeredPlanningChapters     = 6
+)
+
+func originalBlueprintUsesLayeredPlanning(s State, review *domain.PlanningReview) bool {
+	if s.RequestedChapters > 0 && s.RequestedChapters < minimumOriginalLayeredPlanningChapters {
+		return false
+	}
+	targetWords := s.TargetTotalWords
+	if targetWords <= 0 && review != nil {
+		targetWords = review.TargetTotalWords
+	}
+	if s.PlanningTier == domain.PlanningTierLong || targetWords >= normalOriginalLayeredPlanningWordThreshold {
+		return true
+	}
+	if s.PlanningTier == domain.PlanningTierShort || s.PlanningTier == domain.PlanningTierMid || targetWords > 0 {
+		return false
+	}
+	// Legacy route fixtures and old projects can lack scale metadata. Preserve
+	// their established layered recovery behavior until a durable tier exists.
+	return true
+}
+
+func routeOriginalFlatOutline(s State) *Instruction {
+	scale := s.PlanningTier
+	if scale != domain.PlanningTierShort && scale != domain.PlanningTierMid {
+		scale = domain.PlanningTierShort
+	}
+	chapterContract := "Choose the flat outline chapter count from the persisted creative brief and word budget."
+	if s.RequestedChapters > 0 {
+		chapterContract = fmt.Sprintf(
+			"The user explicitly requested exactly %d chapter entries for the whole book; return exactly %d chapter entries and keep every story beat inside that fixed count.",
+			s.RequestedChapters,
+			s.RequestedChapters,
+		)
+	}
+	return &Instruction{
+		Agent: "architect_short",
+		Task: fmt.Sprintf(
+			"Create the complete normal-original flat chapter outline. Call novel_context(scope=planning), then call save_foundation(type=outline, scale=%s) exactly once. %s Preserve the confirmed Foundation and stable character/relationship IDs. Do not create volume or arc artifacts, do not change the persisted planning scale, and stop after the outline save.",
+			scale,
+			chapterContract,
+		),
+		Reason: "短中篇章节细纲待生成",
+	}
 }
 
 func routeOriginalFoundation(state State, review *domain.PlanningReview) *Instruction {
