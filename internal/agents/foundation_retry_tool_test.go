@@ -82,4 +82,24 @@ func TestFoundationRetryBoundaryEndsStaleGenerationRun(t *testing.T) {
 	}
 }
 
+func TestArchitectsStopAfterSingleFoundationGenerationSection(t *testing.T) {
+	for _, section := range []string{"premise", "world_rules"} {
+		result := json.RawMessage(`{"saved":true,"type":"` + section + `","foundation_ready":false}`)
+		if !architectShortShouldStopAfterToolResult("save_foundation", result) {
+			t.Fatalf("architect_short continued after %s checkpoint", section)
+		}
+		if !architectLongShouldStopAfterToolResult("save_foundation", result) {
+			t.Fatalf("architect_long continued after %s checkpoint", section)
+		}
+	}
+}
+
+func TestArchitectsStopWhenFoundationReviewBecomesPending(t *testing.T) {
+	result := json.RawMessage(`{"saved":true,"type":"world_rules","planning_review":"pending","foundation_ready":true}`)
+	if !architectShortShouldStopAfterToolResult("save_foundation", result) ||
+		!architectLongShouldStopAfterToolResult("save_foundation", result) {
+		t.Fatal("architect continued across the Foundation confirmation boundary")
+	}
+}
+
 var _ agentcore.Tool = foundationRetryProbeTool{}

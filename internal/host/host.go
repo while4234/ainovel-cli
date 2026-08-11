@@ -406,6 +406,9 @@ func (h *Host) StartPrepared(promptText string) error {
 	if _, err := h.store.RunMeta.ReconcileRequestedChapterCount(); err != nil {
 		return fmt.Errorf("reconcile requested chapter count: %w", err)
 	}
+	if _, err := reconcileConfirmedOriginalCharacterSections(h.store); err != nil {
+		return fmt.Errorf("reconcile confirmed Character generation: %w", err)
+	}
 	if err := h.store.Checkpoints.Reset(); err != nil {
 		return fmt.Errorf("reset checkpoints: %w", err)
 	}
@@ -1065,6 +1068,9 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 	defer h.finishResumeAttempt()
 	if err := h.ensureContinuationWritingAllowed(); err != nil {
 		return "", err
+	}
+	if _, err := reconcileConfirmedOriginalCharacterSections(h.store); err != nil {
+		return "", fmt.Errorf("reconcile confirmed Character generation: %w", err)
 	}
 	if err := tools.RepairConfirmedCharacterWorkflowForResume(h.store); err != nil {
 		return "", fmt.Errorf("repair confirmed Character workflow before resume: %w", err)

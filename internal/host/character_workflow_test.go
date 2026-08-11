@@ -226,6 +226,58 @@ func TestConfirmOriginalCharacterCandidatePublishesReviewedCandidateAndIsIdempot
 	}
 }
 
+func TestReconcileConfirmedOriginalCharacterSectionsAfterFreshGeneration(t *testing.T) {
+	st, candidate, binding := stagedOriginalCharacterWorkflow(t)
+	request := CharacterConfirmationRequest{
+		ExpectedCandidateRevision: candidate.Revision,
+		CandidateDigest:           binding.Candidate.CharacterContentDigest,
+		IdempotencyKey:            "confirm-character-before-regeneration",
+	}
+	if _, err := ConfirmOriginalCharacterCandidate(st, request); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := st.RollbackPreview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Rollback(domain.RollbackRequest{Confirm: true, PreviewHash: preview.PreviewHash}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CoreCast.PublishConfirmed(st.Foundation, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveFoundationPremise(nil, "same confirmed brief"); err != nil {
+		t.Fatal(err)
+	}
+	review := &domain.PlanningReview{Brief: "same confirmed brief"}
+	if _, err := st.BeginOriginalCharacterReview(review); err != nil {
+		t.Fatal(err)
+	}
+	if foundationSectionExists(review.FoundationSections, "characters") ||
+		foundationSectionExists(review.FoundationSections, "planned_relationships") {
+		t.Fatalf("fresh generation unexpectedly retained Character sections: %+v", review.FoundationSections)
+	}
+
+	changed, err := reconcileConfirmedOriginalCharacterSections(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("confirmed Character sections were not restored")
+	}
+	current, err := st.RunMeta.PlanningReview()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !foundationSectionExists(current.FoundationSections, "characters") ||
+		!foundationSectionExists(current.FoundationSections, "planned_relationships") {
+		t.Fatalf("reconciled Foundation sections = %+v", current.FoundationSections)
+	}
+	if err := RequireResumeCoreCastGate(st, true); err != nil {
+		t.Fatalf("reconciled Character sections left Resume CoreCast gate blocked: %v", err)
+	}
+}
+
 func TestOriginalCandidateUsesConfirmedBriefWhenLegacyPremiseIsEmpty(t *testing.T) {
 	candidate := domain.StoryFoundation{}
 	got := originalCandidateWithConfirmedBrief(candidate, "  已确认的中文共创前提  ")

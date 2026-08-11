@@ -23,6 +23,80 @@ type CharacterConfirmationResult struct {
 	Idempotent         bool
 }
 
+// reconcileConfirmedOriginalCharacterSections restores the generation
+// checkpoints for an already confirmed Character candidate. This is needed
+// when a rollback starts a fresh Foundation generation while intentionally
+// preserving the reviewed Character workspace and confirmed CoreCast.
+func reconcileConfirmedOriginalCharacterSections(st *storepkg.Store) (bool, error) {
+	if st == nil {
+		return false, fmt.Errorf("character reconciliation store is nil")
+	}
+	review, err := st.RunMeta.PlanningReview()
+	if err != nil {
+		return false, err
+	}
+	if review == nil || review.Kind != domain.PlanningReviewKindFoundation ||
+		review.Status != domain.PlanningReviewStatusCollecting ||
+		review.FoundationStatus != domain.FoundationReviewStatusCollecting ||
+		(foundationSectionExists(review.FoundationSections, "characters") &&
+			foundationSectionExists(review.FoundationSections, "planned_relationships")) {
+		return false, nil
+	}
+
+	candidate, err := st.CharacterCards.LoadCandidate()
+	if err != nil || candidate == nil {
+		return false, err
+	}
+	lifecycle, err := st.CharacterCards.Load(candidate.Base)
+	if err != nil || lifecycle == nil {
+		return false, err
+	}
+	if lifecycle.Mode != domain.CharacterCardProjectOriginal ||
+		lifecycle.AnalysisStatus != domain.CharacterCardAnalysisCandidateReady ||
+		lifecycle.ReviewStatus != domain.CharacterCardReviewPassed ||
+		lifecycle.ConfirmationStatus != domain.CharacterCardConfirmed ||
+		lifecycle.Candidate != candidate.Base.Candidate ||
+		lifecycle.ReviewedCandidate != candidate.Base.Candidate ||
+		lifecycle.InputDigest != candidate.Base.InputDigest ||
+		lifecycle.ReviewedInputDigest != candidate.Base.InputDigest {
+		return false, nil
+	}
+
+	_, currentBinding, _, _, err := tools.CurrentCharacterCanonicalBinding(st)
+	if err != nil {
+		return false, err
+	}
+	if currentBinding.Candidate.CharacterContentDigest != candidate.Base.Candidate.CharacterContentDigest ||
+		currentBinding.InputDigest != candidate.Base.InputDigest {
+		return false, nil
+	}
+
+	_, updated, err := st.PublishOriginalCharacterCandidate(
+		storepkg.FoundationGenerationFence{
+			Generation:   review.FoundationGeneration,
+			BaseRevision: review.FoundationBaseRevision,
+		},
+		candidate.Foundation,
+		review.FoundationBaseRevision,
+	)
+	if err != nil {
+		return false, fmt.Errorf("restore confirmed Character generation sections: %w", err)
+	}
+	return updated != nil &&
+		foundationSectionExists(updated.FoundationSections, "characters") &&
+		foundationSectionExists(updated.FoundationSections, "planned_relationships"), nil
+}
+
+func foundationSectionExists(sections []string, target string) bool {
+	target = strings.TrimSpace(target)
+	for _, section := range sections {
+		if strings.TrimSpace(section) == target {
+			return true
+		}
+	}
+	return false
+}
+
 type CharacterCandidateEditRequest struct {
 	ExpectedCandidateRevision int64
 	Characters                []domain.Character

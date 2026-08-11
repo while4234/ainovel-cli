@@ -348,21 +348,18 @@ func BuildCoordinator(
 	architectThinking, _ := ResolveThinkingForModel(architectModel, roleThinking(cfg, "architect"))
 	architectMicrocompact := architectToolResultMicrocompactConfig()
 	architectShort := subagent.Config{
-		Name:               "architect_short",
-		Description:        "短篇规划师：为单卷、单冲突、高密度故事生成紧凑设定与扁平大纲",
-		Model:              architectShortModel,
-		SystemPrompt:       globalprompt.Apply(bundle.Prompts.ArchitectShort),
-		Tools:              architectTools,
-		MaxTurns:           15,
-		MaxRetries:         subagentMaxRetries,
-		ThinkingLevel:      architectThinking,
-		ToolsAreIdempotent: true,
-		OnMessage:          onMsg,
-		StopAfterToolResult: func(toolName string, result json.RawMessage) bool {
-			r := decodeSaveFoundationResult(toolName, result)
-			return r.RetryInFreshContext || (r.Type == "outline" && r.FoundationReady)
-		},
-		StopGuardFactory: architectStopGuardFactory,
+		Name:                "architect_short",
+		Description:         "短篇规划师：为单卷、单冲突、高密度故事生成紧凑设定与扁平大纲",
+		Model:               architectShortModel,
+		SystemPrompt:        globalprompt.Apply(bundle.Prompts.ArchitectShort),
+		Tools:               architectTools,
+		MaxTurns:            15,
+		MaxRetries:          subagentMaxRetries,
+		ThinkingLevel:       architectThinking,
+		ToolsAreIdempotent:  true,
+		OnMessage:           onMsg,
+		StopAfterToolResult: architectShortShouldStopAfterToolResult,
+		StopGuardFactory:    architectStopGuardFactory,
 		ContextManagerFactory: func(model agentcore.ChatModel) agentcore.ContextManager {
 			modelWindow, _ := cfg.ResolveContextWindow(bootstrap.ModelName(model))
 			window, reserve := boundedAgentContextWindow(bootstrap.ModelName(model), modelWindow, promptcompile.AgentArchitect)
@@ -844,10 +841,7 @@ func decodeSaveFoundationResult(toolName string, result json.RawMessage) saveFou
 
 func architectLongShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
 	r := decodeSaveFoundationResult(toolName, result)
-	if r.RetryInFreshContext {
-		return true
-	}
-	if r.PlanningReview == domain.PlanningReviewStatusPending {
+	if architectFoundationCheckpointReached(r) {
 		return true
 	}
 	if r.VolumeBatchSaved {
@@ -861,6 +855,22 @@ func architectLongShouldStopAfterToolResult(toolName string, result json.RawMess
 	default:
 		return false
 	}
+}
+
+func architectShortShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
+	r := decodeSaveFoundationResult(toolName, result)
+	return architectFoundationCheckpointReached(r) ||
+		(r.Type == "outline" && r.FoundationReady)
+}
+
+func architectFoundationCheckpointReached(result saveFoundationResult) bool {
+	if result.RetryInFreshContext || result.PlanningReview == domain.PlanningReviewStatusPending {
+		return true
+	}
+	// Initial Foundation artifacts are Host-owned batch boundaries. Ending the
+	// subagent immediately lets the router choose the next missing artifact or
+	// expose the human confirmation gate from freshly persisted state.
+	return result.Type == "premise" || result.Type == "world_rules"
 }
 
 func writerShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
