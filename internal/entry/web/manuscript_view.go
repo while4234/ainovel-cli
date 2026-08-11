@@ -103,7 +103,7 @@ func (s *Server) handleManuscriptWorkspaceTree(w http.ResponseWriter, r *http.Re
 		writeManuscriptError(w, fmt.Errorf("manuscript is only readable in writing or complete phase"))
 		return
 	}
-	volumes, err := st.Outline.LoadLayeredOutline()
+	volumes, err := loadManuscriptDisplayStructure(st)
 	if err != nil {
 		writeManuscriptError(w, err)
 		return
@@ -276,7 +276,7 @@ func (s *Server) handleManuscriptArtifact(w http.ResponseWriter, r *http.Request
 		s.handleManuscriptReviewDetail(w, r, manifest, st, reviewParts[0], reviewParts[1])
 		return
 	}
-	volumes, err := st.Outline.LoadLayeredOutline()
+	volumes, err := loadManuscriptDisplayStructure(st)
 	if err != nil {
 		writeManuscriptError(w, err)
 		return

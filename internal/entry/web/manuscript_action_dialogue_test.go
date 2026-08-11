@@ -20,7 +20,7 @@ func TestManuscriptActionDialogueReadyExecuteAndIdempotency(t *testing.T) {
 	fake.manuscriptActionClarifications = []host.ManuscriptActionClarification{{
 		Status: "ready", AssistantMessage: "要求明确", ResolvedInstruction: "保留事实，只压缩重复表达",
 	}}
-	volumes, err := st.Outline.LoadLayeredOutline()
+	volumes, err := loadManuscriptDisplayStructure(st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestManuscriptActionDialogueQuestionsVersionAndInputBoundary(t *testing.T) 
 		{Status: "needs_input", AssistantMessage: "范围会影响剧情", Questions: []host.ManuscriptActionQuestion{{ID: "scope", Prompt: "只改冲突场景，还是整章？"}}},
 		{Status: "ready", AssistantMessage: "范围已确认", ResolvedInstruction: "只改冲突场景，保留其他段落"},
 	}
-	volumes, _ := st.Outline.LoadLayeredOutline()
+	volumes, _ := loadManuscriptDisplayStructure(st)
 	createPayload := map[string]any{
 		"chapter_id": chapterID, "content_signature": baseline.CurrentProseSHA256, "type": "rewrite", "initial_input": "让冲突更强",
 		"structure_revision": domain.StructureRevision(volumes), "structure_signature": domain.StructureSignature(volumes), "idempotency_key": "create-question",
@@ -135,7 +135,7 @@ func TestManuscriptActionDialogueRejectsSignatureDriftAndCropsDeterministically(
 	}
 	baseline, _, _ = fake.manuscriptService.CurrentChapter(chapterID)
 	fake.manuscriptActionClarifications = []host.ManuscriptActionClarification{{Status: "ready", ResolvedInstruction: "润色"}}
-	volumes, _ := st.Outline.LoadLayeredOutline()
+	volumes, _ := loadManuscriptDisplayStructure(st)
 	created := requestManuscriptAction(t, server, manifest.ID, "", map[string]any{
 		"chapter_id": chapterID, "content_signature": baseline.CurrentProseSHA256, "type": "polish", "initial_input": "润色",
 		"structure_revision": domain.StructureRevision(volumes), "structure_signature": domain.StructureSignature(volumes), "idempotency_key": "crop-create",
@@ -179,6 +179,9 @@ func TestBuildManuscriptActionContextIncludesRecentSummaries(t *testing.T) {
 	}
 	if len(contextBundle.RecentSummaries) != 1 || !strings.Contains(contextBundle.RecentSummaries[0].Summary, "已明确得知") {
 		t.Fatalf("recent summaries missing from action context: %+v", contextBundle.RecentSummaries)
+	}
+	if contextBundle.ChapterOutline == nil || contextBundle.VolumeTitle != "正文" || contextBundle.ArcTitle != "正文" {
+		t.Fatalf("flat manuscript structure missing from action context: %+v", contextBundle)
 	}
 }
 

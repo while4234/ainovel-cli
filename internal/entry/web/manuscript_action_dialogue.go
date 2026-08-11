@@ -534,7 +534,7 @@ func buildManuscriptActionContext(st *storepkg.Store, service *host.ManuscriptRe
 	if err != nil {
 		return host.ManuscriptActionContext{}, domain.ManuscriptBaseline{}, err
 	}
-	volumes, err := st.Outline.LoadLayeredOutline()
+	volumes, err := loadManuscriptDisplayStructure(st)
 	if err != nil {
 		return host.ManuscriptActionContext{}, domain.ManuscriptBaseline{}, err
 	}
@@ -589,7 +589,7 @@ func cropManuscriptActionProse(prose string) (string, bool) {
 }
 
 func contextBundleStructureRevision(st *storepkg.Store) int {
-	volumes, err := st.Outline.LoadLayeredOutline()
+	volumes, err := loadManuscriptDisplayStructure(st)
 	if err != nil {
 		return 0
 	}
@@ -597,7 +597,7 @@ func contextBundleStructureRevision(st *storepkg.Store) int {
 }
 
 func contextBundleStructureSignature(st *storepkg.Store) string {
-	volumes, err := st.Outline.LoadLayeredOutline()
+	volumes, err := loadManuscriptDisplayStructure(st)
 	if err != nil {
 		return ""
 	}

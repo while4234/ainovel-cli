@@ -408,6 +408,54 @@ func TestManuscriptWorkspaceTreeChunkETagAndDiscussionSignature(t *testing.T) {
 	}
 }
 
+func TestManuscriptWorkspaceIncludesFlatOutlineChapter(t *testing.T) {
+	server := NewServer(testWebConfig(t), assets.Load("default"), testTempDir(t))
+	defer server.Close()
+	manifest, err := server.store.CreateProject("flat manuscript workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := storepkg.NewStore(manifest.OutputDir)
+	if err := st.Init(); err != nil {
+		t.Fatal(err)
+	}
+	chapterID := "ch_11111111111111111111111111111111"
+	if err := st.Outline.SaveOutline([]domain.OutlineEntry{{
+		ID: chapterID, Chapter: 1, Title: "Only Chapter", CoreEvent: "complete story", Hook: "closed ending",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.Init("Flat Book", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Drafts.SaveFinalChapter(1, "first paragraph\n\nsecond paragraph"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.MarkChapterComplete(1, 4, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Progress.MarkComplete(); err != nil {
+		t.Fatal(err)
+	}
+
+	tree := requestWorkspace(t, server, http.MethodGet, "/api/projects/"+manifest.ID+"/manuscript/workspace/tree", nil, "")
+	if tree.Code != http.StatusOK || !bytes.Contains(tree.Body.Bytes(), []byte(chapterID)) ||
+		!bytes.Contains(tree.Body.Bytes(), []byte(`"has_current":true`)) {
+		t.Fatalf("flat tree status=%d body=%s", tree.Code, tree.Body.String())
+	}
+	content := requestWorkspace(t, server, http.MethodGet, "/api/projects/"+manifest.ID+"/manuscript/workspace/chapters/"+chapterID+"/content", nil, "")
+	if content.Code != http.StatusOK || !bytes.Contains(content.Body.Bytes(), []byte("first paragraph")) {
+		t.Fatalf("flat content status=%d body=%s", content.Code, content.Body.String())
+	}
+	outline := requestWorkspace(t, server, http.MethodGet, "/api/projects/"+manifest.ID+"/manuscript/workspace/artifacts/outline/"+chapterID, nil, "")
+	if outline.Code != http.StatusOK || !bytes.Contains(outline.Body.Bytes(), []byte(`"core_event":"complete story"`)) {
+		t.Fatalf("flat outline status=%d body=%s", outline.Code, outline.Body.String())
+	}
+}
+
 func TestRemovedManuscriptAdaptationDiscussionRoute(t *testing.T) {
 	server := NewServer(testWebConfig(t), assets.Load("default"), testTempDir(t))
 	defer server.Close()

@@ -82,18 +82,10 @@ func (s *Server) handleManuscriptTree(w http.ResponseWriter, r *http.Request, ma
 		writeManuscriptError(w, fmt.Errorf("manuscript is only readable in writing or complete phase"))
 		return
 	}
-	volumes, err := st.Outline.LoadLayeredOutline()
+	volumes, err := loadManuscriptDisplayStructure(st)
 	if err != nil {
 		writeManuscriptError(w, err)
 		return
-	}
-	if len(volumes) == 0 {
-		outline, loadErr := st.Outline.LoadOutline()
-		if loadErr != nil {
-			writeManuscriptError(w, loadErr)
-			return
-		}
-		volumes = []domain.VolumeOutline{{ID: domain.LegacyStructureID(st.Dir(), domain.StructureKindVolume, "flat"), Index: 1, Title: "正文", Arcs: []domain.ArcOutline{{ID: domain.LegacyStructureID(st.Dir(), domain.StructureKindArc, "flat"), Index: 1, Title: "正文", Chapters: outline}}}}
 	}
 	active, err := st.ManuscriptRevisions.Active()
 	if err != nil {
@@ -101,6 +93,28 @@ func (s *Server) handleManuscriptTree(w http.ResponseWriter, r *http.Request, ma
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"project": manifest, "phase": progress.Phase, "tree": volumes, "active_revision": active})
+}
+
+func loadManuscriptDisplayStructure(st *storepkg.Store) ([]domain.VolumeOutline, error) {
+	volumes, err := st.Outline.LoadLayeredOutline()
+	if err != nil || len(volumes) > 0 {
+		return volumes, err
+	}
+	outline, err := st.Outline.LoadOutline()
+	if err != nil || len(outline) == 0 {
+		return nil, err
+	}
+	return []domain.VolumeOutline{{
+		ID:    domain.LegacyStructureID(st.Dir(), domain.StructureKindVolume, "flat"),
+		Index: 1,
+		Title: "正文",
+		Arcs: []domain.ArcOutline{{
+			ID:       domain.LegacyStructureID(st.Dir(), domain.StructureKindArc, "flat"),
+			Index:    1,
+			Title:    "正文",
+			Chapters: outline,
+		}},
+	}}, nil
 }
 
 func (s *Server) handleManuscriptChapter(w http.ResponseWriter, r *http.Request, manifest ProjectManifest, service *host.ManuscriptRevisionService, stableID string) {

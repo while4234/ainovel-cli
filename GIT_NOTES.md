@@ -46,6 +46,13 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-11 `this commit` `fix: show flat short manuscripts in workspace`:
+  projects with a flat outline now receive the same stable manuscript display
+  structure as layered projects. The manuscript tree, outline artifacts, and
+  revision-action context all share this projection, so a completed one-chapter
+  short story appears as 1/1 with readable formal prose and remains editable.
+  The full Web test package passes, and the affected live project was verified
+  in a real browser on the manuscript tab.
 - 2026-08-11 `this commit` `fix: preserve single-chapter short planning`:
   carries the persisted planning tier and explicit requested chapter count into
   original-planning routing, sends short/mid blueprints directly to a flat
