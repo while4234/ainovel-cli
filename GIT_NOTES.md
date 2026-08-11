@@ -46,6 +46,11 @@ changes the running project, backend, or Web UI, rebuild/restart the local
 page. The normal local Web URL is `http://127.0.0.1:9898`.
 
 ## Current Baseline
+- 2026-08-11 `this commit` `feat: extend model-specific global prompts`:
+  preserves the user's adult-scene writing guidance across the DeepSeek,
+  Gemini, GPT, and Grok global prompts, rebuilds/restarts the Web runtime on
+  `127.0.0.1:9898` as PID `42972`, and verifies the global-prompt package plus
+  the main runtime endpoints.
 - 2026-08-11 `this commit` `docs: record latest update and restart`:
   fast-forwarded `main` from `0e1506e6` to upstream `53f4e36c`, rebuilt the Web
   executable with `restart-web.cmd`, restarted the normal runtime on
