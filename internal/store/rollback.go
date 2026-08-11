@@ -499,6 +499,15 @@ func appendRollbackRunMeta(payloads []migrationPayload, reviewKind string, state
 			return payloads, err
 		}
 		meta.PlanningReview = review
+		if reviewKind == domain.PlanningReviewKindBlueprint && meta.WordBudget != nil {
+			contractText := strings.Join([]string{review.Brief, review.StartPrompt}, "\n")
+			if updated, reconciled := meta.WordBudget.ReconcileRequestedChapters(contractText); reconciled {
+				normalized, ok := updated.Normalized()
+				if ok {
+					meta.WordBudget = &normalized
+				}
+			}
+		}
 	}
 	return appendJSONMigrationPayload(payloads, "meta/run.json", meta)
 }

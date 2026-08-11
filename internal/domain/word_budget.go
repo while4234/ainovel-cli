@@ -221,7 +221,23 @@ func (b WordBudget) WithRequestedChapters(chapters int) WordBudget {
 		chapters = 0
 	}
 	b.RequestedChapters = chapters
+	if chapters > 0 {
+		b = b.WithPlannedChapters(chapters)
+	}
 	return b
+}
+
+// ReconcileRequestedChapters upgrades a legacy budget only when it does not
+// already carry an explicit user chapter-count contract.
+func (b WordBudget) ReconcileRequestedChapters(text string) (WordBudget, bool) {
+	if b.RequestedChapters > 0 {
+		return b, false
+	}
+	chapters, ok := ParseRequestedChapterCount(text)
+	if !ok {
+		return b, false
+	}
+	return b.WithRequestedChapters(chapters), true
 }
 
 func (b WordBudget) WithPlannedChapters(chapters int) WordBudget {

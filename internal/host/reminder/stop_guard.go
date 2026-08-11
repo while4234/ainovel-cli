@@ -29,23 +29,26 @@ func NewStopGuard(st *store.Store, onBlock func(reason string, consecutive int32
 	var lastBlockTurn atomic.Int64 // 上次 block 的 TurnIndex；-1 表示尚未 block 过
 	lastBlockTurn.Store(-1)
 	return func(_ context.Context, info agentcore.StopInfo) agentcore.StopDecision {
+		allowStop := func() agentcore.StopDecision {
+			consecutive.Store(0)
+			lastBlockTurn.Store(-1)
+			return agentcore.StopDecision{Allow: true}
+		}
 		progress, _ := st.Progress.Load()
 		if progress != nil && progress.Phase == domain.PhaseComplete {
-			consecutive.Store(0)
-			lastBlockTurn.Store(-1)
-			return agentcore.StopDecision{Allow: true}
+			return allowStop()
 		}
 		if st.RunMeta.PlanningReviewPending() {
-			consecutive.Store(0)
-			lastBlockTurn.Store(-1)
-			return agentcore.StopDecision{Allow: true}
+			return allowStop()
 		}
-		if state := flow.LoadState(st); state.AdaptationOutlineBlocked {
+		state := flow.LoadState(st)
+		if flow.AwaitingCharacterConfirmation(state) {
+			return allowStop()
+		}
+		if state.AdaptationOutlineBlocked {
 			// This is an upstream planning defect, not a writing task. End the
 			// run cleanly instead of burning StopGuard turns with no Writer route.
-			consecutive.Store(0)
-			lastBlockTurn.Store(-1)
-			return agentcore.StopDecision{Allow: true}
+			return allowStop()
 		}
 		// 只有"相邻 turn 连续被拦"才累计计数；否则视为新一轮（LLM 已做过 tool call 取得过进展，
 		// 或用户注入 / resume 导致 TurnIndex 倒流），重置计数。

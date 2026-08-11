@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -160,6 +161,37 @@ func (s *RunMetaStore) SetWordBudget(budget *domain.WordBudget) error {
 		meta.WordBudget = &normalized
 		return s.saveUnlocked(*meta)
 	})
+}
+
+// ReconcileRequestedChapterCount upgrades pre-contract project metadata from
+// the persisted user brief. Existing explicit contracts remain authoritative.
+func (s *RunMetaStore) ReconcileRequestedChapterCount() (bool, error) {
+	changed := false
+	err := s.io.WithWriteLock(func() error {
+		meta, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		if meta == nil || meta.WordBudget == nil || meta.PlanningReview == nil {
+			return nil
+		}
+		contractText := strings.Join([]string{
+			meta.PlanningReview.Brief,
+			meta.PlanningReview.StartPrompt,
+		}, "\n")
+		updated, reconciled := meta.WordBudget.ReconcileRequestedChapters(contractText)
+		if !reconciled {
+			return nil
+		}
+		normalized, ok := updated.Normalized()
+		if !ok {
+			return nil
+		}
+		meta.WordBudget = &normalized
+		changed = true
+		return s.saveUnlocked(*meta)
+	})
+	return changed, err
 }
 
 // SetPlanningReview records or clears the normal co-create blueprint review

@@ -870,6 +870,26 @@ func characterWorkflowBlocksArchitect(state State) bool {
 		lifecycle.ReviewedInputDigest != state.CharacterBinding.InputDigest
 }
 
+// AwaitingCharacterConfirmation identifies the deliberate human checkpoint
+// between an independently passed character review and canon publication.
+func AwaitingCharacterConfirmation(state State) bool {
+	review := state.PlanningReview
+	originalPending := review != nil &&
+		review.Status == domain.PlanningReviewStatusCollecting &&
+		review.Kind == domain.PlanningReviewKindFoundation
+	if !originalPending && !state.AdaptationCharacterPending {
+		return false
+	}
+	lifecycle := state.CharacterLifecycle
+	return state.CharacterCandidate != nil &&
+		lifecycle != nil &&
+		lifecycle.AnalysisStatus == domain.CharacterCardAnalysisCandidateReady &&
+		lifecycle.ReviewStatus == domain.CharacterCardReviewPassed &&
+		lifecycle.ConfirmationStatus != domain.CharacterCardConfirmed &&
+		lifecycle.ReviewedCandidate == state.CharacterBinding.Candidate &&
+		lifecycle.ReviewedInputDigest == state.CharacterBinding.InputDigest
+}
+
 func shortCharacterRouteDigest(value, fallback string) string {
 	value = strings.TrimSpace(value)
 	if len(value) >= 12 {

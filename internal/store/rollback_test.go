@@ -343,10 +343,14 @@ func TestRollbackToDraftRemovesCanonicalFoundationAndProjections(t *testing.T) {
 	if err := st.Init(); err != nil {
 		t.Fatal(err)
 	}
+	legacyBudget := domain.NewWordBudget(5000, "legacy").WithPlannedChapters(9)
+	if err := st.RunMeta.SetWordBudget(&legacyBudget); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.RunMeta.setPlanningReviewAuthoritative(&domain.PlanningReview{
 		Status:                   domain.PlanningReviewStatusPending,
 		Kind:                     domain.PlanningReviewKindBlueprint,
-		Brief:                    "foundation rollback brief",
+		Brief:                    "5000 words, single chapter",
 		FoundationStatus:         domain.FoundationReviewStatusApproved,
 		FoundationRevision:       7,
 		FoundationAuditSignature: "stale-audit",
@@ -395,6 +399,13 @@ func TestRollbackToDraftRemovesCanonicalFoundationAndProjections(t *testing.T) {
 		len(review.FoundationSections) != 0 || review.FoundationFeedback != "" ||
 		review.FoundationConfirmedAt != "" {
 		t.Fatalf("rollback retained deleted Foundation binding: %+v", review)
+	}
+	meta, err := st.RunMeta.Load()
+	if err != nil || meta == nil || meta.WordBudget == nil {
+		t.Fatalf("run meta after rollback = %+v, %v", meta, err)
+	}
+	if meta.WordBudget.RequestedChapters != 1 || meta.WordBudget.PlannedChapters != 1 {
+		t.Fatalf("rollback did not recover the single-chapter contract: %+v", meta.WordBudget)
 	}
 }
 

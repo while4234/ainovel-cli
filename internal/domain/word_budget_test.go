@@ -55,6 +55,31 @@ func TestWordBudgetWithPlannedChapters(t *testing.T) {
 	}
 }
 
+func TestWordBudgetRequestedChaptersReplacesLegacyPlan(t *testing.T) {
+	legacy := NewWordBudget(5000, WordBudgetSourcePrompt).WithPlannedChapters(9)
+	budget := legacy.WithRequestedChapters(1)
+
+	if budget.RequestedChapters != 1 || budget.PlannedChapters != 1 {
+		t.Fatalf("chapter contract = %+v, want requested=1 planned=1", budget)
+	}
+	if budget.ChapterMinWords != 4500 || budget.ChapterMaxWords != 5500 {
+		t.Fatalf("chapter range = %d-%d, want 4500-5500", budget.ChapterMinWords, budget.ChapterMaxWords)
+	}
+}
+
+func TestWordBudgetReconcilesLegacyRequestedChaptersOnce(t *testing.T) {
+	legacy := NewWordBudget(5000, WordBudgetSourcePrompt).WithPlannedChapters(9)
+	budget, changed := legacy.ReconcileRequestedChapters("5000 words, single chapter")
+	if !changed || budget.RequestedChapters != 1 || budget.PlannedChapters != 1 {
+		t.Fatalf("reconciled budget = %+v, changed=%v", budget, changed)
+	}
+
+	second, changed := budget.ReconcileRequestedChapters("全书共 9 章")
+	if changed || second.RequestedChapters != 1 || second.PlannedChapters != 1 {
+		t.Fatalf("explicit contract should remain authoritative: %+v, changed=%v", second, changed)
+	}
+}
+
 func TestParseRequestedChapterCount(t *testing.T) {
 	tests := []struct {
 		name string

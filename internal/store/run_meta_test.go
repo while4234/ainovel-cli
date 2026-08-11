@@ -244,6 +244,44 @@ func TestSetWordBudget(t *testing.T) {
 	}
 }
 
+func TestReconcileRequestedChapterCountUpgradesLegacyBudget(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(dir)
+
+	legacy := domain.NewWordBudget(5000, "legacy").WithPlannedChapters(9)
+	if err := store.RunMeta.SetWordBudget(&legacy); err != nil {
+		t.Fatalf("SetWordBudget: %v", err)
+	}
+	if err := store.RunMeta.SetPlanningReview(&domain.PlanningReview{
+		Status: domain.PlanningReviewStatusCollecting,
+		Kind:   domain.PlanningReviewKindBlueprint,
+		Brief:  "5000 words, single chapter",
+	}); err != nil {
+		t.Fatalf("SetPlanningReview: %v", err)
+	}
+
+	changed, err := store.RunMeta.ReconcileRequestedChapterCount()
+	if err != nil {
+		t.Fatalf("ReconcileRequestedChapterCount: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected legacy budget to be upgraded")
+	}
+	meta, err := store.RunMeta.Load()
+	if err != nil || meta == nil || meta.WordBudget == nil {
+		t.Fatalf("Load: meta=%+v err=%v", meta, err)
+	}
+	if meta.WordBudget.RequestedChapters != 1 || meta.WordBudget.PlannedChapters != 1 ||
+		meta.WordBudget.ChapterMinWords != 4500 || meta.WordBudget.ChapterMaxWords != 5500 {
+		t.Fatalf("reconciled budget = %+v", meta.WordBudget)
+	}
+
+	changed, err = store.RunMeta.ReconcileRequestedChapterCount()
+	if err != nil || changed {
+		t.Fatalf("second reconciliation = changed=%v err=%v, want no-op", changed, err)
+	}
+}
+
 func TestSetAndClearPendingSteer(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)

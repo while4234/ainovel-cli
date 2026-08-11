@@ -403,6 +403,9 @@ func (h *Host) StartPrepared(promptText string) error {
 		return err
 	}
 	defer ownership.Release()
+	if _, err := h.store.RunMeta.ReconcileRequestedChapterCount(); err != nil {
+		return fmt.Errorf("reconcile requested chapter count: %w", err)
+	}
 	if err := h.store.Checkpoints.Reset(); err != nil {
 		return fmt.Errorf("reset checkpoints: %w", err)
 	}
@@ -1095,6 +1098,9 @@ func (h *Host) resume(keepNormalFlowLease bool) (string, error) {
 		if err := h.restoreConfiguredModelRoutes(); err != nil {
 			return "", fmt.Errorf("restore configured model routes: %w", err)
 		}
+	}
+	if _, err := h.store.RunMeta.ReconcileRequestedChapterCount(); err != nil {
+		return "", fmt.Errorf("reconcile requested chapter count: %w", err)
 	}
 	pendingSteer := ""
 	if meta, loadErr := h.store.RunMeta.Load(); loadErr == nil && meta != nil {

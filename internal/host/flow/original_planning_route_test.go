@@ -89,10 +89,16 @@ func TestRouteOriginalPlanningBuildsFoundationBeforeAnyOutline(t *testing.T) {
 		t.Fatalf("needs-revision candidate should route a bounded Character repair, got %+v", instruction)
 	}
 	state.CharacterLifecycle.ReviewStatus = domain.CharacterCardReviewPassed
+	if !AwaitingCharacterConfirmation(state) {
+		t.Fatal("passing unconfirmed candidate should be recognized as a legal human checkpoint")
+	}
 	if instruction = routeOriginalPlanning(state); instruction != nil {
 		t.Fatalf("passing unconfirmed candidate should wait for user confirmation, got %+v", instruction)
 	}
 	state.CharacterLifecycle.ConfirmationStatus = domain.CharacterCardConfirmed
+	if AwaitingCharacterConfirmation(state) {
+		t.Fatal("confirmed candidate must no longer block architecture")
+	}
 	state.PlanningReview.FoundationSections = []string{"premise", "characters", "planned_relationships"}
 	instruction = routeOriginalPlanning(state)
 	if instruction == nil || instruction.Agent != "architect_long" {
